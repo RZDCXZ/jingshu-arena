@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Dependencies
+node_modules/
+
+# Build outputs and test artifacts
+dist/
+coverage/
+
+# Tool caches
+.vite/
+*.log
+
+# Local environment files
+.env
+.env.*
+!.env.example

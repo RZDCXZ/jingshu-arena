@@ -14,21 +14,21 @@ Status: ready-for-design
 
 ## 1. 文档定位
 
-本文档把[基础 RC 规格](../spec.md)转译为 Web 管理系统的正式设计输入，覆盖公开访客进入演示后在同一沙箱内依次切换店员、店长和总部运营的完整体验。顾客 Web H5 是跨角色故事的必要入口，但其顾客页面结构由[小程序产品设计说明](../miniprogram/prod.md)负责；本文档负责 Web 沙箱、角色切换和管理侧页面。
+本文档把[基础 RC 规格](../../.scratch/jingshu-basic-rc/spec.md)转译为 Web 管理系统的正式设计输入，覆盖公开访客进入演示后在同一沙箱内依次切换店员、店长和总部运营的完整体验。顾客 Web H5 是跨角色故事的必要入口，但其顾客页面结构由[小程序产品设计说明](../miniprogram/prod.md)负责；本文档负责 Web 沙箱、角色切换和管理侧页面。
 
 设计与实现发生冲突时，按以下顺序处理：
 
-1. [领域词汇](../../../CONTEXT.md)决定业务名词及其含义。
+1. [领域词汇](../../CONTEXT.md)决定业务名词及其含义。
 2. `spec.md` 和已接受 ADR 决定状态机、权限、不变量及数据边界。
 3. 本文档决定 Web 信息架构、页面职责、角色视图和设计交付范围。
 4. 视觉稿决定品牌表达与组件外观，不得通过隐藏按钮或视觉层级改变权限。
 
 必须按条件查阅的 ADR：
 
-- 设计经营日筛选、跨午夜排班或日趋势时，查阅 [ADR-0002](../../../docs/adr/0002-business-day-starts-at-0600.md) 与 [ADR-0009](../../../docs/adr/0009-attribute-reservation-revenue-by-price-segment.md)。
-- 设计座位、价格、库存、报修联动时，分别查阅 [ADR-0003](../../../docs/adr/0003-derive-seat-availability-by-time-range.md)、[ADR-0004](../../../docs/adr/0004-snapshot-reservation-price-on-creation.md)、[ADR-0005](../../../docs/adr/0005-unified-inventory-ledger.md) 与 [ADR-0006](../../../docs/adr/0006-repair-processing-controls-seat-maintenance.md)。
-- 设计角色入口、切换、门店范围或总部权限时，查阅 [ADR-0010](../../../docs/adr/0010-server-issued-public-role-context.md)、[ADR-0012](../../../docs/adr/0012-headquarters-configures-but-does-not-operate-stores.md) 与 [ADR-0018](../../../docs/adr/0018-rls-for-sandbox-application-for-role-scope.md)。
-- 设计重置、演示时间与实时刷新时，查阅 [ADR-0011](../../../docs/adr/0011-reset-by-rotating-sandbox.md)、[ADR-0020](../../../docs/adr/0020-sse-invalidation-with-polling-fallback.md) 与 [ADR-0023](../../../docs/adr/0023-separate-sandbox-business-time-from-wall-clock.md)。
+- 设计经营日筛选、跨午夜排班或日趋势时，查阅 [ADR-0002](../../docs/adr/0002-business-day-starts-at-0600.md) 与 [ADR-0009](../../docs/adr/0009-attribute-reservation-revenue-by-price-segment.md)。
+- 设计座位、价格、库存、报修联动时，分别查阅 [ADR-0003](../../docs/adr/0003-derive-seat-availability-by-time-range.md)、[ADR-0004](../../docs/adr/0004-snapshot-reservation-price-on-creation.md)、[ADR-0005](../../docs/adr/0005-unified-inventory-ledger.md) 与 [ADR-0006](../../docs/adr/0006-repair-processing-controls-seat-maintenance.md)。
+- 设计角色入口、切换、门店范围或总部权限时，查阅 [ADR-0010](../../docs/adr/0010-server-issued-public-role-context.md)、[ADR-0012](../../docs/adr/0012-headquarters-configures-but-does-not-operate-stores.md) 与 [ADR-0018](../../docs/adr/0018-rls-for-sandbox-application-for-role-scope.md)。
+- 设计重置、演示时间与实时刷新时，查阅 [ADR-0011](../../docs/adr/0011-reset-by-rotating-sandbox.md)、[ADR-0020](../../docs/adr/0020-sse-invalidation-with-polling-fallback.md) 与 [ADR-0023](../../docs/adr/0023-separate-sandbox-business-time-from-wall-clock.md)。
 
 ## 2. 设计目标
 

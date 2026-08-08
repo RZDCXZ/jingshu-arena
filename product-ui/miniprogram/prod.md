@@ -14,22 +14,22 @@ Status: ready-for-design
 
 ## 1. 文档定位
 
-本文档把[基础 RC 规格](../spec.md)转译为可直接用于信息架构、线框图、高保真界面和交互原型的顾客侧设计输入。它定义产品目标、页面范围、主流程、状态、内容优先级和设计验收标准，不提前锁定颜色、字体、插画或具体视觉风格。
+本文档把[基础 RC 规格](../../.scratch/jingshu-basic-rc/spec.md)转译为可直接用于信息架构、线框图、高保真界面和交互原型的顾客侧设计输入。它定义产品目标、页面范围、主流程、状态、内容优先级和设计验收标准，不提前锁定颜色、字体、插画或具体视觉风格。
 
 设计与实现发生冲突时，按以下顺序处理：
 
-1. [领域词汇](../../../CONTEXT.md)决定业务名词及其含义。
+1. [领域词汇](../../CONTEXT.md)决定业务名词及其含义。
 2. `spec.md` 和已接受 ADR 决定业务规则、权限与边界。
 3. 本文档决定小程序的信息架构、页面职责和信息呈现。
 4. 视觉稿决定品牌表达与组件外观，不得改变前三项。
 
 必须按条件查阅的 ADR：
 
-- 设计座位图和预约筛选时，查阅 [ADR-0003](../../../docs/adr/0003-derive-seat-availability-by-time-range.md)。
-- 设计价格明细和历史金额时，查阅 [ADR-0004](../../../docs/adr/0004-snapshot-reservation-price-on-creation.md) 与 [ADR-0013](../../../docs/adr/0013-version-future-price-plans.md)。
-- 设计体验券选择、取消结果时，查阅 [ADR-0007](../../../docs/adr/0007-reserve-coupon-with-pending-transaction.md)。
-- 设计本地数据说明、重置或跨端提示时，查阅 [ADR-0015](../../../docs/adr/0015-share-domain-rules-not-runtime-state.md)。
-- 设计经营日期与跨午夜时间时，查阅 [ADR-0002](../../../docs/adr/0002-business-day-starts-at-0600.md)。
+- 设计座位图和预约筛选时，查阅 [ADR-0003](../../docs/adr/0003-derive-seat-availability-by-time-range.md)。
+- 设计价格明细和历史金额时，查阅 [ADR-0004](../../docs/adr/0004-snapshot-reservation-price-on-creation.md) 与 [ADR-0013](../../docs/adr/0013-version-future-price-plans.md)。
+- 设计体验券选择、取消结果时，查阅 [ADR-0007](../../docs/adr/0007-reserve-coupon-with-pending-transaction.md)。
+- 设计本地数据说明、重置或跨端提示时，查阅 [ADR-0015](../../docs/adr/0015-share-domain-rules-not-runtime-state.md)。
+- 设计经营日期与跨午夜时间时，查阅 [ADR-0002](../../docs/adr/0002-business-day-starts-at-0600.md)。
 
 ## 2. 设计目标
 
