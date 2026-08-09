@@ -1,5 +1,5 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "6";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.1";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "7";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.2";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -389,6 +389,141 @@ export function evaluateReservationCoupon(
     payableCents: input.subtotalCents - discountCents,
     status: "eligible",
   };
+}
+
+export const RESERVATION_STATUSES = [
+  "pending-confirmation",
+  "confirmed",
+  "arrived",
+  "in-use",
+  "completed",
+  "cancelled",
+  "expired",
+] as const;
+
+export type ReservationStatus = (typeof RESERVATION_STATUSES)[number];
+export type ReservationLifecycleAction =
+  "cancel" | "expire-hold" | "expire-no-show" | "simulate-payment";
+export type ReservationCouponEffect = "redeem" | "release" | "restore";
+
+interface DecideReservationLifecycleInput {
+  readonly action: ReservationLifecycleAction;
+  readonly businessTime: Date;
+  readonly hasCoupon: boolean;
+  readonly holdExpiresAt: Date | null;
+  readonly payableCents: number;
+  readonly startsAt: Date;
+  readonly status: ReservationStatus;
+}
+
+export type ReservationLifecycleDecision =
+  | {
+      readonly couponEffect: ReservationCouponEffect | null;
+      readonly nextStatus: ReservationStatus;
+      readonly simulatedPaymentCents: number;
+      readonly simulatedRefundCents: number;
+      readonly status: "ready";
+    }
+  | {
+      readonly reason:
+        | "hold-expired"
+        | "illegal-transition"
+        | "not-due"
+        | "reservation-started";
+      readonly status: "invalid";
+    };
+
+export function decideReservationLifecycle(
+  input: DecideReservationLifecycleInput,
+): ReservationLifecycleDecision {
+  const couponEffect = (effect: ReservationCouponEffect) =>
+    input.hasCoupon ? effect : null;
+
+  if (input.action === "simulate-payment") {
+    if (input.status !== "pending-confirmation") {
+      return { reason: "illegal-transition", status: "invalid" };
+    }
+    if (
+      !input.holdExpiresAt ||
+      input.businessTime.getTime() >= input.holdExpiresAt.getTime()
+    ) {
+      return { reason: "hold-expired", status: "invalid" };
+    }
+    return {
+      couponEffect: couponEffect("redeem"),
+      nextStatus: "confirmed",
+      simulatedPaymentCents: input.payableCents,
+      simulatedRefundCents: 0,
+      status: "ready",
+    };
+  }
+
+  if (input.action === "expire-hold") {
+    if (input.status !== "pending-confirmation") {
+      return { reason: "illegal-transition", status: "invalid" };
+    }
+    if (
+      !input.holdExpiresAt ||
+      input.businessTime.getTime() < input.holdExpiresAt.getTime()
+    ) {
+      return { reason: "not-due", status: "invalid" };
+    }
+    return {
+      couponEffect: couponEffect("release"),
+      nextStatus: "expired",
+      simulatedPaymentCents: 0,
+      simulatedRefundCents: 0,
+      status: "ready",
+    };
+  }
+
+  if (input.action === "expire-no-show") {
+    if (input.status !== "confirmed") {
+      return { reason: "illegal-transition", status: "invalid" };
+    }
+    if (
+      input.businessTime.getTime() <
+      input.startsAt.getTime() + 15 * 60 * 1_000
+    ) {
+      return { reason: "not-due", status: "invalid" };
+    }
+    return {
+      couponEffect: couponEffect("restore"),
+      nextStatus: "expired",
+      simulatedPaymentCents: 0,
+      simulatedRefundCents: input.payableCents,
+      status: "ready",
+    };
+  }
+
+  if (input.status === "pending-confirmation") {
+    if (
+      !input.holdExpiresAt ||
+      input.businessTime.getTime() >= input.holdExpiresAt.getTime()
+    ) {
+      return { reason: "hold-expired", status: "invalid" };
+    }
+    return {
+      couponEffect: couponEffect("release"),
+      nextStatus: "cancelled",
+      simulatedPaymentCents: 0,
+      simulatedRefundCents: 0,
+      status: "ready",
+    };
+  }
+  if (input.status === "confirmed") {
+    if (input.businessTime.getTime() >= input.startsAt.getTime()) {
+      return { reason: "reservation-started", status: "invalid" };
+    }
+    return {
+      couponEffect: couponEffect("restore"),
+      nextStatus: "cancelled",
+      simulatedPaymentCents: 0,
+      simulatedRefundCents: input.payableCents,
+      status: "ready",
+    };
+  }
+  return { reason: "illegal-transition", status: "invalid" };
 }
 
 export type SandboxBusinessTimeAdvanceMode = "next-event" | "half-hour";

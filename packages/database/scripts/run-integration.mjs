@@ -99,6 +99,7 @@ async function main() {
         "packages/database/tests/migrations.integration.test.ts",
         "packages/database/tests/migration-upgrade.integration.test.ts",
         "packages/database/tests/public-sandbox.integration.test.ts",
+        "packages/database/tests/reservation-lifecycle.integration.test.ts",
         "apps/api/src/public-sandbox.integration.test.ts",
         "apps/api/src/customer-seat-browse.integration.test.ts",
         "apps/api/src/role-context.integration.test.ts",

@@ -3,6 +3,9 @@ import type { Page, Route } from "@playwright/test";
 
 import type {
   CustomerMachineProfileCode,
+  CustomerPendingReservationResponse,
+  CustomerReservationDetailResponse,
+  CustomerReservationStatus,
   CustomerSeatAvailabilityResponse,
   CustomerStoreCatalogResponse,
   RoleContextReadyResponse,
@@ -29,8 +32,8 @@ const customerContext: RoleContextReadyResponse = {
       timeZone: "Asia/Shanghai",
     },
     expiresAt: "2026-08-11T11:47:23.000Z",
-    schemaVersion: "6",
-    seedVersion: "2026-08-10.1",
+    schemaVersion: "7",
+    seedVersion: "2026-08-10.2",
   },
   status: "ready",
   storeScope: {
@@ -292,11 +295,26 @@ async function openCustomerH5(
   page: Page,
   options: {
     conflict?: boolean;
+    detailStatuses?: ReadonlyArray<CustomerReservationStatus>;
+    paymentFailures?: number;
     transformAvailability?: (
       value: CustomerSeatAvailabilityResponse,
     ) => CustomerSeatAvailabilityResponse;
   } = {},
 ) {
+  let lifecycleStatus: CustomerReservationStatus =
+    options.detailStatuses?.[0] ?? "pending-confirmation";
+  let detailStatusIndex = 0;
+  let remainingPaymentFailures = options.paymentFailures ?? 0;
+  let activeSnapshot: CustomerPendingReservationResponse["snapshot"] | null =
+    null;
+  let paymentOccurredAt: string | null = null;
+  let refundOccurredAt: string | null = null;
+  const timeline: CustomerReservationDetailResponse["timeline"] extends ReadonlyArray<
+    infer Event
+  >
+    ? Event[]
+    : never = [];
   await page.route("**/api/v1/demo/context", (route) =>
     serveJson(route, customerContext),
   );
@@ -345,39 +363,190 @@ async function openCustomerH5(
       coupon?.eligibility.status === "eligible"
         ? coupon.eligibility.discountCents
         : 0;
+    const snapshot: CustomerPendingReservationResponse["snapshot"] = {
+      area: preview.area,
+      coupon: coupon
+        ? {
+            code: coupon.code,
+            discountCents,
+            displayName: coupon.displayName,
+          }
+        : null,
+      machineProfile: preview.machineProfile,
+      price: {
+        discountCents,
+        payableCents: preview.price.totalCents - discountCents,
+        segments: preview.price.segments,
+        subtotalCents: preview.price.totalCents,
+      },
+      seat: { code: body.seatCode },
+      store: preview.store,
+      window: {
+        endsAt: preview.window.endsAt,
+        startsAt: preview.window.startsAt,
+      },
+    };
+    activeSnapshot = snapshot;
+    lifecycleStatus = options.detailStatuses?.[0] ?? "pending-confirmation";
+    detailStatusIndex = 0;
+    timeline.splice(0, timeline.length, {
+      data: { holdExpiresAt: "2026-08-10T11:57:23.000Z" },
+      occurredAt: businessTime,
+      type: "reservation.pending-created",
+    });
     await route.fulfill({
       json: {
         holdExpiresAt: "2026-08-10T11:57:23.000Z",
         replayed: false,
         reservationId: "00000000-0000-4000-8000-000000000708",
-        snapshot: {
-          area: preview.area,
-          coupon: coupon
-            ? {
-                code: coupon.code,
-                discountCents,
-                displayName: coupon.displayName,
-              }
-            : null,
-          machineProfile: preview.machineProfile,
-          price: {
-            discountCents,
-            payableCents: preview.price.totalCents - discountCents,
-            segments: preview.price.segments,
-            subtotalCents: preview.price.totalCents,
-          },
-          seat: { code: body.seatCode },
-          store: preview.store,
-          window: {
-            endsAt: preview.window.endsAt,
-            startsAt: preview.window.startsAt,
-          },
-        },
+        snapshot,
         status: "pending-confirmation",
       },
       status: 201,
     });
   });
+  await page.route(
+    /\/api\/v1\/customer\/reservations\/[^/]+$/u,
+    async (route) => {
+      const snapshot = activeSnapshot;
+      if (!snapshot) {
+        await route.fulfill({ status: 404 });
+        return;
+      }
+      const sequenceStatus = options.detailStatuses?.[detailStatusIndex];
+      if (sequenceStatus) {
+        lifecycleStatus = sequenceStatus;
+        detailStatusIndex = Math.min(
+          detailStatusIndex + 1,
+          (options.detailStatuses?.length ?? 1) - 1,
+        );
+      }
+      const terminal = ["cancelled", "completed", "expired"].includes(
+        lifecycleStatus,
+      );
+      const canCancel =
+        lifecycleStatus === "pending-confirmation" ||
+        lifecycleStatus === "confirmed";
+      const detail: CustomerReservationDetailResponse = {
+        actions: {
+          canCancel,
+          canSimulatePayment: lifecycleStatus === "pending-confirmation",
+        },
+        arrivalWindow: {
+          closesAt: "2026-08-10T12:45:00.000Z",
+          opensAt: "2026-08-10T12:00:00.000Z",
+        },
+        cancelledAt: lifecycleStatus === "cancelled" ? refundOccurredAt : null,
+        confirmedAt: paymentOccurredAt,
+        coupon: snapshot.coupon
+          ? {
+              ...snapshot.coupon,
+              status:
+                lifecycleStatus === "cancelled" || lifecycleStatus === "expired"
+                  ? "available"
+                  : lifecycleStatus === "pending-confirmation"
+                    ? "reserved"
+                    : "redeemed",
+            }
+          : null,
+        currentTime: businessTime,
+        expiredAt: lifecycleStatus === "expired" ? businessTime : null,
+        holdExpiresAt: "2026-08-10T11:57:23.000Z",
+        payment: paymentOccurredAt
+          ? {
+              amountCents: snapshot.price.payableCents,
+              occurredAt: paymentOccurredAt,
+              simulated: true,
+            }
+          : null,
+        refund: refundOccurredAt
+          ? {
+              amountCents: snapshot.price.payableCents,
+              occurredAt: refundOccurredAt,
+              reason: "customer-cancelled-before-start",
+              simulated: true,
+            }
+          : null,
+        related: { orders: [], repairs: [] },
+        reservationId: "00000000-0000-4000-8000-000000000708",
+        snapshot,
+        status: lifecycleStatus,
+        terminalReason: terminal ? "演示终态" : null,
+        timeline,
+      };
+      await serveJson(route, detail);
+    },
+  );
+  await page.route(
+    "**/api/v1/customer/reservations/*/simulated-payment",
+    async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      if (remainingPaymentFailures > 0) {
+        remainingPaymentFailures -= 1;
+        await route.fulfill({
+          json: {
+            error: {
+              code: "CUSTOMER_RESERVATION_PAYMENT_FAILED",
+              message: "模拟支付未完成；不会扣款，可使用原提交标识安全重试。",
+              requestId: crypto.randomUUID(),
+            },
+          },
+          status: 503,
+        });
+        return;
+      }
+      lifecycleStatus = "confirmed";
+      paymentOccurredAt = "2026-08-10T11:48:00.000Z";
+      timeline.push({
+        data: { doesNotCharge: true },
+        occurredAt: paymentOccurredAt,
+        type: "reservation.simulated-payment-succeeded",
+      });
+      await route.fulfill({
+        json: {
+          notice: "模拟支付，不会扣款，也不需要真实支付凭证。",
+          payment: {
+            amountCents: activeSnapshot?.price.payableCents ?? 0,
+            occurredAt: paymentOccurredAt,
+            simulated: true,
+          },
+          replayed: false,
+          reservationId: "00000000-0000-4000-8000-000000000708",
+          status: "confirmed",
+        },
+        status: 200,
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/customer/reservations/*/cancel",
+    async (route) => {
+      const body = route.request().postDataJSON() as { reason: string };
+      lifecycleStatus = "cancelled";
+      refundOccurredAt = "2026-08-10T11:49:00.000Z";
+      timeline.push({
+        data: { reason: body.reason },
+        occurredAt: refundOccurredAt,
+        type: "reservation.cancelled",
+      });
+      await route.fulfill({
+        json: {
+          cancelledAt: refundOccurredAt,
+          couponRestored: true,
+          refund: {
+            amountCents: activeSnapshot?.price.payableCents ?? 0,
+            occurredAt: refundOccurredAt,
+            reason: "customer-cancelled-before-start",
+            simulated: true,
+          },
+          replayed: false,
+          reservationId: "00000000-0000-4000-8000-000000000708",
+          status: "cancelled",
+        },
+        status: 200,
+      });
+    },
+  );
   await page.goto("/");
   await expect(page.getByTestId("customer-h5")).toBeVisible();
 }
@@ -555,6 +724,9 @@ test("WEB-C01 confirmation supports price details, coupon states, zero payable a
     page.getByRole("heading", { name: "预约已排他保留十分钟" }),
   ).toBeVisible();
   await expect(page.getByText("没有发生扣款")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "继续模拟支付（不扣款）" }),
+  ).toBeEnabled();
 
   const viewport = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,
@@ -620,4 +792,157 @@ test("catalog failure exposes an actionable retry", async ({ page }) => {
   ).toBeVisible();
   await page.getByRole("button", { name: "重新读取" }).click();
   await expect(page.getByRole("heading", { name: "三店浏览" })).toBeVisible();
+});
+
+async function createHeldReservation(page: Page) {
+  await page.getByRole("button", { name: "查找可订座位" }).click();
+  await page.getByRole("button", { name: /A-05，.*可订/u }).click();
+  await page.getByRole("button", { name: "继续确认" }).click();
+  await page.getByRole("button", { name: "创建十分钟保留" }).click();
+  await expect(
+    page.getByRole("heading", { name: "预约已排他保留十分钟" }),
+  ).toBeVisible();
+}
+
+test("WEB-C02 completes the no-charge payment, detail and full simulated refund journey at 360px", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  await openCustomerH5(page);
+  await createHeldReservation(page);
+
+  await page.getByRole("button", { name: "继续模拟支付（不扣款）" }).click();
+  await expect(
+    page.getByRole("heading", { name: "确认模拟支付" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("本次不会扣款，也不需要任何真实支付凭证。"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "确认模拟支付（不扣款）" }).click();
+  await expect(
+    page.getByRole("heading", { name: "正在完成模拟支付" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/不会扣款，也不会接触真实支付凭证/u),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "模拟支付成功" }),
+  ).toBeVisible();
+  await expect(page.getByText(/全程没有扣款/u)).toBeVisible();
+  await page.getByRole("button", { name: "查看预约详情" }).click();
+
+  await expect(
+    page
+      .locator(".customer-lifecycle-status-row")
+      .getByText("已确认", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(/到店窗口/u)).toBeVisible();
+  const lifecycleProgress = page.getByRole("list", {
+    name: "预约生命周期进度",
+  });
+  await expect(lifecycleProgress).toContainText("已确认");
+  await expect(lifecycleProgress).toContainText("已到店");
+  await expect(lifecycleProgress).toContainText("使用中");
+  await expect(page.getByText("竞技区 A-05", { exact: true })).toBeVisible();
+  await expect(page.getByText(/模拟支付成功（未扣款）/u)).toBeVisible();
+  await page.getByRole("button", { name: "取消预约" }).click();
+  await expect(
+    page.getByRole("heading", { name: "确认取消预约？" }),
+  ).toBeVisible();
+  await page.getByPlaceholder("请输入 1–200 字原因").fill("行程变更");
+  await page.getByRole("button", { name: "确认取消预约" }).click();
+  await expect(page.getByText("已取消", { exact: true })).toBeVisible();
+  await expect(page.getByText("模拟退款已记录")).toBeVisible();
+  await expect(page.getByText("不对应真实资金")).toBeVisible();
+  await expect(page.getByRole("button", { name: "再次预约" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "取消预约" })).toHaveCount(0);
+
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+  const undersizedControls = await page
+    .locator(".customer-h5 button:visible:not(:disabled)")
+    .evaluateAll((buttons) =>
+      buttons
+        .map((button) => ({
+          height: button.getBoundingClientRect().height,
+          label: button.textContent ?? "",
+          width: button.getBoundingClientRect().width,
+        }))
+        .filter((button) => button.height < 44 || button.width < 44),
+    );
+  expect(undersizedControls).toEqual([]);
+});
+
+test("WEB-C02 retries a recoverable payment failure with the original idempotency key", async ({
+  page,
+}) => {
+  const paymentKeys: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/simulated-payment")) {
+      paymentKeys.push(request.headers()["idempotency-key"] ?? "");
+    }
+  });
+  await page.setViewportSize({ height: 800, width: 360 });
+  await openCustomerH5(page, { paymentFailures: 1 });
+  await createHeldReservation(page);
+  await page.getByRole("button", { name: "继续模拟支付（不扣款）" }).click();
+  await page.getByRole("button", { name: "确认模拟支付（不扣款）" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "模拟支付尚未完成" }),
+  ).toBeVisible();
+  await expect(page.getByText("确认没有扣款")).toBeVisible();
+  await page.getByRole("button", { name: "使用原提交标识安全重试" }).click();
+  await expect(
+    page.getByRole("heading", { name: "模拟支付成功" }),
+  ).toBeVisible();
+  expect(paymentKeys).toHaveLength(2);
+  expect(paymentKeys[1]).toBe(paymentKeys[0]);
+});
+
+test("WEB-C02 renders all seven reservation states without exposing illegal main actions", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  await openCustomerH5(page, {
+    detailStatuses: [
+      "pending-confirmation",
+      "confirmed",
+      "arrived",
+      "in-use",
+      "completed",
+      "cancelled",
+      "expired",
+    ],
+  });
+  await createHeldReservation(page);
+  await page.getByRole("button", { name: "查看预约详情" }).click();
+
+  await expect(
+    page.getByRole("list", { name: "预约生命周期进度" }),
+  ).toBeVisible();
+
+  const labels = [
+    "待确认",
+    "已确认",
+    "已到店",
+    "使用中",
+    "已完成",
+    "已取消",
+    "已过期",
+  ];
+  const statusRow = page.locator(".customer-lifecycle-status-row");
+  await expect(statusRow.getByText(labels[0]!, { exact: true })).toBeVisible();
+  for (const label of labels.slice(1)) {
+    await page.getByRole("button", { name: /刷新当前状态/u }).click();
+    await expect(statusRow.getByText(label, { exact: true })).toBeVisible();
+  }
+  await expect(page.getByRole("button", { name: "再次预约" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "取消预约" })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "继续模拟支付（不扣款）" }),
+  ).toHaveCount(0);
 });

@@ -4305,6 +4305,612 @@ strong {
   font-size: 21px;
 }
 
+/* Ticket 08 — reservation payment lifecycle */
+
+.customer-held-actions,
+.customer-lifecycle-actions {
+  width: 100%;
+  display: grid;
+  gap: 10px;
+}
+
+.customer-held-actions .customer-primary-button,
+.customer-lifecycle-actions .customer-primary-button {
+  width: 100%;
+}
+
+.customer-payment-secondary,
+.customer-danger-button {
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid #3c5c6b;
+  border-radius: 9px;
+  color: #bcd0d9;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.customer-payment-secondary:disabled {
+  color: #667983;
+  cursor: not-allowed;
+}
+
+.customer-payment-secondary svg {
+  width: 17px;
+  height: 17px;
+}
+
+.customer-danger-button {
+  border-color: #815044;
+  background: #2c1d1b;
+  color: #ffb5a1;
+}
+
+.customer-payment-flow {
+  min-height: calc(100% - 70px);
+}
+
+.customer-payment-stage {
+  min-height: 610px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 13px;
+  padding: 28px 18px;
+  text-align: center;
+}
+
+.customer-payment-stage-icon {
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #2b5367;
+  border-radius: 50%;
+  background: #102331;
+  color: var(--cyan);
+  box-shadow: 0 0 0 9px rgb(34 213 255 / 4%);
+}
+
+.customer-payment-stage-icon svg {
+  width: 31px;
+  height: 31px;
+}
+
+.customer-payment-stage h1,
+.customer-payment-stage p {
+  margin: 0;
+}
+
+.customer-payment-stage h1 {
+  font-size: 24px;
+  letter-spacing: -0.04em;
+}
+
+.customer-payment-stage p {
+  max-width: 310px;
+  color: #899da8;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.customer-payment-stage > strong {
+  margin: 8px 0 2px;
+  color: var(--lime);
+  font-size: 31px;
+  letter-spacing: -0.045em;
+}
+
+.customer-payment-brief {
+  width: 100%;
+  display: grid;
+  gap: 6px;
+  margin-bottom: 4px;
+  padding: 14px 0;
+  border-block: 1px solid #223a47;
+  color: #849aa5;
+  font-size: 9px;
+}
+
+.customer-payment-stage > .customer-primary-button,
+.customer-payment-stage > .customer-payment-secondary,
+.customer-payment-stage > .customer-no-charge-notice {
+  width: 100%;
+}
+
+.customer-payment-stage.is-processing .customer-payment-stage-icon svg {
+  animation: ticket08-hourglass 1.2s ease-in-out infinite;
+}
+
+.customer-payment-stage.is-processing > small {
+  color: #718791;
+  font-size: 9px;
+}
+
+.customer-payment-stage.is-success .customer-payment-stage-icon {
+  border-color: #578a45;
+  background: #18351f;
+  color: var(--lime);
+}
+
+.customer-payment-stage.is-failure .customer-payment-stage-icon {
+  border-color: #845044;
+  background: #2d1d1a;
+  color: #ff9b82;
+}
+
+.customer-payment-progress {
+  width: min(240px, 80%);
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #213743;
+}
+
+.customer-payment-progress::after {
+  width: 42%;
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: var(--lime);
+  content: "";
+  animation: ticket08-progress 1.2s ease-in-out infinite;
+}
+
+@keyframes ticket08-hourglass {
+  50% {
+    transform: rotate(180deg);
+  }
+}
+
+@keyframes ticket08-progress {
+  from {
+    transform: translateX(-120%);
+  }
+
+  to {
+    transform: translateX(340%);
+  }
+}
+
+.customer-lifecycle-detail {
+  padding-bottom: 28px;
+}
+
+.customer-lifecycle-loading {
+  min-height: 420px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  color: #91a8b3;
+  text-align: center;
+}
+
+.customer-lifecycle-loading > svg {
+  width: 38px;
+  height: 38px;
+  color: var(--cyan);
+}
+
+.customer-lifecycle-loading > strong {
+  color: #eff6f8;
+  font-size: 18px;
+}
+
+.customer-lifecycle-loading > span {
+  font-size: 10px;
+}
+
+.customer-lifecycle-loading .customer-primary-button {
+  min-width: 180px;
+  margin-top: 8px;
+}
+
+.customer-arrival-card {
+  min-height: 105px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 17px;
+  border: 1px solid #2d4f61;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #102837, #0b1923);
+}
+
+.customer-arrival-card > div {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.customer-arrival-card strong {
+  font-size: 17px;
+  line-height: 1.35;
+}
+
+.customer-arrival-card small {
+  color: #7f949f;
+  font-size: 9px;
+}
+
+.customer-arrival-card > svg {
+  width: 38px;
+  height: 38px;
+  color: var(--lime);
+}
+
+.customer-lifecycle-status-row {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 0 4px;
+}
+
+.customer-lifecycle-status-row > span {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid #4b616c;
+  border-radius: 999px;
+  color: #b5c6ce;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.customer-lifecycle-status-row > span.is-active {
+  border-color: #589242;
+  background: #182d1d;
+  color: var(--lime);
+}
+
+.customer-lifecycle-status-row > span.is-pending {
+  border-color: #3e7d92;
+  background: #102b37;
+  color: var(--cyan);
+}
+
+.customer-lifecycle-status-row > span.is-terminal {
+  border-color: #6a5960;
+  background: #231e23;
+  color: #d2bec8;
+}
+
+.customer-lifecycle-status-row > strong {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #91a7b1;
+  font-size: 9px;
+}
+
+.customer-lifecycle-status-row svg {
+  width: 15px;
+  height: 15px;
+  color: var(--cyan);
+}
+
+.customer-lifecycle-progress {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-height: 49px;
+  margin: -2px 0 5px;
+  padding: 0;
+  list-style: none;
+}
+
+.customer-lifecycle-progress::before {
+  position: absolute;
+  top: 11px;
+  left: 16.66%;
+  right: 16.66%;
+  height: 1px;
+  background: #29404c;
+  content: "";
+}
+
+.customer-lifecycle-progress li {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 5px;
+  color: #607681;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.customer-lifecycle-progress i {
+  width: 23px;
+  height: 23px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #36505d;
+  border-radius: 50%;
+  background: #0a1720;
+  font-size: 8px;
+  font-style: normal;
+}
+
+.customer-lifecycle-progress li.is-current,
+.customer-lifecycle-progress li.is-complete {
+  color: #80c9e4;
+}
+
+.customer-lifecycle-progress li.is-current i,
+.customer-lifecycle-progress li.is-complete i {
+  border-color: #4c9fbd;
+  box-shadow: 0 0 0 2px rgb(45 111 136 / 18%);
+  color: #b5edff;
+}
+
+.customer-lifecycle-progress li.is-complete i {
+  border-color: #719f45;
+  color: var(--lime);
+}
+
+.customer-lifecycle-card {
+  padding: 16px;
+  border: 1px solid var(--customer-line);
+  border-radius: 12px;
+  background: var(--customer-card);
+}
+
+.customer-lifecycle-facts {
+  display: grid;
+  margin: 0;
+}
+
+.customer-lifecycle-facts > div {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid #243a45;
+}
+
+.customer-lifecycle-facts dt {
+  color: #7f949f;
+  font-size: 9px;
+}
+
+.customer-lifecycle-facts dd {
+  margin: 0;
+  color: #e7eef1;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.customer-lifecycle-price-detail {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0 2px;
+  border-top: 1px solid #273e4a;
+}
+
+.customer-lifecycle-price-detail > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #8096a1;
+  font-size: 9px;
+}
+
+.customer-lifecycle-price-detail strong {
+  color: #e7f0f3;
+  font-size: 10px;
+  text-align: right;
+}
+
+.customer-refund-card,
+.customer-related-empty {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid #41643a;
+  border-radius: 10px;
+  background: #14261a;
+  color: #a9bda1;
+  font-size: 9px;
+}
+
+.customer-refund-card > svg,
+.customer-related-empty > svg {
+  width: 23px;
+  height: 23px;
+  color: var(--lime);
+}
+
+.customer-refund-card > span,
+.customer-related-empty > span {
+  display: grid;
+  gap: 4px;
+}
+
+.customer-refund-card strong,
+.customer-related-empty strong {
+  color: #eef7ea;
+  font-size: 11px;
+}
+
+.customer-refund-card em {
+  color: #849980;
+  font-size: 8px;
+  font-style: normal;
+}
+
+.customer-lifecycle-timeline {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.customer-lifecycle-timeline li {
+  min-height: 55px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 9px;
+  position: relative;
+}
+
+.customer-lifecycle-timeline li:not(:last-child)::before {
+  width: 1px;
+  position: absolute;
+  top: 19px;
+  bottom: -4px;
+  left: 6px;
+  background: #355260;
+  content: "";
+}
+
+.customer-lifecycle-timeline i {
+  width: 13px;
+  height: 13px;
+  margin-top: 3px;
+  border: 3px solid #16313d;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 0 1px #3f7b90;
+}
+
+.customer-lifecycle-timeline span {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+}
+
+.customer-lifecycle-timeline strong {
+  font-size: 10px;
+}
+
+.customer-lifecycle-timeline small {
+  color: #778d98;
+  font-size: 8px;
+}
+
+.customer-related-empty {
+  grid-template-columns: 24px minmax(0, 1fr);
+  border-color: #34515f;
+  background: #0d212b;
+  color: #8399a3;
+}
+
+.customer-related-empty > svg {
+  color: var(--cyan);
+}
+
+.customer-cancel-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  align-items: end;
+  padding: 14px;
+  background: rgb(2 9 14 / 78%);
+  backdrop-filter: blur(5px);
+}
+
+.customer-cancel-dialog {
+  width: min(100%, 490px);
+  display: grid;
+  gap: 12px;
+  margin: 0 auto;
+  padding: 19px;
+  border: 1px solid #405c69;
+  border-radius: 16px 16px 10px 10px;
+  background: #0c1d27;
+  box-shadow: 0 -18px 50px rgb(0 0 0 / 45%);
+}
+
+.customer-cancel-dialog h2,
+.customer-cancel-dialog p {
+  margin: 0;
+}
+
+.customer-cancel-dialog h2 {
+  font-size: 21px;
+}
+
+.customer-cancel-dialog p {
+  color: #8ca1ac;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.customer-cancel-dialog label {
+  display: grid;
+  gap: 7px;
+  color: #a8bac3;
+  font-size: 10px;
+}
+
+.customer-cancel-dialog textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  padding: 11px;
+  border: 1px solid #3b5665;
+  border-radius: 8px;
+  background: #07151e;
+  color: #f2f7f9;
+  font: inherit;
+}
+
+.customer-cancel-dialog textarea:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.customer-cancel-dialog > div:last-child {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}
+
+.customer-cancel-dialog > div:last-child button {
+  min-height: 46px;
+  border: 1px solid #3d5967;
+  border-radius: 8px;
+  color: #bfd0d7;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.customer-cancel-dialog > div:last-child button:last-child {
+  border-color: #845145;
+  background: #7c352b;
+  color: #fff4f0;
+}
+
+.customer-cancel-dialog button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.customer-cancel-error {
+  padding: 9px 10px;
+  border-left: 3px solid #ff9b82;
+  background: #2a1b19;
+  color: #ffc2b2;
+  font-size: 9px;
+}
+
 .customer-bottom-nav {
   min-height: 60px;
   position: sticky;

@@ -71,6 +71,13 @@
       "when": 1786294800000,
       "tag": "0009_reservation_hold_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786294800001,
+      "tag": "0010_reservation_payment_lifecycle",
+      "breakpoints": true
     }
   ]
 }

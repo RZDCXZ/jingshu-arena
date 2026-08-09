@@ -111,3 +111,23 @@ export class CustomerReservationIdempotencyConflictError extends Error {
     this.name = "CustomerReservationIdempotencyConflictError";
   }
 }
+
+export type CustomerReservationLifecycleConflictReason =
+  "hold-expired" | "illegal-transition" | "not-found" | "reservation-started";
+
+export class CustomerReservationLifecycleConflictError extends Error {
+  readonly code = "CUSTOMER_RESERVATION_LIFECYCLE_CONFLICT";
+  readonly currentStatus: ReservationStatus | null;
+  readonly reason: CustomerReservationLifecycleConflictReason;
+
+  constructor(
+    reason: CustomerReservationLifecycleConflictReason,
+    currentStatus: ReservationStatus | null = null,
+  ) {
+    super(`Customer reservation lifecycle command was rejected: ${reason}.`);
+    this.name = "CustomerReservationLifecycleConflictError";
+    this.currentStatus = currentStatus;
+    this.reason = reason;
+  }
+}
+import type { ReservationStatus } from "@jingshu/domain";

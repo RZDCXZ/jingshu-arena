@@ -4,14 +4,20 @@ import type { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import {
   CUSTOMER_MACHINE_PROFILE_CODES,
+  type CancelCustomerReservationRequest,
   type CreateCustomerPendingReservationRequest,
   type CustomerMachineProfileCode,
   type CustomerPendingReservationResponse,
+  type CustomerReservationCancellationResponse,
+  type CustomerReservationDetailResponse,
+  type CustomerReservationPaymentResponse,
   type CustomerSeatAvailabilityResponse,
   type CustomerStoreCatalogResponse,
 } from "@jingshu/contracts";
 import {
   type CustomerReservationCreateConflictError,
+  type CustomerReservationLifecycleConflictError,
+  type CustomerReservationLifecycleConflictReason,
   type CustomerSeatBrowseValidationError,
   type CustomerSeatBrowseValidationReason,
 } from "@jingshu/database";
@@ -34,6 +40,13 @@ const machineProfileCodes = new Set<CustomerMachineProfileCode>(
 );
 const safeCodePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const safeSeatCodePattern = /^[A-Z]-\d{2}$/u;
+
+function containsUnsafeReasonCharacter(value: string) {
+  return Array.from(value).some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code < 32 || code === 127;
+  });
+}
 
 const validationErrors: Record<
   CustomerSeatBrowseValidationReason,
@@ -129,6 +142,86 @@ function customerContextError(
       requestId,
     ),
     status: 503,
+  };
+}
+
+function isCustomerReservationLifecycleConflictError(
+  error: unknown,
+): error is CustomerReservationLifecycleConflictError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "CUSTOMER_RESERVATION_LIFECYCLE_CONFLICT" &&
+    "reason" in error &&
+    typeof error.reason === "string"
+  );
+}
+
+function lifecycleConflictResponse(
+  error: CustomerReservationLifecycleConflictError,
+  requestId: string,
+) {
+  const failures: Record<
+    CustomerReservationLifecycleConflictReason,
+    { code: string; message: string; status: 404 | 409 }
+  > = {
+    "hold-expired": {
+      code: "CUSTOMER_RESERVATION_HOLD_EXPIRED",
+      message: "预约保留已到期，未产生扣款；请返回重新选座。",
+      status: 409,
+    },
+    "illegal-transition": {
+      code: "CUSTOMER_RESERVATION_ILLEGAL_TRANSITION",
+      message: "当前预约状态不允许执行此操作，请刷新详情后继续。",
+      status: 409,
+    },
+    "not-found": {
+      code: "CUSTOMER_RESERVATION_NOT_FOUND",
+      message: "未找到属于当前顾客的预约记录。",
+      status: 404,
+    },
+    "reservation-started": {
+      code: "CUSTOMER_RESERVATION_ALREADY_STARTED",
+      message: "预约已到开始时间，不能再由顾客取消。",
+      status: 409,
+    },
+  };
+  const failure = failures[error.reason];
+  return {
+    body: {
+      error: {
+        ...errorBody(failure.code, failure.message, requestId).error,
+        ...(error.currentStatus ? { currentStatus: error.currentStatus } : {}),
+      },
+    },
+    status: failure.status,
+  } as const;
+}
+
+function reservationSnapshotResponse(
+  snapshot: Awaited<
+    ReturnType<
+      NonNullable<
+        AppServices["sandboxDatabase"]
+      >["readCustomerReservationDetail"]
+    >
+  >["snapshot"],
+): CustomerPendingReservationResponse["snapshot"] {
+  return {
+    ...snapshot,
+    price: {
+      ...snapshot.price,
+      segments: snapshot.price.segments.map((segment) => ({
+        ...segment,
+        endsAt: segment.endsAt.toISOString(),
+        startsAt: segment.startsAt.toISOString(),
+      })),
+    },
+    window: {
+      endsAt: snapshot.window.endsAt.toISOString(),
+      startsAt: snapshot.window.startsAt.toISOString(),
+    },
   };
 }
 
@@ -568,4 +661,459 @@ export function registerCustomerSeatBrowseRoutes(
       );
     }
   });
+
+  app.get("/api/v1/customer/reservations/:reservationId", async (context) => {
+    const requestId = randomUUID();
+    context.header("X-Request-Id", requestId);
+    context.header("Cache-Control", "no-store");
+    if (!services.sandboxDatabase || !services.sessionSecret) {
+      return context.json(
+        errorBody(
+          "CUSTOMER_RESERVATION_SERVICE_UNAVAILABLE",
+          "预约详情暂时无法读取，请稍后安全重试。",
+          requestId,
+        ),
+        503,
+      );
+    }
+    const session = readRoleSession(
+      getCookie(context, SESSION_COOKIE),
+      services.sessionSecret,
+    );
+    if (!session) {
+      return context.json(
+        errorBody(
+          "ROLE_CONTEXT_REQUIRED",
+          "演示角色上下文已失效，请返回公开入口重新选择。",
+          requestId,
+        ),
+        401,
+      );
+    }
+    if (session.role !== "customer") {
+      await recordRoleContextDenial(
+        services,
+        session,
+        requestId,
+        "capability_denied",
+      );
+      return context.json(
+        errorBody(
+          "CUSTOMER_ROLE_REQUIRED",
+          "请切换到顾客角色后查看自己的预约。",
+          requestId,
+        ),
+        403,
+      );
+    }
+    const reservationId = context.req.param("reservationId");
+    if (!UUID_V4_PATTERN.test(reservationId)) {
+      return context.json(
+        errorBody(
+          "CUSTOMER_RESERVATION_ID_INVALID",
+          "预约标识无效，请返回预约记录重新进入。",
+          requestId,
+        ),
+        400,
+      );
+    }
+
+    try {
+      const detail =
+        await services.sandboxDatabase.readCustomerReservationDetail({
+          contextVersion: session.contextVersion,
+          personaId: session.personaId,
+          reservationId,
+          role: session.role,
+          sandboxId: session.sandboxId,
+        });
+      return context.json({
+        actions: detail.actions,
+        arrivalWindow: {
+          closesAt: detail.arrivalWindow.closesAt.toISOString(),
+          opensAt: detail.arrivalWindow.opensAt.toISOString(),
+        },
+        cancelledAt: detail.cancelledAt?.toISOString() ?? null,
+        confirmedAt: detail.confirmedAt?.toISOString() ?? null,
+        coupon: detail.coupon,
+        currentTime: detail.currentTime.toISOString(),
+        expiredAt: detail.expiredAt?.toISOString() ?? null,
+        holdExpiresAt: detail.holdExpiresAt?.toISOString() ?? null,
+        payment: detail.payment
+          ? {
+              ...detail.payment,
+              occurredAt: detail.payment.occurredAt.toISOString(),
+            }
+          : null,
+        refund: detail.refund
+          ? {
+              ...detail.refund,
+              occurredAt: detail.refund.occurredAt.toISOString(),
+            }
+          : null,
+        related: detail.related,
+        reservationId: detail.reservationId,
+        snapshot: reservationSnapshotResponse(detail.snapshot),
+        status: detail.status,
+        terminalReason: detail.terminalReason,
+        timeline: detail.events.map((event) => ({
+          ...event,
+          occurredAt: event.occurredAt.toISOString(),
+        })),
+      } satisfies CustomerReservationDetailResponse);
+    } catch (error) {
+      const contextFailure = customerContextError(error, requestId);
+      if (contextFailure.status !== 503) {
+        return context.json(contextFailure.body, contextFailure.status);
+      }
+      if (isCustomerReservationLifecycleConflictError(error)) {
+        const failure = lifecycleConflictResponse(error, requestId);
+        return context.json(failure.body, failure.status);
+      }
+      return context.json(
+        errorBody(
+          "CUSTOMER_RESERVATION_READ_FAILED",
+          "预约详情暂时无法读取，请稍后安全重试。",
+          requestId,
+        ),
+        503,
+      );
+    }
+  });
+
+  app.post(
+    "/api/v1/customer/reservations/:reservationId/simulated-payment",
+    async (context) => {
+      const requestId = randomUUID();
+      context.header("X-Request-Id", requestId);
+      context.header("Cache-Control", "no-store");
+      if (!services.sandboxDatabase || !services.sessionSecret) {
+        return context.json(
+          errorBody(
+            "CUSTOMER_RESERVATION_PAYMENT_UNAVAILABLE",
+            "模拟支付暂时不可用；不会扣款，也没有留下部分状态。",
+            requestId,
+          ),
+          503,
+        );
+      }
+      const session = readRoleSession(
+        getCookie(context, SESSION_COOKIE),
+        services.sessionSecret,
+      );
+      if (!session) {
+        return context.json(
+          errorBody(
+            "ROLE_CONTEXT_REQUIRED",
+            "演示角色上下文已失效，请返回公开入口重新选择。",
+            requestId,
+          ),
+          401,
+        );
+      }
+      if (session.role !== "customer") {
+        await recordRoleContextDenial(
+          services,
+          session,
+          requestId,
+          "capability_denied",
+        );
+        return context.json(
+          errorBody(
+            "CUSTOMER_ROLE_REQUIRED",
+            "请切换到顾客角色后确认自己的预约。",
+            requestId,
+          ),
+          403,
+        );
+      }
+      const origin = context.req.header("Origin");
+      if (!origin || !services.allowedOrigins.has(origin)) {
+        await recordRoleContextDenial(
+          services,
+          session,
+          requestId,
+          "invalid_origin",
+        );
+        return context.json(
+          errorBody(
+            "INVALID_REQUEST_ORIGIN",
+            "请求来源无法验证；不会扣款，也不会改变预约。",
+            requestId,
+          ),
+          403,
+        );
+      }
+      if (
+        !csrfTokensMatch(session.csrfToken, context.req.header("X-CSRF-Token"))
+      ) {
+        await recordRoleContextDenial(
+          services,
+          session,
+          requestId,
+          "csrf_context_mismatch",
+        );
+        return context.json(
+          errorBody(
+            "ROLE_CONTEXT_STALE",
+            "当前标签的写入上下文已失效，请刷新后重试。",
+            requestId,
+          ),
+          409,
+        );
+      }
+      const reservationId = context.req.param("reservationId");
+      const idempotencyKey = context.req.header("Idempotency-Key");
+      if (
+        !UUID_V4_PATTERN.test(reservationId) ||
+        !idempotencyKey ||
+        !UUID_V4_PATTERN.test(idempotencyKey)
+      ) {
+        return context.json(
+          errorBody(
+            "CUSTOMER_RESERVATION_PAYMENT_REQUEST_INVALID",
+            "模拟支付请求已失效，请刷新预约详情后重试。",
+            requestId,
+          ),
+          400,
+        );
+      }
+      const rawBody = await context.req.text();
+      if (rawBody.trim() !== "" && rawBody.trim() !== "{}") {
+        return context.json(
+          errorBody(
+            "CUSTOMER_RESERVATION_PAYMENT_REQUEST_INVALID",
+            "模拟支付不接收支付凭证、账号或其他真实支付资料。",
+            requestId,
+          ),
+          400,
+        );
+      }
+
+      try {
+        const result =
+          await services.sandboxDatabase.simulateCustomerReservationPayment({
+            contextVersion: session.contextVersion,
+            idempotencyKey,
+            personaId: session.personaId,
+            requestId,
+            reservationId,
+            role: session.role,
+            sandboxId: session.sandboxId,
+          });
+        return context.json({
+          notice: "模拟支付，不会扣款，也不需要真实支付凭证。",
+          payment: {
+            ...result.payment,
+            occurredAt: result.payment.occurredAt.toISOString(),
+          },
+          replayed: result.replayed,
+          reservationId: result.reservationId,
+          status: result.status,
+        } satisfies CustomerReservationPaymentResponse);
+      } catch (error) {
+        const contextFailure = customerContextError(error, requestId);
+        if (contextFailure.status !== 503) {
+          return context.json(contextFailure.body, contextFailure.status);
+        }
+        if (isCustomerReservationLifecycleConflictError(error)) {
+          const failure = lifecycleConflictResponse(error, requestId);
+          return context.json(failure.body, failure.status);
+        }
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "CUSTOMER_RESERVATION_IDEMPOTENCY_CONFLICT"
+        ) {
+          return context.json(
+            errorBody(
+              "CUSTOMER_RESERVATION_IDEMPOTENCY_CONFLICT",
+              "该提交标识已用于另一条预约，请刷新详情后重新提交。",
+              requestId,
+            ),
+            409,
+          );
+        }
+        return context.json(
+          errorBody(
+            "CUSTOMER_RESERVATION_PAYMENT_FAILED",
+            "模拟支付未能完整完成；不会扣款，可使用原提交标识安全重试。",
+            requestId,
+          ),
+          503,
+        );
+      }
+    },
+  );
+
+  app.post(
+    "/api/v1/customer/reservations/:reservationId/cancel",
+    async (context) => {
+      const requestId = randomUUID();
+      context.header("X-Request-Id", requestId);
+      context.header("Cache-Control", "no-store");
+      if (!services.sandboxDatabase || !services.sessionSecret) {
+        return context.json(
+          errorBody(
+            "CUSTOMER_RESERVATION_CANCEL_UNAVAILABLE",
+            "取消预约暂时不可用，没有留下部分退款或券状态。",
+            requestId,
+          ),
+          503,
+        );
+      }
+      const session = readRoleSession(
+        getCookie(context, SESSION_COOKIE),
+        services.sessionSecret,
+      );
+      if (!session) {
+        return context.json(
+          errorBody(
+            "ROLE_CONTEXT_REQUIRED",
+            "演示角色上下文已失效，请返回公开入口重新选择。",
+            requestId,
+          ),
+          401,
+        );
+      }
+      if (session.role !== "customer") {
+        await recordRoleContextDenial(
+          services,
+          session,
+          requestId,
+          "capability_denied",
+        );
+        return context.json(
+          errorBody(
+            "CUSTOMER_ROLE_REQUIRED",
+            "请切换到顾客角色后取消自己的预约。",
+            requestId,
+          ),
+          403,
+        );
+      }
+      const origin = context.req.header("Origin");
+      if (!origin || !services.allowedOrigins.has(origin)) {
+        await recordRoleContextDenial(
+          services,
+          session,
+          requestId,
+          "invalid_origin",
+        );
+        return context.json(
+          errorBody(
+            "INVALID_REQUEST_ORIGIN",
+            "请求来源无法验证，预约、退款和体验券均未改变。",
+            requestId,
+          ),
+          403,
+        );
+      }
+      if (
+        !csrfTokensMatch(session.csrfToken, context.req.header("X-CSRF-Token"))
+      ) {
+        await recordRoleContextDenial(
+          services,
+          session,
+          requestId,
+          "csrf_context_mismatch",
+        );
+        return context.json(
+          errorBody(
+            "ROLE_CONTEXT_STALE",
+            "当前标签的写入上下文已失效，请刷新后重试。",
+            requestId,
+          ),
+          409,
+        );
+      }
+      const reservationId = context.req.param("reservationId");
+      const idempotencyKey = context.req.header("Idempotency-Key");
+      const parsed: unknown = await context.req.json().catch(() => null);
+      const body = isPlainRecord(parsed) ? parsed : null;
+      const allowedKeys = new Set(["reason"]);
+      const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
+      if (
+        !UUID_V4_PATTERN.test(reservationId) ||
+        !idempotencyKey ||
+        !UUID_V4_PATTERN.test(idempotencyKey) ||
+        !body ||
+        Object.keys(body).some((key) => !allowedKeys.has(key)) ||
+        reason.length === 0 ||
+        reason.length > 200 ||
+        containsUnsafeReasonCharacter(reason)
+      ) {
+        return context.json(
+          errorBody(
+            "CUSTOMER_RESERVATION_CANCEL_REQUEST_INVALID",
+            "请填写 1–200 字且不含控制字符的取消原因。",
+            requestId,
+          ),
+          400,
+        );
+      }
+
+      try {
+        const request = body as unknown as CancelCustomerReservationRequest;
+        const result = await services.sandboxDatabase.cancelCustomerReservation(
+          {
+            contextVersion: session.contextVersion,
+            idempotencyKey,
+            personaId: session.personaId,
+            reason: request.reason.trim(),
+            requestId,
+            reservationId,
+            role: session.role,
+            sandboxId: session.sandboxId,
+          },
+        );
+        return context.json({
+          cancelledAt: result.cancelledAt.toISOString(),
+          couponRestored: result.couponRestored,
+          refund: result.refund
+            ? {
+                ...result.refund,
+                occurredAt: result.refund.occurredAt.toISOString(),
+              }
+            : null,
+          replayed: result.replayed,
+          reservationId: result.reservationId,
+          status: result.status,
+        } satisfies CustomerReservationCancellationResponse);
+      } catch (error) {
+        const contextFailure = customerContextError(error, requestId);
+        if (contextFailure.status !== 503) {
+          return context.json(contextFailure.body, contextFailure.status);
+        }
+        if (isCustomerReservationLifecycleConflictError(error)) {
+          const failure = lifecycleConflictResponse(error, requestId);
+          return context.json(failure.body, failure.status);
+        }
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "CUSTOMER_RESERVATION_IDEMPOTENCY_CONFLICT"
+        ) {
+          return context.json(
+            errorBody(
+              "CUSTOMER_RESERVATION_IDEMPOTENCY_CONFLICT",
+              "该取消标识已用于另一组内容，请刷新详情后重新提交。",
+              requestId,
+            ),
+            409,
+          );
+        }
+        return context.json(
+          errorBody(
+            "CUSTOMER_RESERVATION_CANCEL_FAILED",
+            "取消未能完整完成；没有留下部分退款或券状态，可使用原提交标识安全重试。",
+            requestId,
+          ),
+          503,
+        );
+      }
+    },
+  );
 }

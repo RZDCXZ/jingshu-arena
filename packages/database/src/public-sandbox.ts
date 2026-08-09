@@ -6,12 +6,14 @@ import type { PublicRole } from "@jingshu/contracts";
 import {
   buildPublicSandboxSeed,
   type CustomerReservationMode,
+  decideReservationLifecycle,
   deriveSeatAvailability,
   evaluateReservationCoupon,
   type MachineProfileCode,
   priceReservationWindow,
   type ReservationPriceRule,
   type ReservationCouponEligibility,
+  type ReservationStatus,
   resolveCustomerReservationWindow,
   type SeatAvailability,
   sandboxBusinessTimeAt,
@@ -22,6 +24,7 @@ import {
 import {
   CustomerReservationCreateConflictError,
   CustomerReservationIdempotencyConflictError,
+  CustomerReservationLifecycleConflictError,
   CustomerSeatBrowseValidationError,
   PublicSandboxIdempotencyConflictError,
   PublicSandboxOwnershipConflictError,
@@ -205,6 +208,91 @@ export interface DatabaseCustomerPendingReservation {
   };
 }
 
+export interface ReadCustomerReservationDetailInput extends CustomerBrowseContextInput {
+  readonly reservationId: string;
+}
+
+export interface SimulateCustomerReservationPaymentInput extends ReadCustomerReservationDetailInput {
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+}
+
+export interface CancelCustomerReservationInput extends ReadCustomerReservationDetailInput {
+  readonly idempotencyKey: string;
+  readonly reason: string;
+  readonly requestId: string;
+}
+
+export interface DatabaseCustomerReservationPayment {
+  readonly payment: {
+    readonly amountCents: number;
+    readonly occurredAt: Date;
+    readonly simulated: true;
+  };
+  readonly replayed: boolean;
+  readonly reservationId: string;
+  readonly status: "confirmed";
+}
+
+export interface DatabaseCustomerReservationCancellation {
+  readonly cancelledAt: Date;
+  readonly couponRestored: boolean;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly occurredAt: Date;
+    readonly reason: "customer-cancelled-before-start";
+    readonly simulated: true;
+  } | null;
+  readonly replayed: boolean;
+  readonly reservationId: string;
+  readonly status: "cancelled";
+}
+
+export interface DatabaseCustomerReservationDetail {
+  readonly actions: {
+    readonly canCancel: boolean;
+    readonly canSimulatePayment: boolean;
+  };
+  readonly arrivalWindow: {
+    readonly closesAt: Date;
+    readonly opensAt: Date;
+  };
+  readonly cancelledAt: Date | null;
+  readonly confirmedAt: Date | null;
+  readonly coupon:
+    | (DatabaseCustomerPendingReservation["snapshot"]["coupon"] & {
+        readonly status: "available" | "expired" | "redeemed" | "reserved";
+      })
+    | null;
+  readonly currentTime: Date;
+  readonly events: ReadonlyArray<{
+    readonly data: unknown;
+    readonly occurredAt: Date;
+    readonly type: string;
+  }>;
+  readonly expiredAt: Date | null;
+  readonly holdExpiresAt: Date | null;
+  readonly payment: {
+    readonly amountCents: number;
+    readonly occurredAt: Date;
+    readonly simulated: true;
+  } | null;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly occurredAt: Date;
+    readonly reason: string;
+    readonly simulated: true;
+  } | null;
+  readonly related: {
+    readonly orders: ReadonlyArray<never>;
+    readonly repairs: ReadonlyArray<never>;
+  };
+  readonly reservationId: string;
+  readonly snapshot: DatabaseCustomerPendingReservation["snapshot"];
+  readonly status: ReservationStatus;
+  readonly terminalReason: string | null;
+}
+
 export interface ReadCurrentRoleContextInput {
   sandboxId: string;
   claimRole?: PublicRole;
@@ -261,16 +349,25 @@ export interface DatabaseRoleContext {
 }
 
 export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
+  cancelCustomerReservation(
+    input: CancelCustomerReservationInput,
+  ): Promise<DatabaseCustomerReservationCancellation>;
   create(input: CreatePublicSandboxInput): Promise<PublicSandboxResult>;
   createCustomerPendingReservation(
     input: CreateCustomerPendingReservationInput,
   ): Promise<DatabaseCustomerPendingReservation>;
+  simulateCustomerReservationPayment(
+    input: SimulateCustomerReservationPaymentInput,
+  ): Promise<DatabaseCustomerReservationPayment>;
   readCurrentRoleContext(
     input: ReadCurrentRoleContextInput,
   ): Promise<DatabaseRoleContext>;
   readCustomerSeatAvailability(
     input: ReadCustomerSeatAvailabilityInput,
   ): Promise<DatabaseCustomerSeatAvailability>;
+  readCustomerReservationDetail(
+    input: ReadCustomerReservationDetailInput,
+  ): Promise<DatabaseCustomerReservationDetail>;
   readCustomerStoreCatalog(
     input: CustomerBrowseContextInput,
   ): Promise<DatabaseCustomerStoreCatalog>;
@@ -427,6 +524,59 @@ interface PendingReservationRow {
   status: "pending-confirmation";
 }
 
+interface CustomerReservationDetailRow {
+  cancelled_business_at: Date | null;
+  confirmed_business_at: Date | null;
+  coupon_status: "available" | "expired" | "redeemed" | "reserved" | null;
+  expired_business_at: Date | null;
+  hold_expires_at: Date | null;
+  id: string;
+  price_snapshot: ReservationSnapshotRecord | null;
+  refund_amount_cents: number | null;
+  refund_business_occurred_at: Date | null;
+  refund_reason: string | null;
+  simulated_payment_cents: number | null;
+  starts_at: Date;
+  status: ReservationStatus;
+  store_id: string;
+  terminal_reason: string | null;
+}
+
+interface ReservationEventRow {
+  business_occurred_at: Date;
+  event_data: unknown;
+  event_type: string;
+}
+
+interface ReservationLifecycleCommandRow {
+  payload_hash: string;
+  result_data: {
+    payment: {
+      amountCents: number;
+      occurredAt: string;
+      simulated: true;
+    };
+    reservationId: string;
+    status: "confirmed";
+  };
+}
+
+interface ReservationCancelCommandRow {
+  payload_hash: string;
+  result_data: {
+    cancelledAt: string;
+    couponRestored: boolean;
+    refund: {
+      amountCents: number;
+      occurredAt: string;
+      reason: "customer-cancelled-before-start";
+      simulated: true;
+    } | null;
+    reservationId: string;
+    status: "cancelled";
+  };
+}
+
 interface CreationRequestRow {
   payload_hash: string;
   sandbox_id: string;
@@ -447,6 +597,26 @@ function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function reservationSnapshot(
+  value: ReservationSnapshotRecord,
+): DatabaseCustomerPendingReservation["snapshot"] {
+  return {
+    ...value,
+    price: {
+      ...value.price,
+      segments: value.price.segments.map((segment) => ({
+        ...segment,
+        endsAt: new Date(segment.endsAt),
+        startsAt: new Date(segment.startsAt),
+      })),
+    },
+    window: {
+      endsAt: new Date(value.window.endsAt),
+      startsAt: new Date(value.window.startsAt),
+    },
+  };
+}
+
 function pendingReservationResult(
   row: PendingReservationRow,
   replayed: boolean,
@@ -455,22 +625,439 @@ function pendingReservationResult(
     holdExpiresAt: row.hold_expires_at,
     replayed,
     reservationId: row.id,
-    snapshot: {
-      ...row.price_snapshot,
-      price: {
-        ...row.price_snapshot.price,
-        segments: row.price_snapshot.price.segments.map((segment) => ({
-          ...segment,
-          endsAt: new Date(segment.endsAt),
-          startsAt: new Date(segment.startsAt),
-        })),
-      },
-      window: {
-        endsAt: new Date(row.price_snapshot.window.endsAt),
-        startsAt: new Date(row.price_snapshot.window.startsAt),
-      },
-    },
+    snapshot: reservationSnapshot(row.price_snapshot),
     status: row.status,
+  };
+}
+
+async function readCustomerReservationDetailWithClient(
+  client: PoolClient,
+  input: ReadCustomerReservationDetailInput,
+  currentTime: Date,
+  lock = false,
+): Promise<{ detail: DatabaseCustomerReservationDetail; storeId: string }> {
+  const result = await client.query<CustomerReservationDetailRow>(
+    `select reservation.id, reservation.store_id, reservation.status,
+            reservation.starts_at, reservation.hold_expires_at,
+            reservation.price_snapshot, reservation.simulated_payment_cents,
+            reservation.confirmed_business_at,
+            reservation.cancelled_business_at,
+            reservation.expired_business_at, reservation.terminal_reason,
+            coupon.status as coupon_status,
+            refund.amount_cents as refund_amount_cents,
+            refund.reason as refund_reason,
+            refund.business_occurred_at as refund_business_occurred_at
+       from reservations reservation
+       left join experience_coupons coupon on coupon.id = reservation.coupon_id
+       left join reservation_simulated_refunds refund
+         on refund.reservation_id = reservation.id
+      where reservation.sandbox_id = $1
+        and reservation.customer_persona_id = $2
+        and reservation.id = $3${lock ? " for update of reservation" : ""}`,
+    [input.sandboxId, input.personaId, input.reservationId],
+  );
+  const row = result.rows[0];
+  if (!row || !row.price_snapshot) {
+    throw new CustomerReservationLifecycleConflictError("not-found");
+  }
+  const events = await client.query<ReservationEventRow>(
+    `select event_type, event_data, business_occurred_at
+      from reservation_business_events
+      where sandbox_id = $1 and reservation_id = $2
+      order by sequence`,
+    [input.sandboxId, input.reservationId],
+  );
+  const snapshot = reservationSnapshot(row.price_snapshot);
+  const pendingIsLive =
+    row.status === "pending-confirmation" &&
+    row.hold_expires_at !== null &&
+    currentTime.getTime() < row.hold_expires_at.getTime();
+  const confirmedCanCancel =
+    row.status === "confirmed" &&
+    currentTime.getTime() < row.starts_at.getTime();
+  const detail: DatabaseCustomerReservationDetail = {
+    actions: {
+      canCancel: pendingIsLive || confirmedCanCancel,
+      canSimulatePayment: pendingIsLive,
+    },
+    arrivalWindow: {
+      closesAt: new Date(row.starts_at.getTime() + 15 * 60 * 1_000),
+      opensAt: new Date(row.starts_at.getTime() - 30 * 60 * 1_000),
+    },
+    cancelledAt: row.cancelled_business_at,
+    confirmedAt: row.confirmed_business_at,
+    coupon:
+      snapshot.coupon && row.coupon_status
+        ? { ...snapshot.coupon, status: row.coupon_status }
+        : null,
+    currentTime,
+    events: events.rows.map((event) => ({
+      data: event.event_data,
+      occurredAt: event.business_occurred_at,
+      type: event.event_type,
+    })),
+    expiredAt: row.expired_business_at,
+    holdExpiresAt: row.hold_expires_at,
+    payment:
+      row.simulated_payment_cents !== null && row.confirmed_business_at
+        ? {
+            amountCents: row.simulated_payment_cents,
+            occurredAt: row.confirmed_business_at,
+            simulated: true,
+          }
+        : null,
+    refund:
+      row.refund_amount_cents !== null &&
+      row.refund_business_occurred_at &&
+      row.refund_reason
+        ? {
+            amountCents: row.refund_amount_cents,
+            occurredAt: row.refund_business_occurred_at,
+            reason: row.refund_reason,
+            simulated: true,
+          }
+        : null,
+    related: { orders: [], repairs: [] },
+    reservationId: row.id,
+    snapshot,
+    status: row.status,
+    terminalReason: row.terminal_reason,
+  };
+  return { detail, storeId: row.store_id };
+}
+
+function paymentFromStored(
+  value: ReservationLifecycleCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseCustomerReservationPayment {
+  return {
+    ...value,
+    payment: {
+      ...value.payment,
+      occurredAt: new Date(value.payment.occurredAt),
+    },
+    replayed,
+  };
+}
+
+function cancellationFromStored(
+  value: ReservationCancelCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseCustomerReservationCancellation {
+  return {
+    ...value,
+    cancelledAt: new Date(value.cancelledAt),
+    refund: value.refund
+      ? { ...value.refund, occurredAt: new Date(value.refund.occurredAt) }
+      : null,
+    replayed,
+  };
+}
+
+async function recordReservationLifecycleDenial(
+  client: PoolClient,
+  input: {
+    action: "reservation.cancel" | "reservation.simulate-payment";
+    businessTime: Date;
+    currentStatus: ReservationStatus;
+    personaId: string;
+    reason: CustomerReservationLifecycleConflictError["reason"];
+    recordedAt: Date;
+    requestId: string;
+    reservationId: string;
+    sandboxId: string;
+    storeId: string;
+  },
+): Promise<void> {
+  await client.query(
+    `insert into audit_events (
+       id, sandbox_id, store_id, persona_id, role, action, object_type,
+       object_id, result, reason, request_id, before_data, after_data,
+       business_occurred_at, recorded_at
+     ) values ($1, $2, $3, $4, 'customer', $5, 'reservation', $6,
+       'denied', $7, $8, $9::jsonb, $10::jsonb, $11, $12)`,
+    [
+      randomUUID(),
+      input.sandboxId,
+      input.storeId,
+      input.personaId,
+      input.action,
+      input.reservationId,
+      input.reason,
+      input.requestId,
+      JSON.stringify({ status: input.currentStatus }),
+      JSON.stringify({ status: input.currentStatus }),
+      input.businessTime,
+      input.recordedAt,
+    ],
+  );
+}
+
+type ReservationExpiryKind = "no-show" | "pending";
+
+interface DueReservationRow {
+  coupon_id: string | null;
+  customer_persona_id: string;
+  due_at: Date;
+  id: string;
+  price_snapshot: ReservationSnapshotRecord;
+  status: "confirmed" | "pending-confirmation";
+  store_id: string;
+}
+
+function reservationExpiryDefinition(kind: ReservationExpiryKind) {
+  return kind === "pending"
+    ? {
+        auditReason: "pending-confirmation-timeout",
+        couponStatus: "reserved",
+        eventType: "reservation.pending-expired",
+        status: "pending-confirmation",
+        terminalReason: "pending-confirmation-timeout",
+      }
+    : {
+        auditReason: "confirmed-no-show",
+        couponStatus: "redeemed",
+        eventType: "reservation.no-show-expired",
+        status: "confirmed",
+        terminalReason: "confirmed-no-show",
+      };
+}
+
+function reservationDueExpression(kind: ReservationExpiryKind): string {
+  return kind === "pending"
+    ? "reservation.hold_expires_at"
+    : "reservation.starts_at + interval '15 minutes'";
+}
+
+async function countDueReservationExpirations(
+  client: PoolClient,
+  input: {
+    currentBusinessTime: Date;
+    kind: ReservationExpiryKind;
+    sandboxId: string;
+    targetBusinessTime: Date;
+  },
+): Promise<number> {
+  const definition = reservationExpiryDefinition(input.kind);
+  const dueExpression = reservationDueExpression(input.kind);
+  const result = await client.query<{ count: string }>(
+    `select count(*)::text as count from reservations reservation
+      where reservation.sandbox_id = $1 and reservation.status = $2
+        and reservation.price_snapshot is not null
+        and ${dueExpression} > $3 and ${dueExpression} <= $4`,
+    [
+      input.sandboxId,
+      definition.status,
+      input.currentBusinessTime,
+      input.targetBusinessTime,
+    ],
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+async function nextReservationExpiration(
+  client: PoolClient,
+  input: {
+    currentBusinessTime: Date;
+    kind: ReservationExpiryKind;
+    sandboxId: string;
+  },
+): Promise<Date | null> {
+  const definition = reservationExpiryDefinition(input.kind);
+  const dueExpression = reservationDueExpression(input.kind);
+  const result = await client.query<{ due_at: Date | null }>(
+    `select min(${dueExpression}) as due_at from reservations reservation
+      where reservation.sandbox_id = $1 and reservation.status = $2
+        and reservation.price_snapshot is not null
+        and ${dueExpression} > $3`,
+    [input.sandboxId, definition.status, input.currentBusinessTime],
+  );
+  return result.rows[0]?.due_at ?? null;
+}
+
+async function processDueReservationExpirations(
+  client: PoolClient,
+  input: {
+    kind: ReservationExpiryKind;
+    recordedAt: Date;
+    reservationId?: string;
+    sandboxId: string;
+    targetBusinessTime: Date;
+  },
+): Promise<number> {
+  const definition = reservationExpiryDefinition(input.kind);
+  const dueExpression = reservationDueExpression(input.kind);
+  const due = await client.query<DueReservationRow>(
+    `select reservation.id, reservation.store_id,
+            reservation.customer_persona_id, reservation.status,
+            reservation.coupon_id, reservation.price_snapshot,
+            ${dueExpression} as due_at
+       from reservations reservation
+      where reservation.sandbox_id = $1 and reservation.status = $2
+        and reservation.price_snapshot is not null
+        and ${dueExpression} <= $3
+        and ($4::uuid is null or reservation.id = $4)
+      order by ${dueExpression}, reservation.id
+      for update of reservation skip locked`,
+    [
+      input.sandboxId,
+      definition.status,
+      input.targetBusinessTime,
+      input.reservationId ?? null,
+    ],
+  );
+
+  for (const row of due.rows) {
+    const snapshot = row.price_snapshot;
+    const decision = decideReservationLifecycle({
+      action: input.kind === "pending" ? "expire-hold" : "expire-no-show",
+      businessTime: row.due_at,
+      hasCoupon: row.coupon_id !== null,
+      holdExpiresAt:
+        input.kind === "pending" ? row.due_at : new Date(row.due_at),
+      payableCents: snapshot.price.payableCents,
+      startsAt: new Date(snapshot.window.startsAt),
+      status: row.status,
+    });
+    if (decision.status !== "ready") {
+      throw new Error("A due reservation did not have a legal expiry result.");
+    }
+    if (decision.couponEffect) {
+      const restored = await client.query(
+        `update experience_coupons
+            set status = 'available', reserved_reservation_id = null,
+                reserved_until = null
+          where sandbox_id = $1 and id = $2 and reserved_reservation_id = $3
+            and status = $4`,
+        [input.sandboxId, row.coupon_id, row.id, definition.couponStatus],
+      );
+      if (restored.rowCount !== 1) {
+        throw new Error("A due reservation coupon could not be restored.");
+      }
+    }
+    if (input.kind === "no-show") {
+      await client.query(
+        `insert into reservation_simulated_refunds (
+           id, sandbox_id, reservation_id, amount_cents, reason,
+           business_occurred_at, recorded_at
+         ) values ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          randomUUID(),
+          input.sandboxId,
+          row.id,
+          decision.simulatedRefundCents,
+          definition.terminalReason,
+          row.due_at,
+          input.recordedAt,
+        ],
+      );
+    }
+    await client.query(
+      `update reservations
+          set status = 'expired', expired_business_at = $3,
+              terminal_reason = $4
+        where sandbox_id = $1 and id = $2 and status = $5`,
+      [
+        input.sandboxId,
+        row.id,
+        row.due_at,
+        definition.terminalReason,
+        definition.status,
+      ],
+    );
+    await client.query(
+      `insert into reservation_business_events (
+         id, sandbox_id, reservation_id, event_type, event_data,
+         business_occurred_at, recorded_at
+       ) values ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+      [
+        randomUUID(),
+        input.sandboxId,
+        row.id,
+        definition.eventType,
+        JSON.stringify({
+          couponRestored: row.coupon_id !== null,
+          simulatedRefundCents: decision.simulatedRefundCents,
+        }),
+        row.due_at,
+        input.recordedAt,
+      ],
+    );
+    await client.query(
+      `insert into audit_events (
+         id, sandbox_id, store_id, persona_id, role, action, object_type,
+         object_id, result, reason, request_id, before_data, after_data,
+         business_occurred_at, recorded_at
+       ) values ($1, $2, $3, $4, 'customer', 'reservation.expire',
+         'reservation', $5, 'allowed', $6, $7, $8::jsonb, $9::jsonb,
+         $10, $11)`,
+      [
+        randomUUID(),
+        input.sandboxId,
+        row.store_id,
+        row.customer_persona_id,
+        row.id,
+        definition.auditReason,
+        randomUUID(),
+        JSON.stringify({ status: row.status }),
+        JSON.stringify({
+          simulatedRefundCents: decision.simulatedRefundCents,
+          status: "expired",
+        }),
+        row.due_at,
+        input.recordedAt,
+      ],
+    );
+  }
+  return due.rowCount ?? 0;
+}
+
+function reservationDueHandlers(): DemoTimeDueHandlerRegistry {
+  return {
+    "pending-reservation-expiration": {
+      nextDueAt: (context) =>
+        nextReservationExpiration(context.client, {
+          currentBusinessTime: context.currentBusinessTime,
+          kind: "pending",
+          sandboxId: context.sandboxId,
+        }),
+      previewDue: (context) =>
+        countDueReservationExpirations(context.client, {
+          currentBusinessTime: context.currentBusinessTime,
+          kind: "pending",
+          sandboxId: context.sandboxId,
+          targetBusinessTime: context.targetBusinessTime,
+        }),
+      processDue: (context) =>
+        processDueReservationExpirations(context.client, {
+          kind: "pending",
+          recordedAt: context.recordedAt,
+          sandboxId: context.sandboxId,
+          targetBusinessTime: context.targetBusinessTime,
+        }),
+    },
+    "reservation-no-show": {
+      nextDueAt: (context) =>
+        nextReservationExpiration(context.client, {
+          currentBusinessTime: context.currentBusinessTime,
+          kind: "no-show",
+          sandboxId: context.sandboxId,
+        }),
+      previewDue: (context) =>
+        countDueReservationExpirations(context.client, {
+          currentBusinessTime: context.currentBusinessTime,
+          kind: "no-show",
+          sandboxId: context.sandboxId,
+          targetBusinessTime: context.targetBusinessTime,
+        }),
+      processDue: (context) =>
+        processDueReservationExpirations(context.client, {
+          kind: "no-show",
+          recordedAt: context.recordedAt,
+          sandboxId: context.sandboxId,
+          targetBusinessTime: context.targetBusinessTime,
+        }),
+    },
   };
 }
 
@@ -1078,7 +1665,10 @@ export function createPublicSandboxDatabase(
   const demoToolMethods = createSandboxDemoToolMethods(
     pool,
     {
-      dueHandlers: options.dueHandlers ?? {},
+      dueHandlers: {
+        ...reservationDueHandlers(),
+        ...options.dueHandlers,
+      },
       sandboxLifetimeMilliseconds: SANDBOX_LIFETIME_MS,
       wallClock,
     },
@@ -1260,6 +1850,18 @@ export function createPublicSandboxDatabase(
           throw new CustomerSeatBrowseValidationError("store-not-found");
         }
         const now = businessTimeForSandbox(sandbox, wallTime);
+        await processDueReservationExpirations(client, {
+          kind: "pending",
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: now,
+        });
+        await processDueReservationExpirations(client, {
+          kind: "no-show",
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: now,
+        });
         const window = resolveCustomerReservationWindow({
           businessHours: {
             closesAt: store.closes_at.slice(0, 5),
@@ -1544,6 +2146,478 @@ export function createPublicSandboxDatabase(
         client.release();
       }
     },
+    async cancelCustomerReservation(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({
+            reason: input.reason,
+            reservationId: input.reservationId,
+          }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:cancel:${idempotencyKeyHash}`,
+          ],
+        );
+        const existing = await client.query<ReservationCancelCommandRow>(
+          `select payload_hash, result_data
+             from reservation_lifecycle_command_requests
+            where sandbox_id = $1 and customer_persona_id = $2
+              and command_type = 'cancel' and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const existingRow = existing.rows[0];
+        if (existingRow) {
+          if (existingRow.payload_hash !== payloadHash) {
+            throw new CustomerReservationIdempotencyConflictError();
+          }
+          await client.query("commit");
+          return cancellationFromStored(existingRow.result_data, true);
+        }
+
+        await processDueReservationExpirations(client, {
+          kind: "pending",
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        await processDueReservationExpirations(client, {
+          kind: "no-show",
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+
+        const { detail, storeId } =
+          await readCustomerReservationDetailWithClient(
+            client,
+            input,
+            currentTime,
+            true,
+          );
+        const decision = decideReservationLifecycle({
+          action: "cancel",
+          businessTime: currentTime,
+          hasCoupon: detail.coupon !== null,
+          holdExpiresAt: detail.holdExpiresAt,
+          payableCents: detail.snapshot.price.payableCents,
+          startsAt: detail.snapshot.window.startsAt,
+          status: detail.status,
+        });
+        if (decision.status === "invalid") {
+          const reason =
+            decision.reason === "not-due"
+              ? "illegal-transition"
+              : decision.reason;
+          await recordReservationLifecycleDenial(client, {
+            action: "reservation.cancel",
+            businessTime: currentTime,
+            currentStatus: detail.status,
+            personaId: input.personaId,
+            reason,
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            reservationId: input.reservationId,
+            sandboxId: input.sandboxId,
+            storeId,
+          });
+          await client.query("commit");
+          throw new CustomerReservationLifecycleConflictError(
+            reason,
+            detail.status,
+          );
+        }
+        const couponRestored = decision.couponEffect !== null;
+        if (decision.couponEffect) {
+          const expectedStatus =
+            decision.couponEffect === "release" ? "reserved" : "redeemed";
+          const restored = await client.query(
+            `update experience_coupons
+                set status = 'available', reserved_reservation_id = null,
+                    reserved_until = null
+              where sandbox_id = $1 and reserved_reservation_id = $2
+                and status = $3`,
+            [input.sandboxId, input.reservationId, expectedStatus],
+          );
+          if (restored.rowCount !== 1) {
+            throw new CustomerReservationLifecycleConflictError(
+              "illegal-transition",
+            );
+          }
+        }
+        const refundReason = "customer-cancelled-before-start" as const;
+        const shouldRefund = detail.status === "confirmed";
+        if (shouldRefund) {
+          await client.query(
+            `insert into reservation_simulated_refunds (
+               id, sandbox_id, reservation_id, amount_cents, reason,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.reservationId,
+              decision.simulatedRefundCents,
+              refundReason,
+              currentTime,
+              wallTime,
+            ],
+          );
+        }
+        await client.query(
+          `update reservations
+              set status = 'cancelled', cancelled_business_at = $4,
+                  terminal_reason = $5
+            where sandbox_id = $1 and customer_persona_id = $2 and id = $3`,
+          [
+            input.sandboxId,
+            input.personaId,
+            input.reservationId,
+            currentTime,
+            input.reason,
+          ],
+        );
+        await client.query(
+          `insert into reservation_business_events (
+             id, sandbox_id, reservation_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, 'reservation.cancelled', $4::jsonb, $5, $6)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            input.reservationId,
+            JSON.stringify({
+              couponRestored,
+              reason: input.reason,
+              simulatedRefundCents: decision.simulatedRefundCents,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, reason, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, 'customer', 'reservation.cancel',
+             'reservation', $5, 'allowed', $6, $7, $8::jsonb, $9::jsonb,
+             $10, $11)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            storeId,
+            input.personaId,
+            input.reservationId,
+            input.reason,
+            input.requestId,
+            JSON.stringify({ status: detail.status }),
+            JSON.stringify({
+              couponRestored,
+              simulatedRefundCents: decision.simulatedRefundCents,
+              status: decision.nextStatus,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const stored = {
+          cancelledAt: currentTime.toISOString(),
+          couponRestored,
+          refund: shouldRefund
+            ? {
+                amountCents: decision.simulatedRefundCents,
+                occurredAt: currentTime.toISOString(),
+                reason: refundReason,
+                simulated: true as const,
+              }
+            : null,
+          reservationId: input.reservationId,
+          status: "cancelled",
+        } as const;
+        await client.query(
+          `insert into reservation_lifecycle_command_requests (
+             sandbox_id, customer_persona_id, reservation_id, command_type,
+             idempotency_key_hash, payload_hash, result_data
+           ) values ($1, $2, $3, 'cancel', $4, $5, $6::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            input.reservationId,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return cancellationFromStored(stored, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async simulateCustomerReservationPayment(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({ reservationId: input.reservationId }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:simulate-payment:${idempotencyKeyHash}`,
+          ],
+        );
+        const existing = await client.query<ReservationLifecycleCommandRow>(
+          `select payload_hash, result_data
+             from reservation_lifecycle_command_requests
+            where sandbox_id = $1 and customer_persona_id = $2
+              and command_type = 'simulate-payment'
+              and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const existingRow = existing.rows[0];
+        if (existingRow) {
+          if (existingRow.payload_hash !== payloadHash) {
+            throw new CustomerReservationIdempotencyConflictError();
+          }
+          await client.query("commit");
+          return paymentFromStored(existingRow.result_data, true);
+        }
+
+        await processDueReservationExpirations(client, {
+          kind: "pending",
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        await processDueReservationExpirations(client, {
+          kind: "no-show",
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+
+        const { detail, storeId } =
+          await readCustomerReservationDetailWithClient(
+            client,
+            input,
+            currentTime,
+            true,
+          );
+        const decision = decideReservationLifecycle({
+          action: "simulate-payment",
+          businessTime: currentTime,
+          hasCoupon: detail.coupon !== null,
+          holdExpiresAt: detail.holdExpiresAt,
+          payableCents: detail.snapshot.price.payableCents,
+          startsAt: detail.snapshot.window.startsAt,
+          status: detail.status,
+        });
+        if (decision.status === "invalid") {
+          const reason =
+            decision.reason === "not-due"
+              ? "illegal-transition"
+              : decision.reason;
+          await recordReservationLifecycleDenial(client, {
+            action: "reservation.simulate-payment",
+            businessTime: currentTime,
+            currentStatus: detail.status,
+            personaId: input.personaId,
+            reason,
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            reservationId: input.reservationId,
+            sandboxId: input.sandboxId,
+            storeId,
+          });
+          await client.query("commit");
+          throw new CustomerReservationLifecycleConflictError(
+            reason,
+            detail.status,
+          );
+        }
+        if (decision.couponEffect === "redeem") {
+          const redeemed = await client.query(
+            `update experience_coupons
+                set status = 'redeemed', reserved_until = null
+              where sandbox_id = $1 and reserved_reservation_id = $2
+                and status = 'reserved'`,
+            [input.sandboxId, input.reservationId],
+          );
+          if (redeemed.rowCount !== 1) {
+            throw new CustomerReservationLifecycleConflictError(
+              "illegal-transition",
+            );
+          }
+        }
+        await client.query(
+          `update reservations
+              set status = 'confirmed', simulated_payment_cents = $4,
+                  confirmed_business_at = $5
+            where sandbox_id = $1 and customer_persona_id = $2 and id = $3`,
+          [
+            input.sandboxId,
+            input.personaId,
+            input.reservationId,
+            decision.simulatedPaymentCents,
+            currentTime,
+          ],
+        );
+        await client.query(
+          `insert into reservation_business_events (
+             id, sandbox_id, reservation_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, 'reservation.simulated-payment-succeeded',
+             $4::jsonb, $5, $6)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            input.reservationId,
+            JSON.stringify({
+              amountCents: decision.simulatedPaymentCents,
+              doesNotCharge: true,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, 'customer',
+             'reservation.simulate-payment', 'reservation', $5, 'allowed',
+             $6, $7::jsonb, $8::jsonb, $9, $10)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            storeId,
+            input.personaId,
+            input.reservationId,
+            input.requestId,
+            JSON.stringify({ status: detail.status }),
+            JSON.stringify({
+              simulatedPaymentCents: decision.simulatedPaymentCents,
+              status: decision.nextStatus,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const stored = {
+          payment: {
+            amountCents: decision.simulatedPaymentCents,
+            occurredAt: currentTime.toISOString(),
+            simulated: true,
+          },
+          reservationId: input.reservationId,
+          status: "confirmed",
+        } as const;
+        await client.query(
+          `insert into reservation_lifecycle_command_requests (
+             sandbox_id, customer_persona_id, reservation_id, command_type,
+             idempotency_key_hash, payload_hash, result_data
+           ) values ($1, $2, $3, 'simulate-payment', $4, $5, $6::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            input.reservationId,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return paymentFromStored(stored, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readCustomerReservationDetail(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        await processDueReservationExpirations(client, {
+          kind: "pending",
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        await processDueReservationExpirations(client, {
+          kind: "no-show",
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const result = await readCustomerReservationDetailWithClient(
+          client,
+          input,
+          currentTime,
+        );
+        await client.query("commit");
+        return result.detail;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async readCustomerStoreCatalog(input) {
       const client = await pool.connect();
       const wallTime = wallClock.now();
@@ -1684,6 +2758,18 @@ export function createPublicSandboxDatabase(
           throw new CustomerSeatBrowseValidationError("store-not-found");
         }
         const now = businessTimeForSandbox(sandbox, wallTime);
+        await processDueReservationExpirations(client, {
+          kind: "pending",
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: now,
+        });
+        await processDueReservationExpirations(client, {
+          kind: "no-show",
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: now,
+        });
         const window = resolveCustomerReservationWindow({
           businessHours: {
             closesAt: store.closes_at.slice(0, 5),

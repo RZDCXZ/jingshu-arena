@@ -13,6 +13,7 @@ import {
   CurrencyCny,
   GameController,
   House,
+  Hourglass,
   Info,
   Lightning,
   Lock,
@@ -24,6 +25,7 @@ import {
   ShieldCheck,
   Storefront,
   Ticket,
+  Timer,
   User,
   Warning,
   Wrench,
@@ -36,6 +38,10 @@ import type {
   CustomerSeatAvailability,
   CustomerSeatAvailabilityResponse,
   CustomerPendingReservationResponse,
+  CustomerReservationCancellationResponse,
+  CustomerReservationDetailResponse,
+  CustomerReservationPaymentResponse,
+  CustomerReservationStatus,
   CustomerStoreCatalogResponse,
 } from "@jingshu/contracts";
 
@@ -138,7 +144,59 @@ const couponReasonLabels = {
   validity: "预约时段超出体验券有效期",
 } as const;
 
-type CustomerView = "conditions" | "confirm" | "held" | "seats";
+type CustomerView =
+  "conditions" | "confirm" | "detail" | "held" | "payment" | "seats";
+
+type PaymentStage = "confirm" | "failure" | "processing" | "success";
+
+const reservationStatusLabels: Record<
+  CustomerReservationStatus,
+  { label: string; tone: "active" | "pending" | "terminal" }
+> = {
+  arrived: { label: "已到店", tone: "active" },
+  cancelled: { label: "已取消", tone: "terminal" },
+  completed: { label: "已完成", tone: "terminal" },
+  confirmed: { label: "已确认", tone: "active" },
+  expired: { label: "已过期", tone: "terminal" },
+  "in-use": { label: "使用中", tone: "active" },
+  "pending-confirmation": { label: "待确认", tone: "pending" },
+};
+
+const timelineLabels: Record<string, string> = {
+  "reservation.cancelled": "预约已取消",
+  "reservation.no-show-expired": "逾时未到店，预约已过期",
+  "reservation.pending-created": "已创建十分钟预约保留",
+  "reservation.pending-expired": "预约保留已到期",
+  "reservation.simulated-payment-succeeded": "模拟支付成功（未扣款）",
+};
+
+const lifecycleProgressSteps = [
+  { label: "已确认", status: "confirmed" },
+  { label: "已到店", status: "arrived" },
+  { label: "使用中", status: "in-use" },
+] as const;
+
+function lifecycleProgressIndex(
+  status: CustomerReservationStatus,
+  timeline: CustomerReservationDetailResponse["timeline"],
+) {
+  if (status === "completed") {
+    return lifecycleProgressSteps.length;
+  }
+  const activeIndex = lifecycleProgressSteps.findIndex(
+    (step) => step.status === status,
+  );
+  if (activeIndex >= 0) {
+    return activeIndex;
+  }
+  return timeline.some(
+    (event) => event.type === "reservation.simulated-payment-succeeded",
+  )
+    ? 1
+    : -1;
+}
+
+const LIFECYCLE_REQUEST_TIMEOUT_MS = 8_000;
 
 export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
   const [catalog, setCatalog] = useState<CustomerStoreCatalogResponse | null>(
@@ -169,6 +227,37 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
   const reservationKeyRef = useRef<string | null>(null);
   const [createdReservation, setCreatedReservation] =
     useState<CustomerPendingReservationResponse | null>(null);
+  const [reservationDetail, setReservationDetail] =
+    useState<CustomerReservationDetailResponse | null>(null);
+  const [detailObservedAt, setDetailObservedAt] = useState(0);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailFailure, setDetailFailure] = useState("");
+  const [detailPriceExpanded, setDetailPriceExpanded] = useState(false);
+  const [paymentStage, setPaymentStage] = useState<PaymentStage>("confirm");
+  const [paymentFailure, setPaymentFailure] = useState("");
+  const [paymentResult, setPaymentResult] =
+    useState<CustomerReservationPaymentResponse | null>(null);
+  const paymentKeyRef = useRef<string | null>(null);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
+  const [cancelFailure, setCancelFailure] = useState("");
+  const cancelKeyRef = useRef<string | null>(null);
+  const [, setCountdownTick] = useState(0);
+
+  useEffect(() => {
+    if (
+      view !== "detail" ||
+      reservationDetail?.status !== "pending-confirmation"
+    ) {
+      return;
+    }
+    const timer = window.setInterval(
+      () => setCountdownTick((value) => value + 1),
+      1_000,
+    );
+    return () => window.clearInterval(timer);
+  }, [reservationDetail?.status, view]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -379,8 +468,10 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
         }
         throw new Error(failure.error.message);
       }
-      setCreatedReservation(payload as CustomerPendingReservationResponse);
+      const created = payload as CustomerPendingReservationResponse;
+      setCreatedReservation(created);
       setView("held");
+      void readReservationDetail(created.reservationId);
     } catch (error) {
       setSubmissionFailure(
         error instanceof Error
@@ -390,6 +481,168 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function readReservationDetail(reservationId: string) {
+    setDetailLoading(true);
+    setDetailFailure("");
+    try {
+      const response = await fetch(
+        `/api/v1/customer/reservations/${reservationId}`,
+        {
+          cache: "no-store",
+          credentials: "same-origin",
+        },
+      );
+      const payload = (await response.json()) as
+        ApiErrorResponse | CustomerReservationDetailResponse;
+      if (!response.ok) {
+        throw new Error(
+          "error" in payload ? payload.error.message : "预约详情暂时无法读取。",
+        );
+      }
+      setReservationDetail(payload as CustomerReservationDetailResponse);
+      setDetailObservedAt(Date.now());
+      return payload as CustomerReservationDetailResponse;
+    } catch (error) {
+      setDetailFailure(
+        error instanceof Error ? error.message : "预约详情暂时无法读取。",
+      );
+      return null;
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  function openPayment() {
+    setPaymentStage("confirm");
+    setPaymentFailure("");
+    setPaymentResult(null);
+    setView("payment");
+  }
+
+  async function simulatePayment() {
+    if (!createdReservation || paymentStage === "processing") return;
+    const idempotencyKey = paymentKeyRef.current ?? crypto.randomUUID();
+    paymentKeyRef.current = idempotencyKey;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      LIFECYCLE_REQUEST_TIMEOUT_MS,
+    );
+    setPaymentStage("processing");
+    setPaymentFailure("");
+    try {
+      const response = await fetch(
+        `/api/v1/customer/reservations/${createdReservation.reservationId}/simulated-payment`,
+        {
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: {
+            "Idempotency-Key": idempotencyKey,
+            "X-CSRF-Token": csrfToken,
+          },
+          method: "POST",
+          signal: controller.signal,
+        },
+      );
+      const payload = (await response.json()) as
+        ApiErrorResponse | CustomerReservationPaymentResponse;
+      if (!response.ok) {
+        const failure = payload as ApiErrorResponse;
+        if (failure.error.currentStatus) {
+          await readReservationDetail(createdReservation.reservationId);
+        }
+        throw new Error(failure.error.message);
+      }
+      setPaymentResult(payload as CustomerReservationPaymentResponse);
+      await readReservationDetail(createdReservation.reservationId);
+      setPaymentStage("success");
+    } catch (error) {
+      setPaymentFailure(
+        error instanceof DOMException && error.name === "AbortError"
+          ? "请求等待超时。不会扣款，请使用原提交标识安全重试。"
+          : error instanceof Error
+            ? error.message
+            : "模拟支付未完成。不会扣款，可安全重试。",
+      );
+      setPaymentStage("failure");
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function cancelReservation() {
+    if (
+      !createdReservation ||
+      !reservationDetail ||
+      cancelSubmitting ||
+      cancelReason.trim().length === 0
+    ) {
+      return;
+    }
+    const idempotencyKey = cancelKeyRef.current ?? crypto.randomUUID();
+    cancelKeyRef.current = idempotencyKey;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      LIFECYCLE_REQUEST_TIMEOUT_MS,
+    );
+    setCancelSubmitting(true);
+    setCancelFailure("");
+    try {
+      const response = await fetch(
+        `/api/v1/customer/reservations/${createdReservation.reservationId}/cancel`,
+        {
+          body: JSON.stringify({ reason: cancelReason.trim() }),
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+            "X-CSRF-Token": csrfToken,
+          },
+          method: "POST",
+          signal: controller.signal,
+        },
+      );
+      const payload = (await response.json()) as
+        ApiErrorResponse | CustomerReservationCancellationResponse;
+      if (!response.ok) {
+        const failure = payload as ApiErrorResponse;
+        if (failure.error.currentStatus) {
+          await readReservationDetail(createdReservation.reservationId);
+        }
+        throw new Error(failure.error.message);
+      }
+      await readReservationDetail(createdReservation.reservationId);
+      setCancelOpen(false);
+      setCancelReason("");
+      cancelKeyRef.current = null;
+    } catch (error) {
+      setCancelFailure(
+        error instanceof DOMException && error.name === "AbortError"
+          ? "请求等待超时。预约、退款和体验券状态未知，请使用原提交标识安全重试。"
+          : error instanceof Error
+            ? error.message
+            : "取消未完整完成，可使用原提交标识安全重试。",
+      );
+    } finally {
+      window.clearTimeout(timeout);
+      setCancelSubmitting(false);
+    }
+  }
+
+  function restartReservation() {
+    setView("conditions");
+    setCreatedReservation(null);
+    setReservationDetail(null);
+    setSelectedSeat("");
+    setSelectedCouponId(null);
+    setDetailFailure("");
+    setPaymentFailure("");
+    paymentKeyRef.current = null;
+    cancelKeyRef.current = null;
   }
 
   if (!catalog) {
@@ -432,12 +685,29 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     selectedCoupon?.eligibility.status === "eligible"
       ? selectedCoupon.eligibility.payableCents
       : (availability?.price.totalCents ?? 0);
+  const holdRemainingSeconds = reservationDetail?.holdExpiresAt
+    ? Math.max(
+        0,
+        Math.ceil(
+          (Date.parse(reservationDetail.holdExpiresAt) -
+            Date.parse(reservationDetail.currentTime) -
+            Math.max(0, Date.now() - detailObservedAt)) /
+            1_000,
+        ),
+      )
+    : null;
+  const holdCountdown =
+    holdRemainingSeconds === null
+      ? "—"
+      : `${String(Math.floor(holdRemainingSeconds / 60)).padStart(2, "0")}:${String(holdRemainingSeconds % 60).padStart(2, "0")}`;
 
   return (
     <main className="customer-h5" data-testid="customer-h5">
       <header className="customer-mobile-header">
         <div>
-          <span>WEB-C00 / C01</span>
+          <span>
+            {view === "payment" ? "WEB-C02 / MP-08" : "WEB-C00 / C02"}
+          </span>
           <strong>
             {view === "seats"
               ? "选择座位"
@@ -445,7 +715,11 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                 ? "确认预约"
                 : view === "held"
                   ? "预约已保留"
-                  : "预约座位"}
+                  : view === "payment"
+                    ? "模拟支付"
+                    : view === "detail"
+                      ? "预约详情"
+                      : "预约座位"}
           </strong>
         </div>
         <span className="customer-demo-badge">演示数据</span>
@@ -1137,6 +1411,458 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
             </button>
           </div>
         </div>
+      ) : view === "payment" && createdReservation ? (
+        <div className="customer-scroll-content customer-payment-flow">
+          {paymentStage === "confirm" ? (
+            <>
+              <button
+                className="customer-back-button"
+                onClick={() => setView("held")}
+                type="button"
+              >
+                <CaretLeft />
+                返回预约保留
+              </button>
+              <section className="customer-payment-stage">
+                <div className="customer-payment-stage-icon">
+                  <ShieldCheck weight="duotone" />
+                </div>
+                <span className="customer-eyebrow">SIMULATED PAYMENT</span>
+                <h1>确认模拟支付</h1>
+                <p>本次不会扣款，也不需要任何真实支付凭证。</p>
+                <strong>
+                  {formatMoney(createdReservation.snapshot.price.payableCents)}
+                </strong>
+                <div className="customer-payment-brief">
+                  <span>
+                    {createdReservation.snapshot.store.displayName} ·{" "}
+                    {createdReservation.snapshot.seat.code}
+                  </span>
+                  <span>
+                    {formatFullWindow(
+                      createdReservation.snapshot.window.startsAt,
+                      createdReservation.snapshot.window.endsAt,
+                    )}
+                  </span>
+                </div>
+                <button
+                  className="customer-primary-button"
+                  onClick={simulatePayment}
+                  type="button"
+                >
+                  确认模拟支付（不扣款）
+                </button>
+                <button
+                  className="customer-payment-secondary"
+                  onClick={() => setView("detail")}
+                  type="button"
+                >
+                  查看预约详情与状态
+                </button>
+              </section>
+            </>
+          ) : paymentStage === "processing" ? (
+            <section
+              aria-live="polite"
+              className="customer-payment-stage is-processing"
+            >
+              <div className="customer-payment-stage-icon">
+                <Hourglass />
+              </div>
+              <span className="customer-eyebrow">PROCESSING</span>
+              <h1>正在完成模拟支付</h1>
+              <p>只更新演示预约，不会扣款，也不会接触真实支付凭证。</p>
+              <div className="customer-payment-progress" />
+              <small>请勿重复提交；超时后可使用原提交标识安全重试。</small>
+            </section>
+          ) : paymentStage === "success" ? (
+            <section
+              aria-live="polite"
+              className="customer-payment-stage is-success"
+            >
+              <div className="customer-payment-stage-icon">
+                <CheckCircle weight="fill" />
+              </div>
+              <span className="customer-eyebrow">SIMULATION SUCCEEDED</span>
+              <h1>模拟支付成功</h1>
+              <p>预约已确认。全程没有扣款，也没有使用真实支付凭证。</p>
+              <strong>
+                {formatMoney(paymentResult?.payment.amountCents ?? 0)}
+              </strong>
+              <section className="customer-no-charge-notice">
+                <ShieldCheck weight="duotone" />
+                <span>
+                  <strong>本次为模拟结果</strong>
+                  金额只来自预约快照，不代表真实交易或真实退款。
+                </span>
+              </section>
+              <button
+                className="customer-primary-button"
+                onClick={() => setView("detail")}
+                type="button"
+              >
+                查看预约详情
+                <CaretRight />
+              </button>
+            </section>
+          ) : (
+            <section
+              aria-live="assertive"
+              className="customer-payment-stage is-failure"
+            >
+              <div className="customer-payment-stage-icon">
+                <Warning weight="duotone" />
+              </div>
+              <span className="customer-eyebrow">SIMULATION NOT COMPLETED</span>
+              <h1>模拟支付尚未完成</h1>
+              <p>{paymentFailure}</p>
+              <section className="customer-no-charge-notice">
+                <ShieldCheck weight="duotone" />
+                <span>
+                  <strong>确认没有扣款</strong>
+                  可使用原提交标识安全重试，不需要输入任何真实支付凭证。
+                </span>
+              </section>
+              <button
+                className="customer-primary-button"
+                onClick={simulatePayment}
+                type="button"
+              >
+                <ArrowClockwise />
+                使用原提交标识安全重试
+              </button>
+              <button
+                className="customer-payment-secondary"
+                onClick={() => setView("detail")}
+                type="button"
+              >
+                先查看当前预约状态
+              </button>
+            </section>
+          )}
+        </div>
+      ) : view === "detail" && createdReservation ? (
+        <div className="customer-scroll-content customer-lifecycle-detail">
+          {detailLoading && !reservationDetail ? (
+            <section className="customer-lifecycle-loading" aria-live="polite">
+              <ArrowClockwise />
+              <strong>正在读取预约详情</strong>
+              <span>以服务端状态和不可变时间线为准。</span>
+            </section>
+          ) : reservationDetail ? (
+            <>
+              <section className="customer-arrival-card">
+                <div>
+                  <span className="customer-eyebrow">ARRIVAL WINDOW</span>
+                  <strong>
+                    到店窗口{" "}
+                    {formatWindow(reservationDetail.arrivalWindow.opensAt)}–
+                    {formatWindow(reservationDetail.arrivalWindow.closesAt)}
+                  </strong>
+                  <small>请在窗口内到店；以服务端业务时钟为准。</small>
+                </div>
+                <Armchair weight="duotone" />
+              </section>
+              <div className="customer-lifecycle-status-row">
+                <span
+                  className={`is-${reservationStatusLabels[reservationDetail.status].tone}`}
+                >
+                  {reservationStatusLabels[reservationDetail.status].label}
+                </span>
+                {reservationDetail.status === "pending-confirmation" ? (
+                  <strong>
+                    <Timer /> 保留倒计时 {holdCountdown}
+                  </strong>
+                ) : (
+                  <strong>状态已由服务端确认</strong>
+                )}
+              </div>
+              <ol
+                aria-label="预约生命周期进度"
+                className="customer-lifecycle-progress"
+              >
+                {lifecycleProgressSteps.map((step, index) => {
+                  const progressIndex = lifecycleProgressIndex(
+                    reservationDetail.status,
+                    reservationDetail.timeline,
+                  );
+                  const isComplete =
+                    reservationDetail.status === "completed" ||
+                    index < progressIndex;
+                  const isCurrent = index === progressIndex && !isComplete;
+                  return (
+                    <li
+                      className={
+                        isComplete
+                          ? "is-complete"
+                          : isCurrent
+                            ? "is-current"
+                            : undefined
+                      }
+                      key={step.status}
+                    >
+                      <i aria-hidden="true">{isComplete ? "✓" : index + 1}</i>
+                      <span>{step.label}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+              <section className="customer-lifecycle-card">
+                <div className="customer-section-title">
+                  <div>
+                    <span>RESERVATION SNAPSHOT</span>
+                    <h2>预约信息</h2>
+                  </div>
+                  <CalendarBlank />
+                </div>
+                <dl className="customer-lifecycle-facts">
+                  <div>
+                    <dt>门店</dt>
+                    <dd>{reservationDetail.snapshot.store.displayName}</dd>
+                  </div>
+                  <div>
+                    <dt>座位</dt>
+                    <dd>
+                      {formatSeatTitle(
+                        reservationDetail.snapshot.area.displayName,
+                        reservationDetail.snapshot.seat.code,
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>机型</dt>
+                    <dd>
+                      {reservationDetail.snapshot.machineProfile.displayName} ·{" "}
+                      {
+                        reservationDetail.snapshot.machineProfile
+                          .experienceDescription
+                      }
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>时段</dt>
+                    <dd>
+                      {formatFullWindow(
+                        reservationDetail.snapshot.window.startsAt,
+                        reservationDetail.snapshot.window.endsAt,
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>快照金额</dt>
+                    <dd>
+                      {formatMoney(
+                        reservationDetail.snapshot.price.payableCents,
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+                <button
+                  aria-expanded={detailPriceExpanded}
+                  className="customer-price-expand"
+                  onClick={() =>
+                    setDetailPriceExpanded((expanded) => !expanded)
+                  }
+                  type="button"
+                >
+                  价格与体验券快照
+                  <span>
+                    {detailPriceExpanded ? "收起" : "展开"}
+                    <CaretDown
+                      className={detailPriceExpanded ? "is-rotated" : ""}
+                    />
+                  </span>
+                </button>
+                {detailPriceExpanded ? (
+                  <div className="customer-lifecycle-price-detail">
+                    <span>
+                      原价
+                      <strong>
+                        {formatMoney(
+                          reservationDetail.snapshot.price.subtotalCents,
+                        )}
+                      </strong>
+                    </span>
+                    <span>
+                      体验券
+                      <strong>
+                        {reservationDetail.snapshot.coupon
+                          ? `${reservationDetail.snapshot.coupon.displayName} −${formatMoney(reservationDetail.snapshot.price.discountCents)}`
+                          : "未使用"}
+                      </strong>
+                    </span>
+                    <span>
+                      当前券状态
+                      <strong>
+                        {reservationDetail.coupon?.status ?? "无体验券"}
+                      </strong>
+                    </span>
+                  </div>
+                ) : null}
+              </section>
+              {reservationDetail.refund ? (
+                <section className="customer-refund-card">
+                  <CurrencyCny />
+                  <span>
+                    <strong>模拟退款已记录</strong>
+                    {formatMoney(reservationDetail.refund.amountCents)} ·{" "}
+                    {reservationDetail.refund.reason}
+                  </span>
+                  <em>不对应真实资金</em>
+                </section>
+              ) : null}
+              <section className="customer-lifecycle-card">
+                <div className="customer-section-title">
+                  <div>
+                    <span>IMMUTABLE TIMELINE</span>
+                    <h2>业务事件</h2>
+                  </div>
+                  <Clock />
+                </div>
+                <ol className="customer-lifecycle-timeline">
+                  {reservationDetail.timeline.map((event, index) => (
+                    <li key={`${event.occurredAt}-${event.type}-${index}`}>
+                      <i />
+                      <span>
+                        <strong>
+                          {timelineLabels[event.type] ?? event.type}
+                        </strong>
+                        <small>{formatWindow(event.occurredAt)}</small>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+              <section className="customer-related-empty">
+                <Info />
+                <span>
+                  <strong>相关单据</strong>
+                  当前没有关联订单或报修记录。
+                </span>
+              </section>
+              {detailFailure ? (
+                <section className="customer-feedback is-error" role="alert">
+                  <Warning />
+                  <span>
+                    <strong>刷新未完成</strong>
+                    {detailFailure}
+                  </span>
+                </section>
+              ) : null}
+              <div className="customer-lifecycle-actions">
+                {reservationDetail.actions.canSimulatePayment ? (
+                  <button
+                    className="customer-primary-button"
+                    onClick={openPayment}
+                    type="button"
+                  >
+                    继续模拟支付（不扣款）
+                  </button>
+                ) : null}
+                {reservationDetail.actions.canCancel ? (
+                  <button
+                    className="customer-danger-button"
+                    onClick={() => {
+                      setCancelFailure("");
+                      setCancelOpen(true);
+                    }}
+                    type="button"
+                  >
+                    取消预约
+                  </button>
+                ) : null}
+                {!reservationDetail.actions.canCancel &&
+                !reservationDetail.actions.canSimulatePayment ? (
+                  <button
+                    className="customer-primary-button"
+                    onClick={restartReservation}
+                    type="button"
+                  >
+                    再次预约
+                  </button>
+                ) : null}
+                <button
+                  className="customer-payment-secondary"
+                  disabled={detailLoading}
+                  onClick={() =>
+                    void readReservationDetail(createdReservation.reservationId)
+                  }
+                  type="button"
+                >
+                  <ArrowClockwise />
+                  {detailLoading ? "正在刷新…" : "刷新当前状态"}
+                </button>
+              </div>
+              {cancelOpen ? (
+                <div className="customer-cancel-backdrop" role="presentation">
+                  <section
+                    aria-labelledby="customer-cancel-title"
+                    aria-modal="true"
+                    className="customer-cancel-dialog"
+                    role="dialog"
+                  >
+                    <span className="customer-eyebrow">CANCEL RESERVATION</span>
+                    <h2 id="customer-cancel-title">确认取消预约？</h2>
+                    <p>
+                      待支付预约不退款；已确认且未开始的预约会全额模拟退款并恢复体验券。
+                    </p>
+                    <label>
+                      <span>取消原因</span>
+                      <textarea
+                        maxLength={200}
+                        onChange={(event) => {
+                          setCancelReason(event.target.value);
+                          cancelKeyRef.current = null;
+                        }}
+                        placeholder="请输入 1–200 字原因"
+                        rows={3}
+                        value={cancelReason}
+                      />
+                    </label>
+                    {cancelFailure ? (
+                      <div className="customer-cancel-error" role="alert">
+                        {cancelFailure}
+                      </div>
+                    ) : null}
+                    <div>
+                      <button
+                        disabled={cancelSubmitting}
+                        onClick={() => setCancelOpen(false)}
+                        type="button"
+                      >
+                        返回
+                      </button>
+                      <button
+                        disabled={
+                          cancelSubmitting || cancelReason.trim().length === 0
+                        }
+                        onClick={cancelReservation}
+                        type="button"
+                      >
+                        {cancelSubmitting ? "正在取消…" : "确认取消预约"}
+                      </button>
+                    </div>
+                  </section>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <section className="customer-lifecycle-loading is-error">
+              <Warning />
+              <strong>预约详情暂时不可用</strong>
+              <span>{detailFailure}</span>
+              <button
+                className="customer-primary-button"
+                onClick={() =>
+                  void readReservationDetail(createdReservation.reservationId)
+                }
+                type="button"
+              >
+                重新读取
+              </button>
+            </section>
+          )}
+        </div>
       ) : createdReservation ? (
         <div className="customer-scroll-content customer-held-state">
           <div className="customer-held-icon">
@@ -1186,9 +1912,26 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
               预约、价格与体验券结果已形成快照；后续模拟支付由下一旅程继续。
             </span>
           </section>
-          <button className="customer-primary-button" disabled type="button">
-            模拟支付将在下一步开放（不扣款）
-          </button>
+          <div className="customer-held-actions">
+            <button
+              className="customer-primary-button"
+              onClick={openPayment}
+              type="button"
+            >
+              继续模拟支付（不扣款）
+              <CaretRight />
+            </button>
+            <button
+              className="customer-payment-secondary"
+              disabled={detailLoading && !reservationDetail}
+              onClick={() => setView("detail")}
+              type="button"
+            >
+              {detailLoading && !reservationDetail
+                ? "正在读取详情…"
+                : "查看预约详情"}
+            </button>
+          </div>
         </div>
       ) : null}
 

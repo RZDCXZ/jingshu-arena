@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   createPublicSandboxDatabase,
@@ -13,8 +13,9 @@ if (!databaseUrl) {
 }
 
 const fixedBusinessTime = new Date("2026-08-10T11:47:23.000Z");
+let apiWallTime = fixedBusinessTime;
 const database = createPublicSandboxDatabase(databaseUrl, {
-  wallClock: { now: () => fixedBusinessTime },
+  wallClock: { now: () => apiWallTime },
 });
 const publicOrigin = "https://arena.example";
 const app = createApp({
@@ -26,6 +27,10 @@ const app = createApp({
 
 beforeAll(async () => {
   await migrateEmptyDatabase(databaseUrl);
+});
+
+beforeEach(() => {
+  apiWallTime = fixedBusinessTime;
 });
 
 afterAll(async () => {
@@ -48,6 +53,46 @@ async function createRoleSession(role: "customer" | "staff") {
   });
   expect(response.status).toBe(201);
   return response.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
+}
+
+async function createCustomerWriteContext() {
+  const cookie = await createRoleSession("customer");
+  const response = await app.request("/api/v1/demo/context", {
+    headers: { Cookie: cookie },
+  });
+  const context = (await response.json()) as { csrfToken: string };
+  return { cookie, csrfToken: context.csrfToken };
+}
+
+async function createPendingReservation(
+  context: Awaited<ReturnType<typeof createCustomerWriteContext>>,
+) {
+  const response = await app.request("/api/v1/customer/reservations", {
+    body: JSON.stringify({
+      areaCode: "competitive-a",
+      couponId: null,
+      durationHours: 2,
+      machineProfileCode: "competitive",
+      mode: "future",
+      requestedStartsAt: "2026-08-10T12:30:00.000Z",
+      seatCode: "A-08",
+      storeCode: "prism-flagship",
+    }),
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: context.cookie,
+      "Idempotency-Key": crypto.randomUUID(),
+      Origin: publicOrigin,
+      "X-CSRF-Token": context.csrfToken,
+    },
+    method: "POST",
+  });
+  expect(response.status).toBe(201);
+  return (await response.json()) as {
+    holdExpiresAt: string;
+    reservationId: string;
+    snapshot: { price: { payableCents: number } };
+  };
 }
 
 describe("customer store and seat browsing API", () => {
@@ -277,6 +322,155 @@ describe("customer store and seat browsing API", () => {
     expect(mismatched.status).toBe(409);
     await expect(mismatched.json()).resolves.toMatchObject({
       error: { code: "CUSTOMER_RESERVATION_IDEMPOTENCY_CONFLICT" },
+    });
+  });
+
+  it("reads, pays and cancels a reservation through one immutable lifecycle timeline", async () => {
+    const context = await createCustomerWriteContext();
+    const pending = await createPendingReservation(context);
+    const pendingDetail = await app.request(
+      `/api/v1/customer/reservations/${pending.reservationId}`,
+      { headers: { Cookie: context.cookie } },
+    );
+    expect(pendingDetail.status).toBe(200);
+    await expect(pendingDetail.json()).resolves.toMatchObject({
+      actions: { canCancel: true, canSimulatePayment: true },
+      currentTime: fixedBusinessTime.toISOString(),
+      reservationId: pending.reservationId,
+      status: "pending-confirmation",
+      timeline: [
+        expect.objectContaining({ type: "reservation.pending-created" }),
+      ],
+    });
+
+    const paymentKey = crypto.randomUUID();
+    const paymentHeaders = {
+      Cookie: context.cookie,
+      "Idempotency-Key": paymentKey,
+      Origin: publicOrigin,
+      "X-CSRF-Token": context.csrfToken,
+    };
+    const paid = await app.request(
+      `/api/v1/customer/reservations/${pending.reservationId}/simulated-payment`,
+      { headers: paymentHeaders, method: "POST" },
+    );
+    expect(paid.status).toBe(200);
+    const paidBody = await paid.json();
+    expect(paidBody).toMatchObject({
+      payment: {
+        amountCents: pending.snapshot.price.payableCents,
+        simulated: true,
+      },
+      replayed: false,
+      status: "confirmed",
+    });
+    const replay = await app.request(
+      `/api/v1/customer/reservations/${pending.reservationId}/simulated-payment`,
+      { headers: paymentHeaders, method: "POST" },
+    );
+    expect(replay.status).toBe(200);
+    await expect(replay.json()).resolves.toEqual({
+      ...(paidBody as object),
+      replayed: true,
+    });
+
+    const cancelled = await app.request(
+      `/api/v1/customer/reservations/${pending.reservationId}/cancel`,
+      {
+        body: JSON.stringify({ reason: "行程变更" }),
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: context.cookie,
+          "Idempotency-Key": crypto.randomUUID(),
+          Origin: publicOrigin,
+          "X-CSRF-Token": context.csrfToken,
+        },
+        method: "POST",
+      },
+    );
+    expect(cancelled.status).toBe(200);
+    await expect(cancelled.json()).resolves.toMatchObject({
+      refund: {
+        amountCents: pending.snapshot.price.payableCents,
+        simulated: true,
+      },
+      status: "cancelled",
+    });
+    const terminalDetail = await app.request(
+      `/api/v1/customer/reservations/${pending.reservationId}`,
+      { headers: { Cookie: context.cookie } },
+    );
+    await expect(terminalDetail.json()).resolves.toMatchObject({
+      actions: { canCancel: false, canSimulatePayment: false },
+      status: "cancelled",
+      terminalReason: "行程变更",
+      timeline: [
+        expect.objectContaining({ type: "reservation.pending-created" }),
+        expect.objectContaining({
+          type: "reservation.simulated-payment-succeeded",
+        }),
+        expect.objectContaining({ type: "reservation.cancelled" }),
+      ],
+    });
+  });
+
+  it("returns the current state for an illegal payment after the exact hold boundary", async () => {
+    const context = await createCustomerWriteContext();
+    const pending = await createPendingReservation(context);
+    apiWallTime = new Date(pending.holdExpiresAt);
+
+    const response = await app.request(
+      `/api/v1/customer/reservations/${pending.reservationId}/simulated-payment`,
+      {
+        headers: {
+          Cookie: context.cookie,
+          "Idempotency-Key": crypto.randomUUID(),
+          Origin: publicOrigin,
+          "X-CSRF-Token": context.csrfToken,
+        },
+        method: "POST",
+      },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "CUSTOMER_RESERVATION_ILLEGAL_TRANSITION",
+        currentStatus: "expired",
+      },
+    });
+  });
+
+  it("rejects lifecycle writes without trusted origin, CSRF and valid payloads", async () => {
+    const context = await createCustomerWriteContext();
+    const pending = await createPendingReservation(context);
+    const endpoint = `/api/v1/customer/reservations/${pending.reservationId}/cancel`;
+    const withoutOrigin = await app.request(endpoint, {
+      body: JSON.stringify({ reason: "行程变更" }),
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: context.cookie,
+        "Idempotency-Key": crypto.randomUUID(),
+        "X-CSRF-Token": context.csrfToken,
+      },
+      method: "POST",
+    });
+    expect(withoutOrigin.status).toBe(403);
+
+    const invalidReason = await app.request(endpoint, {
+      body: JSON.stringify({ reason: "" }),
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: context.cookie,
+        "Idempotency-Key": crypto.randomUUID(),
+        Origin: publicOrigin,
+        "X-CSRF-Token": context.csrfToken,
+      },
+      method: "POST",
+    });
+    expect(invalidReason.status).toBe(400);
+    await expect(invalidReason.json()).resolves.toMatchObject({
+      error: { code: "CUSTOMER_RESERVATION_CANCEL_REQUEST_INVALID" },
     });
   });
 });

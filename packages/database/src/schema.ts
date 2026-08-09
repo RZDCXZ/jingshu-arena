@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
+  bigserial,
   boolean,
   check,
   index,
@@ -382,6 +383,17 @@ export const reservations = pgTable(
       onDelete: "restrict",
     }),
     couponSnapshot: jsonb("coupon_snapshot"),
+    simulatedPaymentCents: integer("simulated_payment_cents"),
+    confirmedBusinessAt: timestamp("confirmed_business_at", {
+      withTimezone: true,
+    }),
+    cancelledBusinessAt: timestamp("cancelled_business_at", {
+      withTimezone: true,
+    }),
+    expiredBusinessAt: timestamp("expired_business_at", {
+      withTimezone: true,
+    }),
+    terminalReason: text("terminal_reason"),
   },
   (table) => [
     check("reservations_time_range", sql`${table.endsAt} > ${table.startsAt}`),
@@ -393,6 +405,10 @@ export const reservations = pgTable(
       "reservations_pending_snapshot",
       sql`${table.status} <> 'pending-confirmation' OR (${table.holdExpiresAt} IS NOT NULL AND ${table.createdBusinessAt} IS NOT NULL AND ${table.priceSnapshot} IS NOT NULL)`,
     ),
+    check(
+      "reservations_non_negative_simulated_payment",
+      sql`${table.simulatedPaymentCents} IS NULL OR ${table.simulatedPaymentCents} >= 0`,
+    ),
     index("reservations_seat_time_idx").on(
       table.sandboxId,
       table.seatId,
@@ -400,6 +416,82 @@ export const reservations = pgTable(
       table.endsAt,
     ),
     pgPolicy("reservations_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const reservationSimulatedRefunds = pgTable(
+  "reservation_simulated_refunds",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    reservationId: uuid("reservation_id")
+      .notNull()
+      .references(() => reservations.id, { onDelete: "cascade" }),
+    amountCents: integer("amount_cents").notNull(),
+    reason: text("reason").notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("reservation_simulated_refunds_reservation_unique").on(
+      table.sandboxId,
+      table.reservationId,
+    ),
+    check(
+      "reservation_simulated_refunds_non_negative_amount",
+      sql`${table.amountCents} >= 0`,
+    ),
+    pgPolicy("reservation_simulated_refunds_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const reservationLifecycleCommandRequests = pgTable(
+  "reservation_lifecycle_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    customerPersonaId: uuid("customer_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    reservationId: uuid("reservation_id")
+      .notNull()
+      .references(() => reservations.id, { onDelete: "cascade" }),
+    commandType: text("command_type").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.customerPersonaId,
+        table.commandType,
+        table.idempotencyKeyHash,
+      ],
+      name: "reservation_lifecycle_command_requests_pk",
+    }),
+    check(
+      "reservation_lifecycle_command_requests_type",
+      sql`${table.commandType} IN ('simulate-payment', 'cancel')`,
+    ),
+    pgPolicy("reservation_lifecycle_command_requests_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),
@@ -418,6 +510,7 @@ export const reservationBusinessEvents = pgTable(
       .references(() => reservations.id, { onDelete: "cascade" }),
     eventType: text("event_type").notNull(),
     eventData: jsonb("event_data").notNull(),
+    sequence: bigserial("sequence", { mode: "number" }).notNull(),
     businessOccurredAt: timestamp("business_occurred_at", {
       withTimezone: true,
     }).notNull(),

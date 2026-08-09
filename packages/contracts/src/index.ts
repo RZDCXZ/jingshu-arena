@@ -161,6 +161,94 @@ export interface CustomerPendingReservationResponse {
   };
 }
 
+export const CUSTOMER_RESERVATION_STATUSES = [
+  "pending-confirmation",
+  "confirmed",
+  "arrived",
+  "in-use",
+  "completed",
+  "cancelled",
+  "expired",
+] as const;
+
+export type CustomerReservationStatus =
+  (typeof CUSTOMER_RESERVATION_STATUSES)[number];
+
+export interface CustomerReservationDetailResponse {
+  readonly actions: {
+    readonly canCancel: boolean;
+    readonly canSimulatePayment: boolean;
+  };
+  readonly arrivalWindow: {
+    readonly closesAt: string;
+    readonly opensAt: string;
+  };
+  readonly cancelledAt: string | null;
+  readonly confirmedAt: string | null;
+  readonly coupon:
+    | (NonNullable<CustomerPendingReservationResponse["snapshot"]["coupon"]> & {
+        readonly status: "available" | "expired" | "redeemed" | "reserved";
+      })
+    | null;
+  readonly currentTime: string;
+  readonly expiredAt: string | null;
+  readonly holdExpiresAt: string | null;
+  readonly payment: {
+    readonly amountCents: number;
+    readonly occurredAt: string;
+    readonly simulated: true;
+  } | null;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly occurredAt: string;
+    readonly reason: string;
+    readonly simulated: true;
+  } | null;
+  readonly related: {
+    readonly orders: ReadonlyArray<never>;
+    readonly repairs: ReadonlyArray<never>;
+  };
+  readonly reservationId: string;
+  readonly snapshot: CustomerPendingReservationResponse["snapshot"];
+  readonly status: CustomerReservationStatus;
+  readonly terminalReason: string | null;
+  readonly timeline: ReadonlyArray<{
+    readonly data: unknown;
+    readonly occurredAt: string;
+    readonly type: string;
+  }>;
+}
+
+export interface CustomerReservationPaymentResponse {
+  readonly notice: "模拟支付，不会扣款，也不需要真实支付凭证。";
+  readonly payment: {
+    readonly amountCents: number;
+    readonly occurredAt: string;
+    readonly simulated: true;
+  };
+  readonly replayed: boolean;
+  readonly reservationId: string;
+  readonly status: "confirmed";
+}
+
+export interface CancelCustomerReservationRequest {
+  readonly reason: string;
+}
+
+export interface CustomerReservationCancellationResponse {
+  readonly cancelledAt: string;
+  readonly couponRestored: boolean;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly occurredAt: string;
+    readonly reason: string;
+    readonly simulated: true;
+  } | null;
+  readonly replayed: boolean;
+  readonly reservationId: string;
+  readonly status: "cancelled";
+}
+
 export const DEMO_TIME_DUE_HANDLER_KINDS = [
   "pending-reservation-expiration",
   "pending-order-expiration",
@@ -328,6 +416,7 @@ export interface SandboxResetReadyResponse {
 export interface ApiErrorResponse {
   readonly error: {
     readonly code: string;
+    readonly currentStatus?: CustomerReservationStatus;
     readonly message: string;
     readonly requestId: string;
   };
