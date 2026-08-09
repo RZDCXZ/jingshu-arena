@@ -173,7 +173,7 @@ export function RoleSwitchDialog({
             <span className="shell-eyebrow">未提交表单保护</span>
             <h2 id="role-switch-title">放弃未提交输入并切换？</h2>
             <p>
-              继续切换会放弃“筛选当前队列”中的输入，但不会撤销已经提交的业务数据。
+              继续切换会放弃当前队列或预约筛选，但不会撤销已经提交的业务数据。
             </p>
             <div className="shell-warning-note">
               <WarningCircle weight="duotone" />
@@ -340,7 +340,7 @@ export function StaleRoleDialog({
               : "刷新到当前角色"}
         </button>
         {dirty ? (
-          <small>“筛选当前队列”中的未提交输入仍保留；刷新会放弃该输入。</small>
+          <small>当前队列或预约筛选仍保留；刷新会放弃这些本地条件。</small>
         ) : null}
       </section>
     </div>

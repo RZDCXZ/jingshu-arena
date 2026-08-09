@@ -3162,6 +3162,22 @@ progress::-webkit-progress-value {
 .modal-form {
   margin-top: 10px;
 }
+
+.reservation-command-reason {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.reservation-command-reason textarea {
+  min-height: 104px;
+  resize: vertical;
+}
+
+.reservation-command-reason small {
+  color: var(--text-muted);
+  text-align: right;
+}
 .export-summary {
   display: grid;
   grid-template-columns: 1fr 1fr;

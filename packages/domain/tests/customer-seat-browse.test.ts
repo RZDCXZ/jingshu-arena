@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  businessDayRange,
   businessDayKey,
   deriveSeatAvailability,
   evaluateReservationCoupon,
@@ -18,6 +19,11 @@ describe("customer reservation browsing rules", () => {
     expect(businessDayKey(new Date("2026-08-09T22:00:00.000Z"))).toBe(
       "2026-08-10",
     );
+    expect(businessDayRange(new Date("2026-08-09T21:59:59.000Z"))).toEqual({
+      endsAt: new Date("2026-08-09T22:00:00.000Z"),
+      key: "2026-08-09",
+      startsAt: new Date("2026-08-08T22:00:00.000Z"),
+    });
   });
 
   it("starts an immediate reservation at the current half-hour segment", () => {

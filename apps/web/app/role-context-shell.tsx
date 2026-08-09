@@ -25,7 +25,7 @@ import jingshuMark from "../../../product-ui/management-system/design-prototype/
 import { DemoTimeDialog, SandboxResetDialog } from "./demo-tool-dialogs";
 import { RoleSwitchDialog, StaleRoleDialog } from "./role-context-dialogs";
 import { roleMeta, type RolePageId } from "./role-context-model";
-import { RoleWorkbench } from "./role-workbench";
+import { RoleWorkbench, type StaffReservationPreset } from "./role-workbench";
 import { CustomerSeatBrowser } from "./customer-seat-browser";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
@@ -172,6 +172,12 @@ export function RoleContextShell({
     roleMeta[context.role.id].defaultPage,
   );
   const [filter, setFilter] = useState("");
+  const [reservationFiltersDirty, setReservationFiltersDirty] = useState(false);
+  const [reservationPreset, setReservationPreset] =
+    useState<StaffReservationPreset>({});
+  const [managerLiveMode, setManagerLiveMode] = useState<
+    "reservations" | "workbench"
+  >("workbench");
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [roleDialogOpen, setRoleDialogOpen] = useState(false);
   const [demoToolDialog, setDemoToolDialog] = useState<"reset" | "time" | null>(
@@ -195,7 +201,14 @@ export function RoleContextShell({
   useEffect(() => {
     setActivePage(roleMeta[context.role.id].defaultPage);
     setFilter("");
+    setReservationFiltersDirty(false);
+    setReservationPreset({});
+    setManagerLiveMode("workbench");
   }, [context.role.id]);
+
+  useEffect(() => {
+    if (activePage !== "live-ops") setManagerLiveMode("workbench");
+  }, [activePage]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(narrowWorkbenchQuery);
@@ -588,17 +601,44 @@ export function RoleContextShell({
         <section className="role-workspace">
           {context.role.id === "customer" && activePage === "customer-home" ? (
             <CustomerSeatBrowser csrfToken={context.csrfToken} />
-          ) : context.role.id === "staff" && activePage === "workbench" ? (
+          ) : (context.role.id === "staff" &&
+              (activePage === "workbench" || activePage === "reservations")) ||
+            (context.role.id === "manager" && activePage === "live-ops") ? (
             <RoleWorkbench
+              csrfToken={context.csrfToken}
               filter={filter}
               inspectorOpen={inspectorOpen}
               onFilter={setFilter}
+              onFilterDirty={setReservationFiltersDirty}
               onInspector={setInspectorOpen}
-              onPreviewAction={() =>
-                setToast(
-                  "当前为界面参考任务；服务端办理到店由 ticket 09 接入。",
-                )
+              onNavigateReservations={(preset) => {
+                setReservationPreset(preset);
+                setFilter("");
+                if (context.role.id === "manager") {
+                  setManagerLiveMode("reservations");
+                } else {
+                  setActivePage("reservations");
+                }
+              }}
+              onNavigateWorkbench={() => {
+                setReservationPreset({});
+                setFilter("");
+                if (context.role.id === "manager") {
+                  setManagerLiveMode("workbench");
+                } else {
+                  setActivePage("workbench");
+                }
+              }}
+              onToast={setToast}
+              page={
+                context.role.id === "manager"
+                  ? managerLiveMode
+                  : activePage === "reservations"
+                    ? "reservations"
+                    : "workbench"
               }
+              preset={reservationPreset}
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
             />
           ) : (
             <ContextPage context={context} pageLabel={activePageLabel} />
@@ -619,7 +659,7 @@ export function RoleContextShell({
       {roleDialogOpen && !stale ? (
         <RoleSwitchDialog
           context={context}
-          dirty={filter.length > 0}
+          dirty={filter.length > 0 || reservationFiltersDirty}
           onClose={() => setRoleDialogOpen(false)}
           onStale={(reason) => {
             recoveryFenceRef.current = reason === "switch-outcome-unknown";

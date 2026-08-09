@@ -27,6 +27,7 @@ import {
   DataTable,
   FilterBar,
   InlineNotice,
+  Modal,
   SectionHeading,
   Select,
   StatusPill,
@@ -49,9 +50,53 @@ function queueActionFor(status) {
   return "查看详情";
 }
 
+function ReservationCommandModal({ label, onClose, onConfirm }) {
+  const [reason, setReason] = useState("");
+  const requiresReason = label === "取消预约" || label === "提前结束";
+  const trimmedReason = reason.trim();
+  return (
+    <Modal
+      title={`确认${label}`}
+      eyebrow="预约现场动作"
+      onClose={onClose}
+      footer={
+        <>
+          <Button tone="secondary" onClick={onClose}>
+            返回
+          </Button>
+          <Button
+            tone="primary"
+            disabled={requiresReason && !trimmedReason}
+            onClick={() => onConfirm(trimmedReason)}
+          >
+            确认{label}
+          </Button>
+        </>
+      }
+    >
+      <InlineNotice title="服务端负责最终校验" tone="info">
+        提交时会重新校验当前状态、时间窗口与门店范围，并原子写入业务事件和审计记录。
+      </InlineNotice>
+      {requiresReason && (
+        <label className="field reservation-command-reason">
+          <span>办理原因</span>
+          <textarea
+            maxLength={200}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="请输入 1–200 字纯文本原因"
+            value={reason}
+          />
+          <small>请勿填写真实个人信息 · {reason.length}/200</small>
+        </label>
+      )}
+    </Modal>
+  );
+}
+
 export function StaffWorkbench({
   reservationStatus,
   onReservationAction,
+  onReservationCancel,
   navigate,
   queueFilter,
   onQueueFilter,
@@ -60,11 +105,16 @@ export function StaffWorkbench({
   const hero = { ...reservations[0], status: reservationStatus };
   const actionLabel = queueActionFor(hero.status);
   const [selected, setSelected] = useState(hero.id);
+  const [reservationCommand, setReservationCommand] = useState(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const selectedReservation =
     selected === hero.id
       ? hero
       : reservations.find((item) => item.id === selected) || hero;
+  const selectedActionLabel = queueActionFor(selectedReservation.status);
+  const selectedIsTerminal = ["已完成", "已取消", "已过期"].includes(
+    selectedReservation.status,
+  );
   const normalizedFilter = queueFilter.trim().toLocaleLowerCase("zh-CN");
   const matchesFilter = (item) =>
     !normalizedFilter ||
@@ -172,7 +222,7 @@ export function StaffWorkbench({
                   disabled={readonly}
                   onClick={(event) => {
                     event.stopPropagation();
-                    onReservationAction();
+                    setReservationCommand(actionLabel);
                   }}
                 >
                   {actionLabel}
@@ -352,6 +402,16 @@ export function StaffWorkbench({
               </dd>
             </div>
           </dl>
+          {selectedReservation.id === hero.id &&
+            ["已确认", "已到店"].includes(hero.status) && (
+              <Button
+                tone="ghost"
+                disabled={readonly}
+                onClick={() => setReservationCommand("取消预约")}
+              >
+                取消预约
+              </Button>
+            )}
           <div className="inspector-section">
             <h3>业务事件</h3>
             <Timeline
@@ -365,9 +425,11 @@ export function StaffWorkbench({
                 },
                 {
                   time: "19:30",
-                  title: `${actionLabel}（待执行）`,
-                  meta: "店员操作",
-                  pending: true,
+                  title: selectedIsTerminal
+                    ? `预约${selectedReservation.status}`
+                    : `${selectedActionLabel}（待执行）`,
+                  meta: selectedIsTerminal ? "无后续业务动作" : "店员操作",
+                  pending: !selectedIsTerminal,
                 },
               ]}
             />
@@ -391,6 +453,20 @@ export function StaffWorkbench({
           </dl>
         </Surface>
       </aside>
+      {reservationCommand && (
+        <ReservationCommandModal
+          label={reservationCommand}
+          onClose={() => setReservationCommand(null)}
+          onConfirm={(reason) => {
+            if (reservationCommand === "取消预约") {
+              onReservationCancel(reason);
+            } else {
+              onReservationAction(reason);
+            }
+            setReservationCommand(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -398,12 +474,14 @@ export function StaffWorkbench({
 export function ReservationsPage({
   reservationStatus,
   onReservationAction,
+  onReservationCancel,
   onDateRange,
   readonly,
 }) {
   const [selectedId, setSelectedId] = useState(reservations[0].id);
   const [statusFilter, setStatusFilter] = useState("全部状态");
   const [search, setSearch] = useState("");
+  const [reservationCommand, setReservationCommand] = useState(null);
   const rows = useMemo(
     () =>
       reservations
@@ -420,6 +498,9 @@ export function ReservationsPage({
   );
   const selected = rows.find((item) => item.id === selectedId) ||
     rows[0] || { ...reservations[0], status: reservationStatus };
+  const selectedIsTerminal = ["已完成", "已取消", "已过期"].includes(
+    selected.status,
+  );
 
   const columns = [
     { key: "time", label: "计划时间" },
@@ -516,9 +597,19 @@ export function ReservationsPage({
                   tone="primary"
                   icon={selected.status === "已确认" ? SignIn : Pulse}
                   disabled={readonly}
-                  onClick={onReservationAction}
+                  onClick={() => setReservationCommand(queueActionFor(selected.status))}
                 >
                   {queueActionFor(selected.status)}
+                </Button>
+              )}
+            {selected.id === reservations[0].id &&
+              ["已确认", "已到店"].includes(selected.status) && (
+                <Button
+                  tone="ghost"
+                  disabled={readonly}
+                  onClick={() => setReservationCommand("取消预约")}
+                >
+                  取消预约
                 </Button>
               )}
           </div>
@@ -570,20 +661,34 @@ export function ReservationsPage({
                 {
                   time: "19:30",
                   title:
-                    selected.status === "已完成"
-                      ? "预约已完成"
+                    selectedIsTerminal
+                      ? `预约${selected.status}`
                       : queueActionFor(selected.status),
                   meta:
-                    selected.status === "已完成"
+                    selectedIsTerminal
                       ? "无后续业务动作"
                       : "下一合法动作",
-                  pending: selected.status !== "已完成",
+                  pending: !selectedIsTerminal,
                 },
               ]}
             />
           </section>
         </div>
       </aside>
+      {reservationCommand && (
+        <ReservationCommandModal
+          label={reservationCommand}
+          onClose={() => setReservationCommand(null)}
+          onConfirm={(reason) => {
+            if (reservationCommand === "取消预约") {
+              onReservationCancel(reason);
+            } else {
+              onReservationAction(reason);
+            }
+            setReservationCommand(null);
+          }}
+        />
+      )}
     </div>
   );
 }

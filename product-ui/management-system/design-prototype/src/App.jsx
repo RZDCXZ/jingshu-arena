@@ -193,6 +193,15 @@ export function App() {
     });
   }
 
+  function handleReservationCancel(reason) {
+    if (readonly) return;
+    setReservationStatus("已取消");
+    setToast({
+      tone: "success",
+      text: `预约已取消并记录原因：${reason}`,
+    });
+  }
+
   function handleOrderAdvance(id) {
     if (readonly) return;
     const current = orderStates[id] || "已模拟支付";
@@ -314,6 +323,7 @@ export function App() {
           <StaffWorkbench
             reservationStatus={reservationStatus}
             onReservationAction={handleReservationAction}
+            onReservationCancel={handleReservationCancel}
             navigate={navigate}
             queueFilter={queueFilter}
             onQueueFilter={setQueueFilter}
@@ -325,6 +335,7 @@ export function App() {
           <ReservationsPage
             reservationStatus={reservationStatus}
             onReservationAction={handleReservationAction}
+            onReservationCancel={handleReservationCancel}
             onDateRange={() => setActionModal("经营日范围")}
             readonly={readonly}
           />
@@ -370,6 +381,7 @@ export function App() {
             onTab={setLiveOpsTab}
             reservationStatus={reservationStatus}
             onReservationAction={handleReservationAction}
+            onReservationCancel={handleReservationCancel}
             onOpenAction={setActionModal}
             orderStates={orderStates}
             onOrderAdvance={handleOrderAdvance}
@@ -769,6 +781,7 @@ function ManagerLiveOps({
   onTab,
   reservationStatus,
   onReservationAction,
+  onReservationCancel,
   onOpenAction,
   orderStates,
   onOrderAdvance,
@@ -807,6 +820,7 @@ function ManagerLiveOps({
           <ReservationsPage
             reservationStatus={reservationStatus}
             onReservationAction={onReservationAction}
+            onReservationCancel={onReservationCancel}
             onDateRange={() => onOpenAction("经营日范围")}
             readonly={readonly}
           />

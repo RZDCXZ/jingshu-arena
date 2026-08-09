@@ -2,11 +2,18 @@ import { createHash, randomUUID } from "node:crypto";
 
 import pg from "pg";
 import type { PoolClient } from "pg";
-import type { PublicRole } from "@jingshu/contracts";
+import type {
+  FrontlineReservationAction,
+  PublicRole,
+  StaffReservationAnomalyFilter,
+  StaffReservationTimeFilter,
+} from "@jingshu/contracts";
 import {
+  businessDayRange,
   buildPublicSandboxSeed,
   type CustomerReservationMode,
   decideReservationLifecycle,
+  decideFrontlineReservationLifecycle,
   deriveSeatAvailability,
   evaluateReservationCoupon,
   type MachineProfileCode,
@@ -26,6 +33,7 @@ import {
   CustomerReservationIdempotencyConflictError,
   CustomerReservationLifecycleConflictError,
   CustomerSeatBrowseValidationError,
+  FrontlineReservationConflictError,
   PublicSandboxIdempotencyConflictError,
   PublicSandboxOwnershipConflictError,
   RoleContextStaleError,
@@ -293,6 +301,118 @@ export interface DatabaseCustomerReservationDetail {
   readonly terminalReason: string | null;
 }
 
+export type FrontlineRole = "manager" | "staff";
+
+export interface ReadStaffReservationWorkbenchInput extends ReadRoleContextInput {
+  readonly role: FrontlineRole;
+}
+
+export interface ReadStaffReservationListInput extends ReadStaffReservationWorkbenchInput {
+  readonly anomaly: StaffReservationAnomalyFilter;
+  readonly areaCode: string | null;
+  readonly machineProfileCode: MachineProfileCode | null;
+  readonly search: string;
+  readonly status: ReservationStatus | null;
+  readonly time: StaffReservationTimeFilter;
+}
+
+export interface ReadStaffReservationDetailInput extends ReadStaffReservationWorkbenchInput {
+  readonly reservationId: string;
+}
+
+export interface ExecuteStaffReservationCommandInput extends ReadStaffReservationDetailInput {
+  readonly action: FrontlineReservationAction;
+  readonly idempotencyKey: string;
+  readonly reason: string | null;
+  readonly requestId: string;
+}
+
+export interface DatabaseStaffReservationSummary {
+  readonly anomaly: {
+    readonly code: "seat-maintenance";
+    readonly label: string;
+  } | null;
+  readonly area: { readonly code: string; readonly displayName: string };
+  readonly arrivalWindow: {
+    readonly closesAt: Date;
+    readonly opensAt: Date;
+  };
+  readonly customer: { readonly displayName: string };
+  readonly machineProfile: {
+    readonly code: MachineProfileCode;
+    readonly displayName: string;
+  };
+  readonly payableCents: number;
+  readonly reservationId: string;
+  readonly seat: { readonly code: string };
+  readonly status: ReservationStatus;
+  readonly window: { readonly endsAt: Date; readonly startsAt: Date };
+}
+
+export interface DatabaseStaffReservationWorkbench {
+  readonly businessDay: {
+    readonly endsAt: Date;
+    readonly key: string;
+    readonly startsAt: Date;
+  };
+  readonly currentTime: Date;
+  readonly queues: {
+    readonly anomalies: ReadonlyArray<DatabaseStaffReservationSummary>;
+    readonly arrivalWindow: ReadonlyArray<DatabaseStaffReservationSummary>;
+    readonly arrived: ReadonlyArray<DatabaseStaffReservationSummary>;
+    readonly inUse: ReadonlyArray<DatabaseStaffReservationSummary>;
+  };
+  readonly store: { readonly code: string; readonly displayName: string };
+}
+
+export interface DatabaseStaffReservationList {
+  readonly businessDay: DatabaseStaffReservationWorkbench["businessDay"];
+  readonly currentTime: Date;
+  readonly filterOptions: {
+    readonly areas: ReadonlyArray<{
+      readonly code: string;
+      readonly displayName: string;
+    }>;
+    readonly machineProfiles: ReadonlyArray<{
+      readonly code: MachineProfileCode;
+      readonly displayName: string;
+    }>;
+  };
+  readonly rows: ReadonlyArray<DatabaseStaffReservationSummary>;
+  readonly store: DatabaseStaffReservationWorkbench["store"];
+}
+
+export interface DatabaseStaffReservationDetail {
+  readonly actions: {
+    readonly canCancel: boolean;
+    readonly primary: {
+      readonly kind: Exclude<FrontlineReservationAction, "cancel">;
+      readonly label: "办理到店" | "开始使用" | "提前结束";
+      readonly requiresReason: boolean;
+    } | null;
+  };
+  readonly arrivedAt: Date | null;
+  readonly auditAvailable: boolean;
+  readonly cancelledAt: Date | null;
+  readonly completedAt: Date | null;
+  readonly currentTime: Date;
+  readonly events: DatabaseCustomerReservationDetail["events"];
+  readonly refund: DatabaseCustomerReservationDetail["refund"];
+  readonly related: DatabaseCustomerReservationDetail["related"];
+  readonly reservation: DatabaseStaffReservationSummary;
+  readonly snapshot: DatabaseCustomerPendingReservation["snapshot"];
+  readonly startedAt: Date | null;
+  readonly terminalReason: string | null;
+}
+
+export interface DatabaseStaffReservationCommand {
+  readonly action: FrontlineReservationAction;
+  readonly occurredAt: Date;
+  readonly replayed: boolean;
+  readonly reservationId: string;
+  readonly status: ReservationStatus;
+}
+
 export interface ReadCurrentRoleContextInput {
   sandboxId: string;
   claimRole?: PublicRole;
@@ -353,6 +473,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
     input: CancelCustomerReservationInput,
   ): Promise<DatabaseCustomerReservationCancellation>;
   create(input: CreatePublicSandboxInput): Promise<PublicSandboxResult>;
+  executeStaffReservationCommand(
+    input: ExecuteStaffReservationCommandInput,
+  ): Promise<DatabaseStaffReservationCommand>;
   createCustomerPendingReservation(
     input: CreateCustomerPendingReservationInput,
   ): Promise<DatabaseCustomerPendingReservation>;
@@ -362,6 +485,15 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readCurrentRoleContext(
     input: ReadCurrentRoleContextInput,
   ): Promise<DatabaseRoleContext>;
+  readStaffReservationDetail(
+    input: ReadStaffReservationDetailInput,
+  ): Promise<DatabaseStaffReservationDetail>;
+  readStaffReservationList(
+    input: ReadStaffReservationListInput,
+  ): Promise<DatabaseStaffReservationList>;
+  readStaffReservationWorkbench(
+    input: ReadStaffReservationWorkbenchInput,
+  ): Promise<DatabaseStaffReservationWorkbench>;
   readCustomerSeatAvailability(
     input: ReadCustomerSeatAvailabilityInput,
   ): Promise<DatabaseCustomerSeatAvailability>;
@@ -574,6 +706,52 @@ interface ReservationCancelCommandRow {
     } | null;
     reservationId: string;
     status: "cancelled";
+  };
+}
+
+interface StaffReservationRow {
+  area_code: string;
+  area_display_name: string;
+  arrived_business_at: Date | null;
+  cancelled_business_at: Date | null;
+  completed_business_at: Date | null;
+  customer_display_name: string;
+  customer_persona_id: string;
+  ends_at: Date;
+  id: string;
+  machine_profile_code: MachineProfileCode;
+  machine_profile_display_name: string;
+  price_snapshot: ReservationSnapshotRecord;
+  refund_amount_cents: number | null;
+  refund_business_occurred_at: Date | null;
+  refund_reason: string | null;
+  sandbox_id: string;
+  seat_code: string;
+  seat_operational_status: "maintenance" | "normal";
+  starts_at: Date;
+  started_business_at: Date | null;
+  status: ReservationStatus;
+  store_code: string;
+  store_display_name: string;
+  store_id: string;
+  terminal_reason: string | null;
+  hold_expires_at: Date | null;
+  coupon_id: string | null;
+}
+
+interface FrontlineContext {
+  readonly actorStoreId: string;
+  readonly sandbox: SandboxRow;
+}
+
+interface FrontlineCommandRow {
+  command_type: FrontlineReservationAction;
+  payload_hash: string;
+  result_data: {
+    action: FrontlineReservationAction;
+    occurredAt: string;
+    reservationId: string;
+    status: ReservationStatus;
   };
 }
 
@@ -888,7 +1066,7 @@ async function processDueReservationExpirations(
   const definition = reservationExpiryDefinition(input.kind);
   const dueExpression = reservationDueExpression(input.kind);
   const due = await client.query<DueReservationRow>(
-    `select reservation.id, reservation.store_id,
+    `select reservation.id, reservation.sandbox_id, reservation.store_id,
             reservation.customer_persona_id, reservation.status,
             reservation.coupon_id, reservation.price_snapshot,
             ${dueExpression} as due_at
@@ -1058,7 +1236,124 @@ function reservationDueHandlers(): DemoTimeDueHandlerRegistry {
           targetBusinessTime: context.targetBusinessTime,
         }),
     },
+    "reservation-auto-completion": {
+      nextDueAt: async (context) => {
+        const result = await context.client.query<{ due_at: Date | null }>(
+          `select min(ends_at) as due_at from reservations
+            where sandbox_id = $1 and status = 'in-use'
+              and price_snapshot is not null and ends_at > $2`,
+          [context.sandboxId, context.currentBusinessTime],
+        );
+        return result.rows[0]?.due_at ?? null;
+      },
+      previewDue: async (context) => {
+        const result = await context.client.query<{ count: string }>(
+          `select count(*)::text as count from reservations
+            where sandbox_id = $1 and status = 'in-use'
+              and price_snapshot is not null
+              and ends_at > $2 and ends_at <= $3`,
+          [
+            context.sandboxId,
+            context.currentBusinessTime,
+            context.targetBusinessTime,
+          ],
+        );
+        return Number(result.rows[0]?.count ?? 0);
+      },
+      processDue: (context) =>
+        processDueReservationAutoCompletions(context.client, {
+          recordedAt: context.recordedAt,
+          sandboxId: context.sandboxId,
+          targetBusinessTime: context.targetBusinessTime,
+        }),
+    },
   };
+}
+
+async function processDueReservationAutoCompletions(
+  client: PoolClient,
+  input: {
+    readonly recordedAt: Date;
+    readonly reservationId?: string;
+    readonly sandboxId: string;
+    readonly targetBusinessTime: Date;
+  },
+): Promise<number> {
+  const due = await client.query<{
+    customer_persona_id: string;
+    ends_at: Date;
+    id: string;
+    price_snapshot: ReservationSnapshotRecord;
+    store_id: string;
+  }>(
+    `select id, store_id, customer_persona_id, ends_at, price_snapshot
+       from reservations
+      where sandbox_id = $1 and status = 'in-use'
+        and price_snapshot is not null and ends_at <= $2
+        and ($3::uuid is null or id = $3)
+      order by ends_at, id
+      for update skip locked`,
+    [input.sandboxId, input.targetBusinessTime, input.reservationId ?? null],
+  );
+  for (const row of due.rows) {
+    const snapshot = row.price_snapshot;
+    const decision = decideFrontlineReservationLifecycle({
+      action: "complete-auto",
+      businessTime: row.ends_at,
+      endsAt: new Date(snapshot.window.endsAt),
+      hasCoupon: snapshot.coupon !== null,
+      holdExpiresAt: null,
+      payableCents: snapshot.price.payableCents,
+      startsAt: new Date(snapshot.window.startsAt),
+      status: "in-use",
+    });
+    if (decision.status !== "ready") {
+      throw new Error("A due in-use reservation could not be auto-completed.");
+    }
+    await client.query(
+      `update reservations
+          set status = 'completed', completed_business_at = $3,
+              terminal_reason = 'planned-end-auto-completed'
+        where sandbox_id = $1 and id = $2 and status = 'in-use'`,
+      [input.sandboxId, row.id, row.ends_at],
+    );
+    await client.query(
+      `insert into reservation_business_events (
+         id, sandbox_id, reservation_id, event_type, event_data,
+         business_occurred_at, recorded_at
+       ) values ($1, $2, $3, 'reservation.auto-completed', $4::jsonb, $5, $6)`,
+      [
+        randomUUID(),
+        input.sandboxId,
+        row.id,
+        JSON.stringify({ reason: "planned-end" }),
+        row.ends_at,
+        input.recordedAt,
+      ],
+    );
+    await client.query(
+      `insert into audit_events (
+         id, sandbox_id, store_id, persona_id, role, action, object_type,
+         object_id, result, reason, request_id, before_data, after_data,
+         business_occurred_at, recorded_at
+       ) values ($1, $2, $3, $4, 'customer', 'reservation.complete-auto',
+         'reservation', $5, 'allowed', 'planned-end', $6, $7::jsonb,
+         $8::jsonb, $9, $10)`,
+      [
+        randomUUID(),
+        input.sandboxId,
+        row.store_id,
+        row.customer_persona_id,
+        row.id,
+        randomUUID(),
+        JSON.stringify({ status: "in-use" }),
+        JSON.stringify({ status: "completed" }),
+        row.ends_at,
+        input.recordedAt,
+      ],
+    );
+  }
+  return due.rowCount ?? 0;
 }
 
 function reservationCouponEligibility(input: {
@@ -1131,6 +1426,293 @@ async function assertCustomerBrowseContext(
   );
   if (!persona.rows[0]) throw new RoleContextUnavailableError();
   return sandboxRow;
+}
+
+async function assertFrontlineContext(
+  client: PoolClient,
+  input: ReadStaffReservationWorkbenchInput,
+  wallTime: Date,
+): Promise<FrontlineContext> {
+  const sandbox = await client.query<SandboxRow>(
+    `select ${SANDBOX_ROW_COLUMNS}
+       from sandboxes where id = $1`,
+    [input.sandboxId],
+  );
+  const sandboxRow = sandbox.rows[0];
+  if (
+    !sandboxRow ||
+    sandboxRow.invalidated_at !== null ||
+    sandboxRow.expires_at.getTime() <= wallTime.getTime()
+  ) {
+    throw new RoleContextUnavailableError();
+  }
+  if (
+    (input.role !== "staff" && input.role !== "manager") ||
+    sandboxRow.role_context_role !== input.role ||
+    sandboxRow.role_context_version !== input.contextVersion
+  ) {
+    throw new RoleContextStaleError();
+  }
+  const persona = await client.query<{ store_id: string | null }>(
+    `select store_id from demo_personas
+      where sandbox_id = $1 and id = $2 and role = $3 and protected = true`,
+    [input.sandboxId, input.personaId, input.role],
+  );
+  const actorStoreId = persona.rows[0]?.store_id;
+  if (!actorStoreId) throw new RoleContextUnavailableError();
+  return { actorStoreId, sandbox: sandboxRow };
+}
+
+async function readStaffReservationRows(
+  client: PoolClient,
+  input: {
+    readonly reservationId?: string;
+    readonly sandboxId: string;
+    readonly lock?: boolean;
+  },
+): Promise<ReadonlyArray<StaffReservationRow>> {
+  const result = await client.query<StaffReservationRow>(
+    `select reservation.id, reservation.sandbox_id, reservation.store_id,
+            reservation.customer_persona_id, reservation.status,
+            reservation.starts_at, reservation.ends_at,
+            reservation.hold_expires_at, reservation.price_snapshot,
+            reservation.coupon_id, reservation.arrived_business_at,
+            reservation.started_business_at,
+            reservation.completed_business_at,
+            reservation.cancelled_business_at, reservation.terminal_reason,
+            customer.display_name as customer_display_name,
+            store.code as store_code, store.display_name as store_display_name,
+            area.code as area_code, area.display_name as area_display_name,
+            machine.code as machine_profile_code,
+            machine.display_name as machine_profile_display_name,
+            seat.code as seat_code,
+            seat.operational_status as seat_operational_status,
+            refund.amount_cents as refund_amount_cents,
+            refund.reason as refund_reason,
+            refund.business_occurred_at as refund_business_occurred_at
+       from reservations reservation
+       join demo_personas customer on customer.id = reservation.customer_persona_id
+       join stores store on store.id = reservation.store_id
+       join seats seat on seat.id = reservation.seat_id
+       join store_areas area on area.id = seat.area_id
+       join machine_profiles machine on machine.id = seat.machine_profile_id
+       left join reservation_simulated_refunds refund
+         on refund.reservation_id = reservation.id
+      where reservation.sandbox_id = $1
+        and reservation.price_snapshot is not null
+        and ($2::uuid is null or reservation.id = $2)
+      order by reservation.starts_at, reservation.id
+      ${input.lock ? "for update of reservation" : ""}`,
+    [input.sandboxId, input.reservationId ?? null],
+  );
+  return result.rows;
+}
+
+function staffReservationSummary(
+  row: StaffReservationRow,
+): DatabaseStaffReservationSummary {
+  return {
+    anomaly:
+      row.seat_operational_status === "maintenance"
+        ? { code: "seat-maintenance", label: "座位维护中" }
+        : null,
+    area: { code: row.area_code, displayName: row.area_display_name },
+    arrivalWindow: {
+      closesAt: new Date(row.starts_at.getTime() + 15 * 60 * 1_000),
+      opensAt: new Date(row.starts_at.getTime() - 30 * 60 * 1_000),
+    },
+    customer: { displayName: row.customer_display_name },
+    machineProfile: {
+      code: row.machine_profile_code,
+      displayName: row.machine_profile_display_name,
+    },
+    payableCents: row.price_snapshot.price.payableCents,
+    reservationId: row.id,
+    seat: { code: row.seat_code },
+    status: row.status,
+    window: { endsAt: row.ends_at, startsAt: row.starts_at },
+  };
+}
+
+function frontlinePrimaryAction(
+  row: StaffReservationRow,
+  currentTime: Date,
+): DatabaseStaffReservationDetail["actions"]["primary"] {
+  const now = currentTime.getTime();
+  const startsAt = row.starts_at.getTime();
+  if (
+    row.status === "confirmed" &&
+    now >= startsAt - 30 * 60 * 1_000 &&
+    now <= startsAt + 15 * 60 * 1_000
+  ) {
+    return { kind: "arrive", label: "办理到店", requiresReason: false };
+  }
+  if (
+    row.status === "arrived" &&
+    now >= startsAt &&
+    now < row.ends_at.getTime()
+  ) {
+    return { kind: "start-use", label: "开始使用", requiresReason: false };
+  }
+  if (row.status === "in-use" && now < row.ends_at.getTime()) {
+    return { kind: "complete-early", label: "提前结束", requiresReason: true };
+  }
+  return null;
+}
+
+function canFrontlineCancel(row: StaffReservationRow, currentTime: Date) {
+  if (row.status === "pending-confirmation") {
+    return Boolean(
+      row.hold_expires_at &&
+      currentTime.getTime() < row.hold_expires_at.getTime(),
+    );
+  }
+  return row.status === "confirmed" || row.status === "arrived";
+}
+
+async function staffReservationDetailFromRow(
+  client: PoolClient,
+  row: StaffReservationRow,
+  currentTime: Date,
+  role: FrontlineRole,
+): Promise<DatabaseStaffReservationDetail> {
+  const events = await client.query<ReservationEventRow>(
+    `select event_type, event_data, business_occurred_at
+       from reservation_business_events
+      where sandbox_id = $1 and reservation_id = $2
+      order by sequence`,
+    [row.sandbox_id, row.id],
+  );
+  return {
+    actions: {
+      canCancel: canFrontlineCancel(row, currentTime),
+      primary: frontlinePrimaryAction(row, currentTime),
+    },
+    arrivedAt: row.arrived_business_at,
+    auditAvailable: role === "manager",
+    cancelledAt: row.cancelled_business_at,
+    completedAt: row.completed_business_at,
+    currentTime,
+    events: events.rows.map((event) => ({
+      data: event.event_data,
+      occurredAt: event.business_occurred_at,
+      type: event.event_type,
+    })),
+    refund:
+      row.refund_amount_cents !== null &&
+      row.refund_business_occurred_at &&
+      row.refund_reason
+        ? {
+            amountCents: row.refund_amount_cents,
+            occurredAt: row.refund_business_occurred_at,
+            reason: row.refund_reason,
+            simulated: true,
+          }
+        : null,
+    related: { orders: [], repairs: [] },
+    reservation: staffReservationSummary(row),
+    snapshot: reservationSnapshot(row.price_snapshot),
+    startedAt: row.started_business_at,
+    terminalReason: row.terminal_reason,
+  };
+}
+
+async function processFrontlineReservationDeadlines(
+  client: PoolClient,
+  input: {
+    readonly currentTime: Date;
+    readonly recordedAt: Date;
+    readonly reservationId?: string;
+    readonly sandboxId: string;
+  },
+) {
+  await processDueReservationExpirations(client, {
+    kind: "pending",
+    recordedAt: input.recordedAt,
+    ...(input.reservationId ? { reservationId: input.reservationId } : {}),
+    sandboxId: input.sandboxId,
+    targetBusinessTime: input.currentTime,
+  });
+  await processDueReservationExpirations(client, {
+    kind: "no-show",
+    recordedAt: input.recordedAt,
+    ...(input.reservationId ? { reservationId: input.reservationId } : {}),
+    sandboxId: input.sandboxId,
+    targetBusinessTime: input.currentTime,
+  });
+  await processDueReservationAutoCompletions(client, {
+    recordedAt: input.recordedAt,
+    ...(input.reservationId ? { reservationId: input.reservationId } : {}),
+    sandboxId: input.sandboxId,
+    targetBusinessTime: input.currentTime,
+  });
+}
+
+async function readFrontlineStore(
+  client: PoolClient,
+  sandboxId: string,
+  storeId: string,
+): Promise<{ code: string; displayName: string }> {
+  const result = await client.query<{ code: string; display_name: string }>(
+    `select code, display_name from stores
+      where sandbox_id = $1 and id = $2`,
+    [sandboxId, storeId],
+  );
+  const row = result.rows[0];
+  if (!row) throw new RoleContextUnavailableError();
+  return { code: row.code, displayName: row.display_name };
+}
+
+async function recordFrontlineReservationDenial(
+  client: PoolClient,
+  input: {
+    readonly action: FrontlineReservationAction;
+    readonly actorStoreId: string;
+    readonly businessTime: Date;
+    readonly currentStatus: ReservationStatus | null;
+    readonly personaId: string;
+    readonly reason: string;
+    readonly recordedAt: Date;
+    readonly requestId: string;
+    readonly reservationId: string;
+    readonly role: FrontlineRole;
+    readonly sandboxId: string;
+  },
+) {
+  await client.query(
+    `insert into audit_events (
+       id, sandbox_id, store_id, persona_id, role, action, object_type,
+       object_id, result, reason, request_id, before_data, after_data,
+       business_occurred_at, recorded_at
+     ) values ($1, $2, $3, $4, $5, $6, 'reservation', $7, 'denied',
+       $8, $9, $10::jsonb, $11::jsonb, $12, $13)`,
+    [
+      randomUUID(),
+      input.sandboxId,
+      input.actorStoreId,
+      input.personaId,
+      input.role,
+      `reservation.${input.action}`,
+      input.reservationId,
+      input.reason,
+      input.requestId,
+      JSON.stringify({ status: input.currentStatus }),
+      JSON.stringify({ status: input.currentStatus }),
+      input.businessTime,
+      input.recordedAt,
+    ],
+  );
+}
+
+function frontlineCommandFromStored(
+  value: FrontlineCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseStaffReservationCommand {
+  return {
+    ...value,
+    occurredAt: new Date(value.occurredAt),
+    replayed,
+  };
 }
 
 function buildRoleContext(
@@ -1606,6 +2188,38 @@ async function materializePublicSandbox(input: {
       seededCoupons.map((coupon) => coupon.status),
     ],
   );
+  const staffQueueCustomerNames = [
+    "林澈",
+    "陆远",
+    "陈牧",
+    "顾辰",
+    "周屿",
+    "许泽",
+    "莫子昂",
+    "叶岚",
+  ] as const;
+  const staffQueueCustomers = staffQueueCustomerNames.map((displayName) => ({
+    displayName,
+    id: randomUUID(),
+  }));
+  await input.client.query(
+    `insert into demo_personas (
+       id, sandbox_id, store_id, role, display_name, scope, protected
+     )
+     select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::text[],
+       $5::text[], $6::text[], $7::boolean[]
+     )`,
+    [
+      staffQueueCustomers.map((persona) => persona.id),
+      staffQueueCustomers.map(() => input.sandboxId),
+      staffQueueCustomers.map(() => null),
+      staffQueueCustomers.map(() => "customer"),
+      staffQueueCustomers.map((persona) => persona.displayName),
+      staffQueueCustomers.map(() => "合成预约顾客"),
+      staffQueueCustomers.map(() => false),
+    ],
+  );
   const currentSegmentStart = new Date(
     Math.floor(input.wallTime.getTime() / (30 * 60 * 1_000)) *
       (30 * 60 * 1_000),
@@ -1647,6 +2261,293 @@ async function materializePublicSandbox(input: {
     ],
   );
 
+  const flagshipAreaById = new Map(
+    seededAreas
+      .filter((area) => area.storeCode === "prism-flagship")
+      .map((area) => [area.id, area]),
+  );
+  const machineProfileByCode = new Map(
+    publicSandboxSeed.machineProfiles.map((profile) => [profile.code, profile]),
+  );
+  const staffReservationDefinitions = [
+    {
+      customerIndex: 0,
+      endsOffsetMinutes: 150,
+      seatCode: "A-18",
+      startsOffsetMinutes: 30,
+      status: "confirmed",
+    },
+    {
+      customerIndex: 1,
+      endsOffsetMinutes: 180,
+      seatCode: "B-07",
+      startsOffsetMinutes: 60,
+      status: "confirmed",
+    },
+    {
+      customerIndex: 2,
+      endsOffsetMinutes: 210,
+      seatCode: "C-12",
+      startsOffsetMinutes: 90,
+      status: "confirmed",
+    },
+    {
+      customerIndex: 3,
+      endsOffsetMinutes: 120,
+      seatCode: "B-03",
+      startsOffsetMinutes: 0,
+      status: "arrived",
+    },
+    {
+      customerIndex: 4,
+      endsOffsetMinutes: 90,
+      seatCode: "C-01",
+      startsOffsetMinutes: -30,
+      status: "in-use",
+    },
+    {
+      customerIndex: 5,
+      endsOffsetMinutes: 60,
+      seatCode: "A-09",
+      startsOffsetMinutes: -60,
+      status: "in-use",
+    },
+    {
+      customerIndex: 6,
+      endsOffsetMinutes: -60,
+      seatCode: "D-05",
+      startsOffsetMinutes: -180,
+      status: "completed",
+    },
+    {
+      customerIndex: 7,
+      endsOffsetMinutes: 300,
+      seatCode: "D-06",
+      startsOffsetMinutes: 180,
+      status: "cancelled",
+    },
+  ] as const;
+  const staffReservations = staffReservationDefinitions.map((definition) => {
+    const seat = seatByKey.get(`prism-flagship:${definition.seatCode}`);
+    const customer = staffQueueCustomers[definition.customerIndex];
+    if (!seat || !customer) {
+      throw new Error(
+        "The deterministic staff reservation seed is incomplete.",
+      );
+    }
+    const area = flagshipAreaById.get(seat.areaId);
+    const profile = machineProfileByCode.get(seat.machineProfileCode);
+    if (!area || !profile) {
+      throw new Error("The staff reservation snapshot seed is incomplete.");
+    }
+    const startsAt = new Date(
+      currentSegmentStart.getTime() + definition.startsOffsetMinutes * 60_000,
+    );
+    const endsAt = new Date(
+      currentSegmentStart.getTime() + definition.endsOffsetMinutes * 60_000,
+    );
+    const price = priceReservationWindow({
+      baseHourlyCents: flagshipStore.baseHourlyCents[seat.machineProfileCode],
+      endsAt,
+      startsAt,
+    });
+    const confirmedAt = new Date(
+      Math.min(
+        startsAt.getTime() - 20 * 60_000,
+        currentSegmentStart.getTime() - 20 * 60_000,
+      ),
+    );
+    const snapshot: ReservationSnapshotRecord = {
+      area: { code: area.code, displayName: area.displayName },
+      coupon: null,
+      machineProfile: {
+        code: profile.code,
+        displayName: profile.displayName,
+        experienceDescription: profile.experienceDescription,
+      },
+      price: {
+        discountCents: 0,
+        payableCents: price.totalCents,
+        segments: price.segments.map((segment) => ({
+          ...segment,
+          endsAt: segment.endsAt.toISOString(),
+          startsAt: segment.startsAt.toISOString(),
+        })),
+        subtotalCents: price.totalCents,
+      },
+      seat: { code: seat.code },
+      store: {
+        code: flagshipStore.code,
+        displayName: flagshipStore.displayName,
+      },
+      window: {
+        endsAt: endsAt.toISOString(),
+        startsAt: startsAt.toISOString(),
+      },
+    };
+    return {
+      arrivedAt:
+        definition.status === "arrived" ||
+        definition.status === "in-use" ||
+        definition.status === "completed"
+          ? new Date(startsAt.getTime() - 5 * 60_000)
+          : null,
+      cancelledAt:
+        definition.status === "cancelled"
+          ? new Date(currentSegmentStart.getTime() - 10 * 60_000)
+          : null,
+      completedAt: definition.status === "completed" ? endsAt : null,
+      confirmedAt,
+      customer,
+      endsAt,
+      id: randomUUID(),
+      seat,
+      simulatedPaymentCents: price.totalCents,
+      snapshot,
+      startedAt:
+        definition.status === "in-use" || definition.status === "completed"
+          ? startsAt
+          : null,
+      startsAt,
+      status: definition.status,
+      terminalReason:
+        definition.status === "completed"
+          ? "planned-end-auto-completed"
+          : definition.status === "cancelled"
+            ? "顾客行程变更"
+            : null,
+    };
+  });
+  await input.client.query(
+    `insert into reservations (
+       id, sandbox_id, store_id, customer_persona_id, seat_id, status,
+       starts_at, ends_at, price_snapshot, simulated_payment_cents,
+       confirmed_business_at, arrived_business_at, started_business_at,
+       completed_business_at, cancelled_business_at, terminal_reason
+     )
+     select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
+       $6::text[], $7::timestamptz[], $8::timestamptz[], $9::jsonb[],
+       $10::integer[], $11::timestamptz[], $12::timestamptz[],
+       $13::timestamptz[], $14::timestamptz[], $15::timestamptz[], $16::text[]
+     )`,
+    [
+      staffReservations.map((reservation) => reservation.id),
+      staffReservations.map(() => input.sandboxId),
+      staffReservations.map((reservation) => reservation.seat.storeId),
+      staffReservations.map((reservation) => reservation.customer.id),
+      staffReservations.map((reservation) => reservation.seat.id),
+      staffReservations.map((reservation) => reservation.status),
+      staffReservations.map((reservation) => reservation.startsAt),
+      staffReservations.map((reservation) => reservation.endsAt),
+      staffReservations.map((reservation) =>
+        JSON.stringify(reservation.snapshot),
+      ),
+      staffReservations.map((reservation) => reservation.simulatedPaymentCents),
+      staffReservations.map((reservation) => reservation.confirmedAt),
+      staffReservations.map((reservation) => reservation.arrivedAt),
+      staffReservations.map((reservation) => reservation.startedAt),
+      staffReservations.map((reservation) => reservation.completedAt),
+      staffReservations.map((reservation) => reservation.cancelledAt),
+      staffReservations.map((reservation) => reservation.terminalReason),
+    ],
+  );
+  const seededCancelledReservations = staffReservations.filter(
+    (reservation) =>
+      reservation.status === "cancelled" && reservation.cancelledAt,
+  );
+  if (seededCancelledReservations.length > 0) {
+    await input.client.query(
+      `insert into reservation_simulated_refunds (
+         id, sandbox_id, reservation_id, amount_cents, reason,
+         business_occurred_at
+       )
+       select * from unnest(
+         $1::uuid[], $2::uuid[], $3::uuid[], $4::integer[], $5::text[],
+         $6::timestamptz[]
+       )`,
+      [
+        seededCancelledReservations.map(() => randomUUID()),
+        seededCancelledReservations.map(() => input.sandboxId),
+        seededCancelledReservations.map((reservation) => reservation.id),
+        seededCancelledReservations.map(
+          (reservation) => reservation.simulatedPaymentCents,
+        ),
+        seededCancelledReservations.map(
+          () => "staff-seed-cancelled-before-use",
+        ),
+        seededCancelledReservations.map(
+          (reservation) => reservation.cancelledAt,
+        ),
+      ],
+    );
+  }
+  const seededStaffEvents = staffReservations.flatMap((reservation) => {
+    const events: Array<{
+      at: Date;
+      data: Record<string, unknown>;
+      type: string;
+    }> = [
+      {
+        at: new Date(reservation.confirmedAt.getTime() - 2 * 60_000),
+        data: { seeded: true },
+        type: "reservation.pending-created",
+      },
+      {
+        at: reservation.confirmedAt,
+        data: { simulatedPaymentCents: reservation.simulatedPaymentCents },
+        type: "reservation.simulated-payment-succeeded",
+      },
+    ];
+    if (reservation.arrivedAt) {
+      events.push({
+        at: reservation.arrivedAt,
+        data: { seeded: true },
+        type: "reservation.arrived",
+      });
+    }
+    if (reservation.startedAt) {
+      events.push({
+        at: reservation.startedAt,
+        data: { seeded: true },
+        type: "reservation.started",
+      });
+    }
+    if (reservation.completedAt) {
+      events.push({
+        at: reservation.completedAt,
+        data: { reason: "planned-end" },
+        type: "reservation.auto-completed",
+      });
+    }
+    if (reservation.cancelledAt) {
+      events.push({
+        at: reservation.cancelledAt,
+        data: { reason: reservation.terminalReason },
+        type: "reservation.cancelled",
+      });
+    }
+    return events.map((event) => ({ ...event, reservationId: reservation.id }));
+  });
+  await input.client.query(
+    `insert into reservation_business_events (
+       id, sandbox_id, reservation_id, event_type, event_data,
+       business_occurred_at
+     )
+     select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::jsonb[],
+       $6::timestamptz[]
+     )`,
+    [
+      seededStaffEvents.map(() => randomUUID()),
+      seededStaffEvents.map(() => input.sandboxId),
+      seededStaffEvents.map((event) => event.reservationId),
+      seededStaffEvents.map((event) => event.type),
+      seededStaffEvents.map((event) => JSON.stringify(event.data)),
+      seededStaffEvents.map((event) => event.at),
+    ],
+  );
+
   return readSandboxResult(
     input.client,
     input.sandboxId,
@@ -1678,6 +2579,499 @@ export function createPublicSandboxDatabase(
 
   return {
     ...demoToolMethods,
+    async readStaffReservationWorkbench(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await processFrontlineReservationDeadlines(client, {
+          currentTime,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+        });
+        const range = businessDayRange(currentTime);
+        const rows = (
+          await readStaffReservationRows(client, {
+            sandboxId: input.sandboxId,
+          })
+        ).filter(
+          (row) =>
+            row.store_id === context.actorStoreId &&
+            row.starts_at.getTime() >= range.startsAt.getTime() &&
+            row.starts_at.getTime() < range.endsAt.getTime(),
+        );
+        const summaries = rows.map((row) => ({
+          row,
+          summary: staffReservationSummary(row),
+        }));
+        const now = currentTime.getTime();
+        const result: DatabaseStaffReservationWorkbench = {
+          businessDay: range,
+          currentTime,
+          queues: {
+            anomalies: summaries
+              .filter(
+                ({ row, summary }) =>
+                  summary.anomaly !== null &&
+                  !["completed", "cancelled", "expired"].includes(row.status),
+              )
+              .map(({ summary }) => summary),
+            arrivalWindow: summaries
+              .filter(
+                ({ row, summary }) =>
+                  row.status === "confirmed" &&
+                  now >= summary.arrivalWindow.opensAt.getTime() &&
+                  now <= summary.arrivalWindow.closesAt.getTime(),
+              )
+              .map(({ summary }) => summary),
+            arrived: summaries
+              .filter(({ row }) => row.status === "arrived")
+              .map(({ summary }) => summary),
+            inUse: summaries
+              .filter(({ row }) => row.status === "in-use")
+              .map(({ summary }) => summary),
+          },
+          store: await readFrontlineStore(
+            client,
+            input.sandboxId,
+            context.actorStoreId,
+          ),
+        };
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readStaffReservationList(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await processFrontlineReservationDeadlines(client, {
+          currentTime,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+        });
+        const range = businessDayRange(currentTime);
+        const businessRows = (
+          await readStaffReservationRows(client, {
+            sandboxId: input.sandboxId,
+          })
+        ).filter(
+          (row) =>
+            row.store_id === context.actorStoreId &&
+            row.starts_at.getTime() >= range.startsAt.getTime() &&
+            row.starts_at.getTime() < range.endsAt.getTime(),
+        );
+        const normalizedSearch = input.search.trim().toLocaleLowerCase("zh-CN");
+        const now = currentTime.getTime();
+        const rows = businessRows.filter((row) => {
+          const summary = staffReservationSummary(row);
+          if (input.status && row.status !== input.status) return false;
+          if (input.areaCode && summary.area.code !== input.areaCode)
+            return false;
+          if (
+            input.machineProfileCode &&
+            summary.machineProfile.code !== input.machineProfileCode
+          ) {
+            return false;
+          }
+          if (input.anomaly === "only" && summary.anomaly === null)
+            return false;
+          if (input.anomaly === "none" && summary.anomaly !== null)
+            return false;
+          if (
+            input.time === "arrival-window" &&
+            !(
+              row.status === "confirmed" &&
+              now >= summary.arrivalWindow.opensAt.getTime() &&
+              now <= summary.arrivalWindow.closesAt.getTime()
+            )
+          ) {
+            return false;
+          }
+          if (
+            input.time === "upcoming" &&
+            !(
+              row.starts_at.getTime() >= now &&
+              row.starts_at.getTime() <= now + 30 * 60 * 1_000
+            )
+          ) {
+            return false;
+          }
+          if (
+            input.time === "in-progress" &&
+            row.status !== "arrived" &&
+            row.status !== "in-use"
+          ) {
+            return false;
+          }
+          return (
+            !normalizedSearch ||
+            `${row.customer_display_name} ${row.seat_code} ${row.id}`
+              .toLocaleLowerCase("zh-CN")
+              .includes(normalizedSearch)
+          );
+        });
+        const areaMap = new Map(
+          businessRows.map((row) => [
+            row.area_code,
+            { code: row.area_code, displayName: row.area_display_name },
+          ]),
+        );
+        const profileMap = new Map(
+          businessRows.map((row) => [
+            row.machine_profile_code,
+            {
+              code: row.machine_profile_code,
+              displayName: row.machine_profile_display_name,
+            },
+          ]),
+        );
+        const result: DatabaseStaffReservationList = {
+          businessDay: range,
+          currentTime,
+          filterOptions: {
+            areas: [...areaMap.values()],
+            machineProfiles: [...profileMap.values()],
+          },
+          rows: rows.map(staffReservationSummary),
+          store: await readFrontlineStore(
+            client,
+            input.sandboxId,
+            context.actorStoreId,
+          ),
+        };
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readStaffReservationDetail(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await processFrontlineReservationDeadlines(client, {
+          currentTime,
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+        });
+        const row = (
+          await readStaffReservationRows(client, {
+            reservationId: input.reservationId,
+            sandboxId: input.sandboxId,
+          })
+        )[0];
+        if (!row) throw new FrontlineReservationConflictError("not-found");
+        if (row.store_id !== context.actorStoreId) {
+          throw new FrontlineReservationConflictError("cross-store");
+        }
+        const detail = await staffReservationDetailFromRow(
+          client,
+          row,
+          currentTime,
+          input.role,
+        );
+        await client.query("commit");
+        return detail;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async executeStaffReservationCommand(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({
+            action: input.action,
+            reason: input.reason,
+            reservationId: input.reservationId,
+          }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:frontline:${idempotencyKeyHash}`,
+          ],
+        );
+        const existing = await client.query<FrontlineCommandRow>(
+          `select command_type, payload_hash, result_data
+             from reservation_frontline_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const existingRow = existing.rows[0];
+        if (existingRow) {
+          if (existingRow.payload_hash !== payloadHash) {
+            await recordFrontlineReservationDenial(client, {
+              action: input.action,
+              actorStoreId: context.actorStoreId,
+              businessTime: currentTime,
+              currentStatus: null,
+              personaId: input.personaId,
+              reason: "idempotency-conflict",
+              recordedAt: wallTime,
+              requestId: input.requestId,
+              reservationId: input.reservationId,
+              role: input.role,
+              sandboxId: input.sandboxId,
+            });
+            await client.query("commit");
+            throw new FrontlineReservationConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return frontlineCommandFromStored(existingRow.result_data, true);
+        }
+        await processFrontlineReservationDeadlines(client, {
+          currentTime,
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+        });
+        const row = (
+          await readStaffReservationRows(client, {
+            lock: true,
+            reservationId: input.reservationId,
+            sandboxId: input.sandboxId,
+          })
+        )[0];
+        if (!row || row.store_id !== context.actorStoreId) {
+          const reason = row ? "cross-store" : "not-found";
+          await recordFrontlineReservationDenial(client, {
+            action: input.action,
+            actorStoreId: context.actorStoreId,
+            businessTime: currentTime,
+            currentStatus: row?.status ?? null,
+            personaId: input.personaId,
+            reason,
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            reservationId: input.reservationId,
+            role: input.role,
+            sandboxId: input.sandboxId,
+          });
+          await client.query("commit");
+          throw new FrontlineReservationConflictError(
+            reason,
+            reason === "cross-store" ? null : (row?.status ?? null),
+          );
+        }
+        const decision = decideFrontlineReservationLifecycle({
+          action: input.action,
+          businessTime: currentTime,
+          endsAt: row.ends_at,
+          hasCoupon: row.coupon_id !== null,
+          holdExpiresAt: row.hold_expires_at,
+          payableCents: row.price_snapshot.price.payableCents,
+          startsAt: row.starts_at,
+          status: row.status,
+        });
+        if (decision.status === "invalid") {
+          const reason =
+            decision.reason === "not-due"
+              ? "illegal-transition"
+              : decision.reason;
+          await recordFrontlineReservationDenial(client, {
+            action: input.action,
+            actorStoreId: context.actorStoreId,
+            businessTime: currentTime,
+            currentStatus: row.status,
+            personaId: input.personaId,
+            reason,
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            reservationId: input.reservationId,
+            role: input.role,
+            sandboxId: input.sandboxId,
+          });
+          await client.query("commit");
+          throw new FrontlineReservationConflictError(reason, row.status);
+        }
+        if (decision.couponEffect) {
+          const expectedStatus =
+            decision.couponEffect === "release" ? "reserved" : "redeemed";
+          const restored = await client.query(
+            `update experience_coupons
+                set status = 'available', reserved_reservation_id = null,
+                    reserved_until = null
+              where sandbox_id = $1 and reserved_reservation_id = $2
+                and status = $3`,
+            [input.sandboxId, row.id, expectedStatus],
+          );
+          if (restored.rowCount !== 1) {
+            throw new Error(
+              "The frontline reservation coupon could not be restored.",
+            );
+          }
+        }
+        if (
+          input.action === "cancel" &&
+          row.status !== "pending-confirmation"
+        ) {
+          await client.query(
+            `insert into reservation_simulated_refunds (
+               id, sandbox_id, reservation_id, amount_cents, reason,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'frontline-cancelled-before-use',
+               $5, $6)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              row.id,
+              decision.simulatedRefundCents,
+              currentTime,
+              wallTime,
+            ],
+          );
+        }
+        const eventType = {
+          arrive: "reservation.arrived",
+          cancel: "reservation.cancelled",
+          "complete-early": "reservation.completed-early",
+          "start-use": "reservation.started",
+        }[input.action];
+        if (input.action === "arrive") {
+          await client.query(
+            `update reservations set status = 'arrived', arrived_business_at = $3
+              where sandbox_id = $1 and id = $2 and status = $4`,
+            [input.sandboxId, row.id, currentTime, row.status],
+          );
+        } else if (input.action === "start-use") {
+          await client.query(
+            `update reservations set status = 'in-use', started_business_at = $3
+              where sandbox_id = $1 and id = $2 and status = $4`,
+            [input.sandboxId, row.id, currentTime, row.status],
+          );
+        } else if (input.action === "complete-early") {
+          await client.query(
+            `update reservations
+                set status = 'completed', completed_business_at = $3,
+                    terminal_reason = $4
+              where sandbox_id = $1 and id = $2 and status = $5`,
+            [input.sandboxId, row.id, currentTime, input.reason, row.status],
+          );
+        } else {
+          await client.query(
+            `update reservations
+                set status = 'cancelled', cancelled_business_at = $3,
+                    terminal_reason = $4
+              where sandbox_id = $1 and id = $2 and status = $5`,
+            [input.sandboxId, row.id, currentTime, input.reason, row.status],
+          );
+        }
+        await client.query(
+          `insert into reservation_business_events (
+             id, sandbox_id, reservation_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            row.id,
+            eventType,
+            JSON.stringify({
+              actorRole: input.role,
+              reason: input.reason,
+              simulatedRefundCents: decision.simulatedRefundCents,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, reason, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, $6, 'reservation', $7, 'allowed',
+             $8, $9, $10::jsonb, $11::jsonb, $12, $13)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            row.store_id,
+            input.personaId,
+            input.role,
+            `reservation.${input.action}`,
+            row.id,
+            input.reason,
+            input.requestId,
+            JSON.stringify({ status: row.status }),
+            JSON.stringify({ status: decision.nextStatus }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const stored = {
+          action: input.action,
+          occurredAt: currentTime.toISOString(),
+          reservationId: row.id,
+          status: decision.nextStatus,
+        };
+        await client.query(
+          `insert into reservation_frontline_command_requests (
+             sandbox_id, actor_persona_id, reservation_id, command_type,
+             idempotency_key_hash, payload_hash, result_data
+           ) values ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            row.id,
+            input.action,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return frontlineCommandFromStored(stored, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async create(input) {
       const client = await pool.connect();
 

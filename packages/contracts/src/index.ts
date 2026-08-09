@@ -249,6 +249,131 @@ export interface CustomerReservationCancellationResponse {
   readonly status: "cancelled";
 }
 
+export const FRONTLINE_RESERVATION_ACTIONS = [
+  "arrive",
+  "start-use",
+  "complete-early",
+  "cancel",
+] as const;
+
+export type FrontlineReservationAction =
+  (typeof FRONTLINE_RESERVATION_ACTIONS)[number];
+
+export const STAFF_RESERVATION_TIME_FILTERS = [
+  "all",
+  "arrival-window",
+  "upcoming",
+  "in-progress",
+] as const;
+
+export type StaffReservationTimeFilter =
+  (typeof STAFF_RESERVATION_TIME_FILTERS)[number];
+
+export const STAFF_RESERVATION_ANOMALY_FILTERS = [
+  "all",
+  "only",
+  "none",
+] as const;
+
+export type StaffReservationAnomalyFilter =
+  (typeof STAFF_RESERVATION_ANOMALY_FILTERS)[number];
+
+export interface StaffReservationSummary {
+  readonly anomaly: {
+    readonly code: "seat-maintenance";
+    readonly label: string;
+  } | null;
+  readonly area: { readonly code: string; readonly displayName: string };
+  readonly arrivalWindow: {
+    readonly closesAt: string;
+    readonly opensAt: string;
+  };
+  readonly customer: { readonly displayName: string };
+  readonly machineProfile: {
+    readonly code: CustomerMachineProfileCode;
+    readonly displayName: string;
+  };
+  readonly payableCents: number;
+  readonly reservationId: string;
+  readonly seat: { readonly code: string };
+  readonly status: CustomerReservationStatus;
+  readonly window: { readonly endsAt: string; readonly startsAt: string };
+}
+
+export interface StaffReservationWorkbenchResponse {
+  readonly businessDay: {
+    readonly endsAt: string;
+    readonly key: string;
+    readonly startsAt: string;
+  };
+  readonly currentTime: string;
+  readonly queues: {
+    readonly anomalies: ReadonlyArray<StaffReservationSummary>;
+    readonly arrivalWindow: ReadonlyArray<StaffReservationSummary>;
+    readonly arrived: ReadonlyArray<StaffReservationSummary>;
+    readonly inUse: ReadonlyArray<StaffReservationSummary>;
+  };
+  readonly status: "ready";
+  readonly store: { readonly code: string; readonly displayName: string };
+}
+
+export interface StaffReservationListResponse {
+  readonly businessDay: StaffReservationWorkbenchResponse["businessDay"];
+  readonly currentTime: string;
+  readonly filterOptions: {
+    readonly areas: ReadonlyArray<{
+      readonly code: string;
+      readonly displayName: string;
+    }>;
+    readonly machineProfiles: ReadonlyArray<{
+      readonly code: CustomerMachineProfileCode;
+      readonly displayName: string;
+    }>;
+  };
+  readonly rows: ReadonlyArray<StaffReservationSummary>;
+  readonly status: "ready";
+  readonly store: StaffReservationWorkbenchResponse["store"];
+}
+
+export interface StaffReservationDetailResponse {
+  readonly actions: {
+    readonly canCancel: boolean;
+    readonly primary: {
+      readonly kind: Exclude<FrontlineReservationAction, "cancel">;
+      readonly label: "办理到店" | "开始使用" | "提前结束";
+      readonly requiresReason: boolean;
+    } | null;
+  };
+  readonly auditAvailable: boolean;
+  readonly cancelledAt: string | null;
+  readonly completedAt: string | null;
+  readonly currentTime: string;
+  readonly arrivedAt: string | null;
+  readonly refund: CustomerReservationDetailResponse["refund"];
+  readonly related: {
+    readonly orders: ReadonlyArray<never>;
+    readonly repairs: ReadonlyArray<never>;
+  };
+  readonly reservation: StaffReservationSummary;
+  readonly snapshot: CustomerPendingReservationResponse["snapshot"];
+  readonly startedAt: string | null;
+  readonly terminalReason: string | null;
+  readonly timeline: CustomerReservationDetailResponse["timeline"];
+}
+
+export interface StaffReservationCommandRequest {
+  readonly action: FrontlineReservationAction;
+  readonly reason?: string;
+}
+
+export interface StaffReservationCommandResponse {
+  readonly action: FrontlineReservationAction;
+  readonly occurredAt: string;
+  readonly replayed: boolean;
+  readonly reservationId: string;
+  readonly status: CustomerReservationStatus;
+}
+
 export const DEMO_TIME_DUE_HANDLER_KINDS = [
   "pending-reservation-expiration",
   "pending-order-expiration",

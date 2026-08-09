@@ -14,6 +14,7 @@ import {
   time,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -285,7 +286,9 @@ export const demoPersonas = pgTable(
     protected: boolean("protected").default(true).notNull(),
   },
   (table) => [
-    unique("demo_personas_sandbox_role_unique").on(table.sandboxId, table.role),
+    uniqueIndex("demo_personas_protected_sandbox_role_unique")
+      .on(table.sandboxId, table.role)
+      .where(sql`${table.protected} = true`),
     check(
       "demo_personas_public_role",
       sql`${table.role} IN ('customer', 'staff', 'manager', 'hq')`,
@@ -385,6 +388,15 @@ export const reservations = pgTable(
     couponSnapshot: jsonb("coupon_snapshot"),
     simulatedPaymentCents: integer("simulated_payment_cents"),
     confirmedBusinessAt: timestamp("confirmed_business_at", {
+      withTimezone: true,
+    }),
+    arrivedBusinessAt: timestamp("arrived_business_at", {
+      withTimezone: true,
+    }),
+    startedBusinessAt: timestamp("started_business_at", {
+      withTimezone: true,
+    }),
+    completedBusinessAt: timestamp("completed_business_at", {
       withTimezone: true,
     }),
     cancelledBusinessAt: timestamp("cancelled_business_at", {
@@ -492,6 +504,47 @@ export const reservationLifecycleCommandRequests = pgTable(
       sql`${table.commandType} IN ('simulate-payment', 'cancel')`,
     ),
     pgPolicy("reservation_lifecycle_command_requests_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const reservationFrontlineCommandRequests = pgTable(
+  "reservation_frontline_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    actorPersonaId: uuid("actor_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    reservationId: uuid("reservation_id")
+      .notNull()
+      .references(() => reservations.id, { onDelete: "cascade" }),
+    commandType: text("command_type").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.actorPersonaId,
+        table.commandType,
+        table.idempotencyKeyHash,
+      ],
+      name: "reservation_frontline_command_requests_pk",
+    }),
+    check(
+      "reservation_frontline_command_requests_type",
+      sql`${table.commandType} IN ('arrive', 'start-use', 'complete-early', 'cancel')`,
+    ),
+    pgPolicy("reservation_frontline_command_requests_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),

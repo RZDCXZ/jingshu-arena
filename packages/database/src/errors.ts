@@ -130,4 +130,31 @@ export class CustomerReservationLifecycleConflictError extends Error {
     this.reason = reason;
   }
 }
+
+export type FrontlineReservationConflictReason =
+  | "arrival-window-closed"
+  | "arrival-window-not-open"
+  | "cross-store"
+  | "hold-expired"
+  | "idempotency-conflict"
+  | "illegal-transition"
+  | "not-found"
+  | "reservation-ended"
+  | "reservation-not-started";
+
+export class FrontlineReservationConflictError extends Error {
+  readonly code = "FRONTLINE_RESERVATION_CONFLICT";
+  readonly currentStatus: ReservationStatus | null;
+  readonly reason: FrontlineReservationConflictReason;
+
+  constructor(
+    reason: FrontlineReservationConflictReason,
+    currentStatus: ReservationStatus | null = null,
+  ) {
+    super(`Frontline reservation command was rejected: ${reason}.`);
+    this.name = "FrontlineReservationConflictError";
+    this.reason = reason;
+    this.currentStatus = currentStatus;
+  }
+}
 import type { ReservationStatus } from "@jingshu/domain";

@@ -5136,3 +5136,433 @@ strong {
     padding-inline: 10px;
   }
 }
+
+/* Ticket 09 — staff reservation operations */
+
+.staff-reservation-main {
+  background:
+    linear-gradient(135deg, rgb(89 216 255 / 2%), transparent 34%), var(--bg);
+}
+
+.staff-reservation-title > div:first-child {
+  align-items: center;
+}
+
+.staff-reservation-title > div:first-child > div {
+  display: grid;
+  gap: 3px;
+}
+
+.staff-reservation-title small {
+  color: var(--muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.role-section-heading > button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 5px;
+  color: var(--cyan);
+  font-size: 10px;
+}
+
+.role-section-heading > button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.staff-workbench-queues {
+  padding-bottom: 10px;
+}
+
+.role-queue-row.is-selected {
+  background: #102430;
+  box-shadow: inset 3px 0 var(--cyan);
+}
+
+.role-queue-row.is-primary.is-selected {
+  box-shadow: inset 3px 0 var(--lime);
+}
+
+.role-row-person > small.is-anomaly {
+  background: rgb(255 101 77 / 13%);
+  color: #ff9584;
+}
+
+.role-status-pill.is-arrived {
+  background: rgb(242 166 43 / 12%);
+  color: #f7bd5d;
+}
+
+.role-status-pill.is-in-use {
+  background: rgb(184 243 74 / 11%);
+  color: var(--lime);
+}
+
+.role-status-pill.is-completed,
+.role-status-pill.is-cancelled,
+.role-status-pill.is-expired {
+  background: #1a2630;
+  color: #9caeb9;
+}
+
+.staff-filter-bar {
+  display: grid;
+  grid-template-columns: auto repeat(5, minmax(94px, 1fr));
+  align-items: end;
+  gap: 7px;
+  margin: 11px 0 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #07151f;
+}
+
+.staff-filter-bar > button {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--cyan);
+  font-size: 10px;
+}
+
+.staff-filter-bar > button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.staff-filter-bar label {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.staff-filter-bar select {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 10px;
+}
+
+.staff-filter-bar select:focus-visible {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px rgb(89 216 255 / 14%);
+}
+
+.staff-reservation-list {
+  margin-top: 7px;
+}
+
+.staff-reservation-state,
+.staff-inspector-state {
+  min-height: 140px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.staff-reservation-state.is-error {
+  align-content: center;
+  gap: 10px;
+  border: 1px solid rgb(255 101 77 / 28%);
+  border-radius: var(--radius);
+  background: rgb(255 101 77 / 5%);
+}
+
+.staff-reservation-state.is-error svg {
+  width: 24px;
+  height: 24px;
+  color: var(--red);
+}
+
+.staff-reservation-state.is-error button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--cyan);
+}
+
+.staff-inspector-state {
+  min-height: 90px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+}
+
+.staff-inspector-state.is-error {
+  color: #ff9584;
+}
+
+.staff-reservation-inspector {
+  position: relative;
+}
+
+.staff-reservation-inspector .staff-detail-primary,
+.staff-reservation-inspector .staff-detail-cancel {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.role-shell .staff-detail-primary {
+  background: var(--lime);
+  color: var(--lime-ink);
+}
+
+.role-shell .staff-detail-cancel {
+  border: 1px solid rgb(255 101 77 / 34%);
+  color: #ff9584;
+}
+
+.staff-detail-primary svg {
+  width: 16px;
+  height: 16px;
+}
+
+.staff-terminal-note {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.staff-price-segments ul {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.staff-price-segments li,
+.staff-price-segments > p,
+.staff-related-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 7px;
+  font-size: 10px;
+}
+
+.staff-price-segments li span,
+.staff-price-segments > p span,
+.staff-related-grid span {
+  color: var(--muted);
+}
+
+.staff-price-segments > p {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.staff-price-segments > p strong {
+  color: var(--lime);
+  font-size: 12px;
+}
+
+.staff-related-grid {
+  margin-top: 12px;
+  row-gap: 9px;
+}
+
+.staff-related-grid strong {
+  text-align: right;
+}
+
+.staff-audit-note {
+  margin-top: 13px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.staff-command-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgb(2 8 13 / 78%);
+  backdrop-filter: blur(10px);
+}
+
+.staff-command-dialog {
+  width: min(480px, 100%);
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: #0a1823;
+  box-shadow: 0 26px 80px rgb(0 0 0 / 48%);
+}
+
+.staff-command-heading {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.staff-command-heading > span {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgb(89 216 255 / 10%);
+  color: var(--cyan);
+}
+
+.staff-command-heading > span svg,
+.staff-command-heading > button svg {
+  width: 20px;
+  height: 20px;
+}
+
+.staff-command-heading small {
+  color: var(--cyan);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+.staff-command-heading h2 {
+  margin-top: 3px;
+  font-size: 20px;
+}
+
+.staff-command-heading > button {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+
+.staff-command-dialog > p {
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.staff-command-reason {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+  font-size: 11px;
+}
+
+.staff-command-reason textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: #07131d;
+  color: var(--text);
+  font: inherit;
+  line-height: 1.55;
+}
+
+.staff-command-reason textarea:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px rgb(89 216 255 / 14%);
+}
+
+.staff-command-reason small {
+  color: var(--muted);
+  text-align: right;
+}
+
+.staff-command-dialog > p.staff-command-error {
+  margin-top: 12px;
+  padding: 9px 10px;
+  border: 1px solid rgb(255 101 77 / 28%);
+  border-radius: var(--radius-sm);
+  background: rgb(255 101 77 / 6%);
+  color: #ff9584;
+}
+
+.staff-command-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.staff-command-actions button {
+  min-width: 96px;
+  min-height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.role-shell .staff-command-actions button.is-primary {
+  border-color: var(--lime);
+  background: var(--lime);
+  color: var(--lime-ink);
+  font-weight: 720;
+}
+
+@media (max-width: 1180px) {
+  .staff-filter-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .staff-filter-bar > button {
+    justify-content: center;
+  }
+}
+
+@media (max-width: 720px) {
+  .staff-filter-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .staff-command-dialog {
+    padding: 18px;
+  }
+
+  .staff-command-actions {
+    flex-direction: column-reverse;
+  }
+
+  .staff-command-actions button {
+    width: 100%;
+  }
+}

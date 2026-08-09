@@ -39,8 +39,8 @@ describe("public sandbox creation", () => {
       sandboxId: expect.stringMatching(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
       ),
-      schemaVersion: "7",
-      seedVersion: "2026-08-10.2",
+      schemaVersion: "8",
+      seedVersion: "2026-08-10.3",
       expiresAt: expect.any(Date),
       selectedRole: "customer",
       persona: {
@@ -76,8 +76,8 @@ describe("public sandbox creation", () => {
         sandboxId: expect.stringMatching(
           /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
         ),
-        schemaVersion: "7",
-        seedVersion: "2026-08-10.2",
+        schemaVersion: "8",
+        seedVersion: "2026-08-10.3",
         expiresAt: expect.any(Date),
         businessClock: {
           advanceLimitMilliseconds: 86_400_000,
@@ -409,6 +409,12 @@ describe("public sandbox creation", () => {
     };
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
+    const eventBaseline = await client.query<{ event_count: string }>(
+      `select count(*)::text as event_count
+         from reservation_business_events
+        where sandbox_id = $1`,
+      [created.sandboxId],
+    );
     await client.query(`
       create function fail_ticket07_reservation_event() returns trigger
       language plpgsql as $$
@@ -458,7 +464,7 @@ describe("public sandbox creation", () => {
       {
         audit_count: "0",
         command_count: "0",
-        event_count: "0",
+        event_count: eventBaseline.rows[0]?.event_count ?? "0",
         pending_count: "0",
         reserved_coupon_count: "0",
       },

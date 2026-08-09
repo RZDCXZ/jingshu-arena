@@ -78,6 +78,13 @@
       "when": 1786294800001,
       "tag": "0010_reservation_payment_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786300800000,
+      "tag": "0011_staff_reservation_operations",
+      "breakpoints": true
     }
   ]
 }

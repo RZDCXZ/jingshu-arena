@@ -1,5 +1,5 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "7";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.2";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "8";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.3";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -63,6 +63,20 @@ export function businessDayKey(value: Date): string {
     localDaySerial(parts) -
     (minutes < SHANGHAI_BUSINESS_DAY_START_MINUTES ? 1 : 0);
   return dateKeyFromSerial(serial);
+}
+
+export function businessDayRange(value: Date): {
+  readonly endsAt: Date;
+  readonly key: string;
+  readonly startsAt: Date;
+} {
+  const key = businessDayKey(value);
+  const startsAt = new Date(`${key}T06:00:00.000+08:00`);
+  return {
+    endsAt: new Date(startsAt.getTime() + DAY_MS),
+    key,
+    startsAt,
+  };
 }
 
 export type CustomerReservationMode = "future" | "immediate";
@@ -522,6 +536,116 @@ export function decideReservationLifecycle(
       simulatedRefundCents: input.payableCents,
       status: "ready",
     };
+  }
+  return { reason: "illegal-transition", status: "invalid" };
+}
+
+export type FrontlineReservationAction =
+  "arrive" | "cancel" | "complete-auto" | "complete-early" | "start-use";
+
+interface DecideFrontlineReservationLifecycleInput {
+  readonly action: FrontlineReservationAction;
+  readonly businessTime: Date;
+  readonly endsAt: Date;
+  readonly hasCoupon: boolean;
+  readonly holdExpiresAt: Date | null;
+  readonly payableCents: number;
+  readonly startsAt: Date;
+  readonly status: ReservationStatus;
+}
+
+export type FrontlineReservationLifecycleDecision =
+  | {
+      readonly couponEffect: ReservationCouponEffect | null;
+      readonly nextStatus: ReservationStatus;
+      readonly simulatedRefundCents: number;
+      readonly status: "ready";
+    }
+  | {
+      readonly reason:
+        | "arrival-window-closed"
+        | "arrival-window-not-open"
+        | "hold-expired"
+        | "illegal-transition"
+        | "not-due"
+        | "reservation-ended"
+        | "reservation-not-started";
+      readonly status: "invalid";
+    };
+
+export function decideFrontlineReservationLifecycle(
+  input: DecideFrontlineReservationLifecycleInput,
+): FrontlineReservationLifecycleDecision {
+  const now = input.businessTime.getTime();
+  const startsAt = input.startsAt.getTime();
+  const endsAt = input.endsAt.getTime();
+  const couponEffect = (effect: ReservationCouponEffect) =>
+    input.hasCoupon ? effect : null;
+  const ready = (
+    nextStatus: ReservationStatus,
+    effect: ReservationCouponEffect | null = null,
+    simulatedRefundCents = 0,
+  ): FrontlineReservationLifecycleDecision => ({
+    couponEffect: effect ? couponEffect(effect) : null,
+    nextStatus,
+    simulatedRefundCents,
+    status: "ready",
+  });
+
+  if (input.action === "arrive") {
+    if (input.status !== "confirmed") {
+      return { reason: "illegal-transition", status: "invalid" };
+    }
+    if (now < startsAt - 30 * 60 * 1_000) {
+      return { reason: "arrival-window-not-open", status: "invalid" };
+    }
+    if (now >= startsAt + 15 * 60 * 1_000) {
+      return { reason: "arrival-window-closed", status: "invalid" };
+    }
+    return ready("arrived");
+  }
+
+  if (input.action === "start-use") {
+    if (input.status !== "arrived") {
+      return { reason: "illegal-transition", status: "invalid" };
+    }
+    if (now < startsAt) {
+      return { reason: "reservation-not-started", status: "invalid" };
+    }
+    if (now >= endsAt) {
+      return { reason: "reservation-ended", status: "invalid" };
+    }
+    return ready("in-use");
+  }
+
+  if (input.action === "complete-early") {
+    if (input.status !== "in-use") {
+      return { reason: "illegal-transition", status: "invalid" };
+    }
+    if (now >= endsAt) {
+      return { reason: "reservation-ended", status: "invalid" };
+    }
+    return ready("completed");
+  }
+
+  if (input.action === "complete-auto") {
+    if (input.status !== "in-use") {
+      return { reason: "illegal-transition", status: "invalid" };
+    }
+    if (now < endsAt) {
+      return { reason: "not-due", status: "invalid" };
+    }
+    return ready("completed");
+  }
+
+  if (input.status === "pending-confirmation") {
+    if (!input.holdExpiresAt || now >= input.holdExpiresAt.getTime()) {
+      return { reason: "hold-expired", status: "invalid" };
+    }
+    return ready("cancelled", "release");
+  }
+  if (input.status === "confirmed" || input.status === "arrived") {
+    return ready("cancelled", "restore", input.payableCents);
   }
   return { reason: "illegal-transition", status: "invalid" };
 }

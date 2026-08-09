@@ -2,10 +2,20 @@ import { expect, test } from "@playwright/test";
 import type { Page, Route } from "@playwright/test";
 
 import type {
+  CustomerReservationStatus,
   PublicRole,
   PublicSandboxReadyResponse,
   RoleContextReadyResponse,
+  StaffReservationDetailResponse,
+  StaffReservationSummary,
 } from "@jingshu/contracts";
+
+type MutableStaffReservationSummary = Omit<
+  StaffReservationSummary,
+  "status"
+> & {
+  status: CustomerReservationStatus;
+};
 
 const roleDetails = {
   customer: {
@@ -143,6 +153,297 @@ test.beforeEach(async ({ context }) => {
   let csrfToken = "csrf-context-version-1-token-value";
   let businessTime = "2026-08-09T11:30:00.000Z";
   let advancedMilliseconds = 0;
+  const staffRows: MutableStaffReservationSummary[] = [
+    {
+      anomaly: null,
+      area: { code: "competitive-a", displayName: "竞技区 A" },
+      arrivalWindow: {
+        closesAt: "2026-08-10T12:15:00.000Z",
+        opensAt: "2026-08-10T11:30:00.000Z",
+      },
+      customer: { displayName: "林澈" },
+      machineProfile: { code: "competitive", displayName: "竞技机型" },
+      payableCents: 3_600,
+      reservationId: "00000000-0000-4000-8000-000000000901",
+      seat: { code: "A-18" },
+      status: "confirmed",
+      window: {
+        endsAt: "2026-08-10T14:00:00.000Z",
+        startsAt: "2026-08-10T12:00:00.000Z",
+      },
+    },
+    {
+      anomaly: null,
+      area: { code: "competitive-b", displayName: "竞技区 B" },
+      arrivalWindow: {
+        closesAt: "2026-08-10T11:45:00.000Z",
+        opensAt: "2026-08-10T11:00:00.000Z",
+      },
+      customer: { displayName: "顾辰" },
+      machineProfile: { code: "competitive", displayName: "竞技机型" },
+      payableCents: 3_600,
+      reservationId: "00000000-0000-4000-8000-000000000902",
+      seat: { code: "B-03" },
+      status: "arrived",
+      window: {
+        endsAt: "2026-08-10T13:30:00.000Z",
+        startsAt: "2026-08-10T11:30:00.000Z",
+      },
+    },
+    {
+      anomaly: null,
+      area: { code: "flagship", displayName: "旗舰区" },
+      arrivalWindow: {
+        closesAt: "2026-08-10T11:15:00.000Z",
+        opensAt: "2026-08-10T10:30:00.000Z",
+      },
+      customer: { displayName: "周屿" },
+      machineProfile: { code: "flagship", displayName: "旗舰机型" },
+      payableCents: 5_200,
+      reservationId: "00000000-0000-4000-8000-000000000903",
+      seat: { code: "C-01" },
+      status: "in-use",
+      window: {
+        endsAt: "2026-08-10T13:00:00.000Z",
+        startsAt: "2026-08-10T11:00:00.000Z",
+      },
+    },
+    {
+      anomaly: { code: "seat-maintenance", label: "座位维护中" },
+      area: { code: "competitive-a", displayName: "竞技区 A" },
+      arrivalWindow: {
+        closesAt: "2026-08-10T10:45:00.000Z",
+        opensAt: "2026-08-10T10:00:00.000Z",
+      },
+      customer: { displayName: "许泽" },
+      machineProfile: { code: "competitive", displayName: "竞技机型" },
+      payableCents: 3_600,
+      reservationId: "00000000-0000-4000-8000-000000000904",
+      seat: { code: "A-09" },
+      status: "in-use",
+      window: {
+        endsAt: "2026-08-10T12:30:00.000Z",
+        startsAt: "2026-08-10T10:30:00.000Z",
+      },
+    },
+  ];
+  const commandReasons = new Map<string, string>();
+
+  function staffDetail(
+    row: StaffReservationSummary,
+  ): StaffReservationDetailResponse {
+    const primary =
+      row.status === "confirmed"
+        ? {
+            kind: "arrive" as const,
+            label: "办理到店" as const,
+            requiresReason: false,
+          }
+        : row.status === "arrived"
+          ? {
+              kind: "start-use" as const,
+              label: "开始使用" as const,
+              requiresReason: false,
+            }
+          : row.status === "in-use"
+            ? {
+                kind: "complete-early" as const,
+                label: "提前结束" as const,
+                requiresReason: true,
+              }
+            : null;
+    return {
+      actions: {
+        canCancel: row.status === "confirmed" || row.status === "arrived",
+        primary,
+      },
+      arrivedAt:
+        row.status === "arrived" || row.status === "in-use"
+          ? "2026-08-10T11:25:00.000Z"
+          : null,
+      auditAvailable: currentRole === "manager",
+      cancelledAt: row.status === "cancelled" ? businessTime : null,
+      completedAt: row.status === "completed" ? businessTime : null,
+      currentTime: "2026-08-10T11:47:23.000Z",
+      refund:
+        row.status === "cancelled"
+          ? {
+              amountCents: row.payableCents,
+              occurredAt: businessTime,
+              reason: commandReasons.get(row.reservationId) ?? "门店取消",
+              simulated: true,
+            }
+          : null,
+      related: { orders: [], repairs: [] },
+      reservation: row,
+      snapshot: {
+        area: row.area,
+        coupon: null,
+        machineProfile: {
+          ...row.machineProfile,
+          experienceDescription: "高刷竞技配置",
+        },
+        price: {
+          discountCents: 0,
+          payableCents: row.payableCents,
+          segments: [
+            {
+              amountCents: row.payableCents,
+              endsAt: row.window.endsAt,
+              multiplierBasisPoints: 12_000,
+              rule: "weekday-evening",
+              startsAt: row.window.startsAt,
+            },
+          ],
+          subtotalCents: row.payableCents,
+        },
+        seat: row.seat,
+        store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+        window: row.window,
+      },
+      startedAt: row.status === "in-use" ? "2026-08-10T11:30:00.000Z" : null,
+      terminalReason: commandReasons.get(row.reservationId) ?? null,
+      timeline: [
+        {
+          data: {},
+          occurredAt: "2026-08-10T10:00:00.000Z",
+          type: "reservation.pending-created",
+        },
+        {
+          data: { simulated: true },
+          occurredAt: "2026-08-10T10:01:00.000Z",
+          type: "reservation.simulated-payment-succeeded",
+        },
+        ...(row.status === "arrived" || row.status === "in-use"
+          ? [
+              {
+                data: {},
+                occurredAt: "2026-08-10T11:25:00.000Z",
+                type: "reservation.arrived",
+              },
+            ]
+          : []),
+        ...(row.status === "in-use"
+          ? [
+              {
+                data: {},
+                occurredAt: "2026-08-10T11:30:00.000Z",
+                type: "reservation.started",
+              },
+            ]
+          : []),
+      ],
+    };
+  }
+
+  await context.route("**/api/v1/staff/workbench", async (route) => {
+    await route.fulfill({
+      json: {
+        businessDay: {
+          endsAt: "2026-08-10T22:00:00.000Z",
+          key: "2026-08-10",
+          startsAt: "2026-08-09T22:00:00.000Z",
+        },
+        currentTime: "2026-08-10T11:47:23.000Z",
+        queues: {
+          anomalies: staffRows.filter((row) => row.anomaly),
+          arrivalWindow: staffRows.filter((row) => row.status === "confirmed"),
+          arrived: staffRows.filter((row) => row.status === "arrived"),
+          inUse: staffRows.filter((row) => row.status === "in-use"),
+        },
+        status: "ready",
+        store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+      },
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/staff/reservations**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/commands")) {
+      expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+      expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+      const reservationId = url.pathname.split("/").at(-2) ?? "";
+      const row = staffRows.find(
+        (item) => item.reservationId === reservationId,
+      );
+      const body = request.postDataJSON() as {
+        action: string;
+        reason?: string;
+      };
+      if (!row) {
+        await route.fulfill({ status: 404 });
+        return;
+      }
+      if (body.reason) commandReasons.set(reservationId, body.reason);
+      row.status =
+        body.action === "arrive"
+          ? "arrived"
+          : body.action === "start-use"
+            ? "in-use"
+            : body.action === "cancel"
+              ? "cancelled"
+              : "completed";
+      await route.fulfill({
+        json: {
+          action: body.action,
+          occurredAt: businessTime,
+          replayed: false,
+          reservationId,
+          status: row.status,
+        },
+        status: 200,
+      });
+      return;
+    }
+    if (url.pathname === "/api/v1/staff/reservations") {
+      const status = url.searchParams.get("status");
+      const anomaly = url.searchParams.get("anomaly");
+      const search = url.searchParams.get("search")?.toLocaleLowerCase("zh-CN");
+      const rows = staffRows.filter(
+        (row) =>
+          (status === "all" || row.status === status) &&
+          (anomaly !== "only" || row.anomaly) &&
+          (anomaly !== "none" || !row.anomaly) &&
+          (!search ||
+            `${row.customer.displayName} ${row.seat.code}`
+              .toLocaleLowerCase("zh-CN")
+              .includes(search)),
+      );
+      await route.fulfill({
+        json: {
+          businessDay: {
+            endsAt: "2026-08-10T22:00:00.000Z",
+            key: "2026-08-10",
+            startsAt: "2026-08-09T22:00:00.000Z",
+          },
+          currentTime: "2026-08-10T11:47:23.000Z",
+          filterOptions: {
+            areas: [
+              { code: "competitive-a", displayName: "竞技区 A" },
+              { code: "competitive-b", displayName: "竞技区 B" },
+              { code: "flagship", displayName: "旗舰区" },
+            ],
+            machineProfiles: [
+              { code: "competitive", displayName: "竞技机型" },
+              { code: "flagship", displayName: "旗舰机型" },
+            ],
+          },
+          rows,
+          status: "ready",
+          store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+        },
+        status: 200,
+      });
+      return;
+    }
+    const reservationId = url.pathname.split("/").at(-1) ?? "";
+    const row = staffRows.find((item) => item.reservationId === reservationId);
+    await route.fulfill({
+      json: row ? staffDetail(row) : { error: { message: "预约不存在" } },
+      status: row ? 200 : 404,
+    });
+  });
 
   await context.route("**/api/v1/customer/stores", async (route) => {
     await route.fulfill({
@@ -425,9 +726,7 @@ test("shared shell exposes the signed persona, role, scope, lifecycle, and fresh
   await expect(page.getByText("沙箱到期", { exact: true })).toBeVisible();
   await expect(page.getByText("手动刷新", { exact: true })).toBeVisible();
   await expect(
-    page
-      .getByRole("region", { name: "现在" })
-      .getByText("界面参考数据 · 业务写入待接线"),
+    page.getByRole("region", { name: "到店窗口" }).getByText("林澈 · 虚构人物"),
   ).toBeVisible();
   for (const nav of [
     "工作台",
@@ -442,9 +741,8 @@ test("shared shell exposes the signed persona, role, scope, lifecycle, and fresh
     ).toBeVisible();
   }
   await page.getByRole("button", { name: /林澈.*查看任务/u }).click();
-  await expect(
-    page.getByText("当前为界面参考任务；服务端办理到店由 ticket 09 接入。"),
-  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "办理到店" })).toBeVisible();
+  await expect(page.getByText("不可变业务事件")).toBeVisible();
 
   const roleTrigger = page.getByRole("button", { name: "切换角色" });
   await roleTrigger.click();
@@ -490,10 +788,6 @@ test("narrow workbench collapses the inspector without clipping the primary surf
     const primary = document.querySelector<HTMLElement>(
       ".role-queue-row.is-primary",
     );
-    const summary = document.querySelector<HTMLElement>(
-      ".role-summary-stack button",
-    );
-
     return {
       bodyClientWidth: document.body.clientWidth,
       bodyScrollWidth: document.body.scrollWidth,
@@ -501,14 +795,12 @@ test("narrow workbench collapses the inspector without clipping the primary surf
       primaryClientWidth: primary?.clientWidth ?? 0,
       primaryScrollWidth: primary?.scrollWidth ?? 0,
       primaryWidth: primary?.getBoundingClientRect().width ?? 0,
-      summaryHeight: summary?.getBoundingClientRect().height ?? 0,
     };
   });
 
   expect(layout.bodyScrollWidth).toBe(layout.bodyClientWidth);
   expect(layout.primaryScrollWidth).toBe(layout.primaryClientWidth);
   expect(layout.mainWidth).toBeGreaterThan(layout.primaryWidth);
-  expect(layout.summaryHeight).toBeLessThan(80);
 
   await page.setViewportSize({ width: 452, height: 413 });
   const compactLayout = await page.evaluate(() => {
@@ -538,33 +830,117 @@ test("narrow workbench collapses the inspector without clipping the primary surf
   expect(compactLayout.titleHeight).toBeLessThan(40);
 
   await page.setViewportSize({ width: 366, height: 866 });
-  const compactSummary = await page.evaluate(() => {
-    const summary = document.querySelector<HTMLElement>(
-      ".role-summary-stack button",
-    );
-    const summaryText = summary?.querySelector<HTMLElement>("span");
-
-    return {
-      summaryClientWidth: summary?.clientWidth ?? 0,
-      summaryHeight: summary?.getBoundingClientRect().height ?? 0,
-      summaryScrollWidth: summary?.scrollWidth ?? 0,
-      summaryTextDisplay: summaryText
-        ? getComputedStyle(summaryText).display
-        : "",
-    };
-  });
-
-  expect(compactSummary.summaryTextDisplay).toBe("none");
-  expect(compactSummary.summaryHeight).toBeLessThan(80);
-  expect(compactSummary.summaryScrollWidth).toBe(
-    compactSummary.summaryClientWidth,
-  );
-
   await page.getByRole("button", { name: "展开当前对象" }).click();
   await expect(
     page.getByRole("complementary", { name: "当前选中对象" }),
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
+});
+
+test("staff queue drilldown preserves its authoritative reservation filter", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterStaffShell(page);
+
+  await expect(page.getByRole("region", { name: "到店窗口" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "已到店待开始" }),
+  ).toBeVisible();
+  await expect(page.getByRole("region", { name: "使用中" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "异常预约" })).toBeVisible();
+  await page
+    .getByRole("region", { name: "到店窗口" })
+    .getByRole("button", { name: /查看全部/u })
+    .click();
+
+  await expect(
+    page.getByRole("heading", { name: "预约", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "按时间筛选" })).toHaveValue(
+    "arrival-window",
+  );
+  await expect(page.getByRole("button", { name: /林澈.*A-18/u })).toBeVisible();
+  await page
+    .getByRole("combobox", { name: "按状态筛选" })
+    .selectOption("in-use");
+  await page.getByRole("combobox", { name: "按时间筛选" }).selectOption("all");
+  await expect(page.getByRole("button", { name: /周屿.*C-01/u })).toBeVisible();
+  await expect(
+    page
+      .getByRole("complementary", { name: "当前选中对象" })
+      .getByRole("heading", { name: /周屿.*使用中/u }),
+  ).toBeVisible();
+});
+
+test("staff commands confirm on the server and require a privacy-safe reason", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: /林澈.*查看任务/u }).click();
+  await page.getByRole("button", { name: "办理到店" }).click();
+  const arrivalDialog = page.getByRole("dialog", { name: "确认办理到店" });
+  await expect(arrivalDialog).toBeVisible();
+  await expect(
+    arrivalDialog.getByText("服务端原子校验当前状态、时间窗口和门店范围", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await arrivalDialog.getByRole("button", { name: "确认办理到店" }).click();
+  await expect(
+    page
+      .getByRole("complementary", { name: "当前选中对象" })
+      .getByText("已到店", { exact: true }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "取消预约" }).click();
+  const cancelDialog = page.getByRole("dialog", { name: "确认取消预约" });
+  const confirmCancel = cancelDialog.getByRole("button", {
+    name: "确认取消预约",
+  });
+  await expect(cancelDialog.getByText(/请勿填写真实个人信息/u)).toBeVisible();
+  await expect(confirmCancel).toBeDisabled();
+  await cancelDialog
+    .getByRole("textbox", { name: "办理原因" })
+    .fill("顾客临时改变行程");
+  await expect(confirmCancel).toBeEnabled();
+  await confirmCancel.click();
+  await expect(
+    page
+      .getByRole("complementary", { name: "当前选中对象" })
+      .getByText("已取消", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("预约已进入终态，不再提供办理动作。"),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "取消预约" })).toHaveCount(0);
+});
+
+test("early completion leaves no redundant action and does not overflow at 1024", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: /周屿.*C-01/u }).click();
+  await page.getByRole("button", { name: "提前结束" }).click();
+  const dialog = page.getByRole("dialog", { name: "确认提前结束" });
+  await dialog
+    .getByRole("textbox", { name: "办理原因" })
+    .fill("顾客主动提前结束");
+  await dialog.getByRole("button", { name: "确认提前结束" }).click();
+  await expect(
+    page
+      .getByRole("complementary", { name: "当前选中对象" })
+      .getByText("已完成", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "提前结束" })).toHaveCount(0);
+
+  const widths = await page.evaluate(() => ({
+    client: document.body.clientWidth,
+    scroll: document.body.scrollWidth,
+  }));
+  expect(widths.scroll).toBe(widths.client);
 });
 
 test("narrow role switch dialog follows the single-column design", async ({
@@ -647,7 +1023,7 @@ test("business-time tool previews impacts and commits the clock atomically", asy
   await page.getByRole("button", { name: /向前推进 30 分钟/u }).click();
   await expect(page.getByText(/19:30.*20:00/u).first()).toBeVisible();
   await expect(page.getByText("待支付订单过期")).toBeVisible();
-  await expect(page.getByText("2 项")).toBeVisible();
+  await expect(page.getByText("2 项", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "查看推进影响" }).click();
 
   await expect(
@@ -859,7 +1235,9 @@ test("dirty queue input requires confirmation and keyboard switching rotates the
     page.getByRole("heading", { name: "放弃未提交输入并切换？" }),
   ).toBeVisible();
   await expect(
-    page.getByText("继续切换会放弃“筛选当前队列”中的输入"),
+    page.getByText("继续切换会放弃当前队列或预约筛选", {
+      exact: false,
+    }),
   ).toBeVisible();
   await page.getByRole("button", { name: "返回继续编辑" }).click();
   await expect(managerTarget).toBeFocused();
@@ -876,6 +1254,30 @@ test("dirty queue input requires confirmation and keyboard switching rotates the
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "经营看板" })).toBeVisible();
   await expect(queueFilter).toHaveCount(0);
+});
+
+test("applied reservation filters are protected before a role switch", async ({
+  page,
+}) => {
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "预约", exact: true }).click();
+  await page
+    .getByRole("combobox", { name: "按状态筛选" })
+    .selectOption("in-use");
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "店长 许知远 · 虚构人物 棱镜旗舰店",
+    })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "放弃未提交输入并切换？" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("继续切换会放弃当前队列或预约筛选", {
+      exact: false,
+    }),
+  ).toBeVisible();
 });
 
 test("a role switch in another tab immediately blocks the stale shell until refresh", async ({
