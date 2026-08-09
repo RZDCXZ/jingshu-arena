@@ -21,6 +21,33 @@ export type CustomerSeatAvailability =
 export type CustomerReservationPriceRule =
   "weekday-base" | "weekday-evening" | "weekday-overnight" | "weekend";
 
+export type CustomerReservationCouponIneligibleReason =
+  | "business-kind"
+  | "minimum-spend"
+  | "store"
+  | "time-window"
+  | "unavailable"
+  | "validity";
+
+export interface CustomerReservationCouponOption {
+  readonly id: string;
+  readonly code: string;
+  readonly displayName: string;
+  readonly discountCents: number;
+  readonly minimumSpendCents: number;
+  readonly validUntil: string;
+  readonly eligibility:
+    | {
+        readonly discountCents: number;
+        readonly payableCents: number;
+        readonly status: "eligible";
+      }
+    | {
+        readonly reason: CustomerReservationCouponIneligibleReason;
+        readonly status: "ineligible";
+      };
+}
+
 export interface CustomerStoreCatalogResponse {
   readonly status: "ready";
   readonly city: string;
@@ -58,6 +85,7 @@ export interface CustomerStoreCatalogResponse {
 export interface CustomerSeatAvailabilityResponse {
   readonly status: "ready";
   readonly area: { readonly code: string; readonly displayName: string };
+  readonly coupons: ReadonlyArray<CustomerReservationCouponOption>;
   readonly machineProfile: {
     readonly code: CustomerMachineProfileCode;
     readonly displayName: string;
@@ -84,6 +112,52 @@ export interface CustomerSeatAvailabilityResponse {
     readonly endsAt: string;
     readonly mode: CustomerReservationMode;
     readonly startsAt: string;
+  };
+}
+
+export interface CreateCustomerPendingReservationRequest {
+  readonly areaCode: string;
+  readonly couponId: string | null;
+  readonly durationHours: number;
+  readonly machineProfileCode: CustomerMachineProfileCode;
+  readonly mode: CustomerReservationMode;
+  readonly requestedStartsAt?: string;
+  readonly seatCode: string;
+  readonly storeCode: string;
+}
+
+export interface CustomerPendingReservationResponse {
+  readonly status: "pending-confirmation";
+  readonly replayed: boolean;
+  readonly reservationId: string;
+  readonly holdExpiresAt: string;
+  readonly snapshot: {
+    readonly area: { readonly code: string; readonly displayName: string };
+    readonly coupon: {
+      readonly code: string;
+      readonly displayName: string;
+      readonly discountCents: number;
+    } | null;
+    readonly machineProfile: {
+      readonly code: CustomerMachineProfileCode;
+      readonly displayName: string;
+      readonly experienceDescription: string;
+    };
+    readonly price: {
+      readonly discountCents: number;
+      readonly payableCents: number;
+      readonly segments: ReadonlyArray<{
+        readonly amountCents: number;
+        readonly endsAt: string;
+        readonly multiplierBasisPoints: number;
+        readonly rule: CustomerReservationPriceRule;
+        readonly startsAt: string;
+      }>;
+      readonly subtotalCents: number;
+    };
+    readonly seat: { readonly code: string };
+    readonly store: { readonly code: string; readonly displayName: string };
+    readonly window: { readonly endsAt: string; readonly startsAt: string };
   };
 }
 

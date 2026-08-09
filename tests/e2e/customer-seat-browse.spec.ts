@@ -29,8 +29,8 @@ const customerContext: RoleContextReadyResponse = {
       timeZone: "Asia/Shanghai",
     },
     expiresAt: "2026-08-11T11:47:23.000Z",
-    schemaVersion: "5",
-    seedVersion: "2026-08-09.2",
+    schemaVersion: "6",
+    seedVersion: "2026-08-10.1",
   },
   status: "ready",
   storeScope: {
@@ -196,6 +196,49 @@ function availabilityFor(url: string): CustomerSeatAvailabilityResponse {
 
   return {
     area: { code: areaCode, displayName: area.displayName },
+    coupons: [
+      {
+        code: "reservation-six",
+        discountCents: 600,
+        displayName: "预约立减体验券",
+        eligibility: {
+          discountCents: 600,
+          payableCents: Math.max(
+            0,
+            Math.round(machineProfile.baseHourlyCents * durationHours * 1.2) -
+              600,
+          ),
+          status: "eligible",
+        },
+        id: "00000000-0000-4000-8000-000000000701",
+        minimumSpendCents: 2_000,
+        validUntil: "2026-08-31T00:00:00.000Z",
+      },
+      {
+        code: "reservation-premium",
+        discountCents: 1_000,
+        displayName: "高额预约体验券",
+        eligibility: { reason: "minimum-spend", status: "ineligible" },
+        id: "00000000-0000-4000-8000-000000000702",
+        minimumSpendCents: 5_000,
+        validUntil: "2026-08-31T00:00:00.000Z",
+      },
+      {
+        code: "reservation-zero",
+        discountCents: 3_600,
+        displayName: "零元应付体验券",
+        eligibility: {
+          discountCents: Math.round(
+            machineProfile.baseHourlyCents * durationHours * 1.2,
+          ),
+          payableCents: 0,
+          status: "eligible",
+        },
+        id: "00000000-0000-4000-8000-000000000703",
+        minimumSpendCents: 0,
+        validUntil: "2026-08-31T00:00:00.000Z",
+      },
+    ],
     machineProfile: {
       code: machineCode,
       displayName: machineProfile.displayName,
@@ -245,16 +288,96 @@ async function serveJson(route: Route, json: unknown) {
   await route.fulfill({ json, status: 200 });
 }
 
-async function openCustomerH5(page: Page) {
+async function openCustomerH5(
+  page: Page,
+  options: {
+    conflict?: boolean;
+    transformAvailability?: (
+      value: CustomerSeatAvailabilityResponse,
+    ) => CustomerSeatAvailabilityResponse;
+  } = {},
+) {
   await page.route("**/api/v1/demo/context", (route) =>
     serveJson(route, customerContext),
   );
   await page.route("**/api/v1/customer/stores", (route) =>
     serveJson(route, catalog),
   );
-  await page.route("**/api/v1/customer/seat-availability?**", (route) =>
-    serveJson(route, availabilityFor(route.request().url())),
-  );
+  await page.route("**/api/v1/customer/seat-availability?**", (route) => {
+    const value = availabilityFor(route.request().url());
+    return serveJson(
+      route,
+      options.transformAvailability
+        ? options.transformAvailability(value)
+        : value,
+    );
+  });
+  await page.route("**/api/v1/customer/reservations", async (route) => {
+    if (options.conflict) {
+      await route.fulfill({
+        json: {
+          error: {
+            code: "CUSTOMER_RESERVATION_SEAT_CONFLICT",
+            message: "该座位刚刚被其他预约占用，请返回重新选座。",
+            requestId: "00000000-0000-4000-8000-000000000707",
+          },
+        },
+        status: 409,
+      });
+      return;
+    }
+    const body = route.request().postDataJSON() as {
+      couponId: string | null;
+      seatCode: string;
+    };
+    const preview = options.transformAvailability
+      ? options.transformAvailability(
+          availabilityFor(
+            "http://localhost/api?area=competitive-a&durationHours=2&machine=competitive&mode=immediate&store=prism-flagship",
+          ),
+        )
+      : availabilityFor(
+          "http://localhost/api?area=competitive-a&durationHours=2&machine=competitive&mode=immediate&store=prism-flagship",
+        );
+    const coupon =
+      preview.coupons.find((item) => item.id === body.couponId) ?? null;
+    const discountCents =
+      coupon?.eligibility.status === "eligible"
+        ? coupon.eligibility.discountCents
+        : 0;
+    await route.fulfill({
+      json: {
+        holdExpiresAt: "2026-08-10T11:57:23.000Z",
+        replayed: false,
+        reservationId: "00000000-0000-4000-8000-000000000708",
+        snapshot: {
+          area: preview.area,
+          coupon: coupon
+            ? {
+                code: coupon.code,
+                discountCents,
+                displayName: coupon.displayName,
+              }
+            : null,
+          machineProfile: preview.machineProfile,
+          price: {
+            discountCents,
+            payableCents: preview.price.totalCents - discountCents,
+            segments: preview.price.segments,
+            subtotalCents: preview.price.totalCents,
+          },
+          seat: { code: body.seatCode },
+          store: preview.store,
+          window: {
+            endsAt: preview.window.endsAt,
+            startsAt: preview.window.startsAt,
+          },
+        },
+        status: "pending-confirmation",
+      },
+      status: 201,
+    });
+  });
   await page.goto("/");
   await expect(page.getByTestId("customer-h5")).toBeVisible();
 }
@@ -331,9 +454,11 @@ test("mobile customer can browse three stores and inspect server-derived seats a
   await expect(
     page.getByRole("button", { name: /A-05，.*已选/u }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "完成预览" }).click();
-  await expect(page.getByText("未创建预约 · 未发生扣款")).toBeVisible();
-  await expect(page.getByRole("button", { name: /预览已完成/u })).toBeVisible();
+  await page.getByRole("button", { name: "继续确认" }).click();
+  await expect(
+    page.getByRole("heading", { name: "竞技区 A-05" }),
+  ).toBeVisible();
+  await expect(page.getByText("模拟支付不会扣款")).toBeVisible();
 });
 
 test("condition changes requery automatically, clear stale selection, and remain usable at 360px", async ({
@@ -379,6 +504,86 @@ test("condition changes requery automatically, clear stale selection, and remain
         .filter((button) => button.height < 44 || button.width < 44),
     );
   expect(undersizedControls).toEqual([]);
+});
+
+test("WEB-C01 confirmation supports price details, coupon states, zero payable and a real hold submit at 360px", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  await openCustomerH5(page);
+  await page.getByRole("button", { name: "查找可订座位" }).click();
+  await page.getByRole("button", { name: /A-05，.*可订/u }).click();
+  await page.getByRole("button", { name: "继续确认" }).click();
+
+  await expect(page.getByText("¥30.00", { exact: true })).toBeVisible();
+  await expect(page.getByText("当前金额未达到最低使用门槛")).toBeVisible();
+  await page.getByRole("button", { name: /半小时价格明细 展开/u }).click();
+  await expect(
+    page.getByText("工作日 18:00–24:00 · 1.20 倍").first(),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /不使用体验券/u }).click();
+  await expect(
+    page.locator(".customer-money-summary .is-total").getByText("¥36.00"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /零元应付体验券/u }).click();
+  await expect(
+    page.locator(".customer-money-summary .is-total").getByText("¥0.00"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /预约立减体验券/u }).click();
+
+  const requestPromise = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/v1/customer/reservations") &&
+      request.method() === "POST",
+  );
+  await page.getByRole("button", { name: "创建十分钟保留" }).click();
+  const request = await requestPromise;
+  expect(request.headers()["x-csrf-token"]).toBe(customerContext.csrfToken);
+  expect(request.headers()["idempotency-key"]).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+  );
+  expect(request.postDataJSON()).toMatchObject({
+    areaCode: "competitive-a",
+    couponId: "00000000-0000-4000-8000-000000000701",
+    durationHours: 2,
+    machineProfileCode: "competitive",
+    mode: "immediate",
+    seatCode: "A-05",
+    storeCode: "prism-flagship",
+  });
+  await expect(
+    page.getByRole("heading", { name: "预约已排他保留十分钟" }),
+  ).toBeVisible();
+  await expect(page.getByText("没有发生扣款")).toBeVisible();
+
+  const viewport = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth);
+});
+
+test("WEB-C01 explains no-coupon state and invalidates a seat after a server conflict", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  await openCustomerH5(page, {
+    conflict: true,
+    transformAvailability: (value) => ({ ...value, coupons: [] }),
+  });
+  await page.getByRole("button", { name: "查找可订座位" }).click();
+  await page.getByRole("button", { name: /A-05，.*可订/u }).click();
+  await page.getByRole("button", { name: "继续确认" }).click();
+  await expect(
+    page.getByText("当前没有预约体验券，仍可按原价继续。"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "创建十分钟保留" }).click();
+  await expect(page.getByText("当前选择已失效")).toBeVisible();
+  await expect(
+    page.getByText("该座位刚刚被其他预约占用，请返回重新选座。"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "返回选座" }).last().click();
+  await expect(page.getByRole("button", { name: "继续确认" })).toBeDisabled();
 });
 
 test("catalog failure exposes an actionable retry", async ({ page }) => {

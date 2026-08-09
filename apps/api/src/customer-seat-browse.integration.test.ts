@@ -200,4 +200,83 @@ describe("customer store and seat browsing API", () => {
       },
     });
   });
+
+  it("creates and safely replays a CSRF-protected pending reservation snapshot", async () => {
+    const cookie = await createRoleSession("customer");
+    const context = await app.request("/api/v1/demo/context", {
+      headers: { Cookie: cookie },
+    });
+    const role = (await context.json()) as { csrfToken: string };
+    const query = new URLSearchParams({
+      area: "competitive-a",
+      durationHours: "2",
+      machine: "competitive",
+      mode: "immediate",
+      store: "prism-flagship",
+    });
+    const previewResponse = await app.request(
+      `/api/v1/customer/seat-availability?${query.toString()}`,
+      { headers: { Cookie: cookie } },
+    );
+    const preview = (await previewResponse.json()) as {
+      coupons: Array<{ eligibility: { status: string }; id: string }>;
+    };
+    const coupon = preview.coupons.find(
+      (item) => item.eligibility.status === "eligible",
+    );
+    expect(coupon).toBeDefined();
+    const key = crypto.randomUUID();
+    const body = {
+      areaCode: "competitive-a",
+      couponId: coupon?.id ?? null,
+      durationHours: 2,
+      machineProfileCode: "competitive",
+      mode: "immediate",
+      seatCode: "A-08",
+      storeCode: "prism-flagship",
+    };
+    const headers = {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+      "Idempotency-Key": key,
+      Origin: publicOrigin,
+      "X-CSRF-Token": role.csrfToken,
+    };
+    const first = await app.request("/api/v1/customer/reservations", {
+      body: JSON.stringify(body),
+      headers,
+      method: "POST",
+    });
+    expect(first.status).toBe(201);
+    const firstBody = await first.json();
+    expect(firstBody).toMatchObject({
+      replayed: false,
+      status: "pending-confirmation",
+      snapshot: {
+        coupon: { code: "reservation-six", discountCents: 600 },
+        price: { discountCents: 600 },
+        seat: { code: "A-08" },
+        store: { code: "prism-flagship" },
+      },
+    });
+    const retry = await app.request("/api/v1/customer/reservations", {
+      body: JSON.stringify(body),
+      headers,
+      method: "POST",
+    });
+    expect(retry.status).toBe(200);
+    await expect(retry.json()).resolves.toEqual({
+      ...(firstBody as object),
+      replayed: true,
+    });
+    const mismatched = await app.request("/api/v1/customer/reservations", {
+      body: JSON.stringify({ ...body, couponId: null }),
+      headers,
+      method: "POST",
+    });
+    expect(mismatched.status).toBe(409);
+    await expect(mismatched.json()).resolves.toMatchObject({
+      error: { code: "CUSTOMER_RESERVATION_IDEMPOTENCY_CONFLICT" },
+    });
+  });
 });

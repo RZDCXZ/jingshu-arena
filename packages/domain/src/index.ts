@@ -1,5 +1,5 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "5";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-09.2";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "6";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.1";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -284,6 +284,110 @@ export function priceReservationWindow(
       (total, segment) => total + segment.amountCents,
       0,
     ),
+  };
+}
+
+export type ReservationCouponIneligibleReason =
+  | "business-kind"
+  | "minimum-spend"
+  | "store"
+  | "time-window"
+  | "unavailable"
+  | "validity";
+
+interface EvaluateReservationCouponInput {
+  readonly businessKind: "reservation";
+  readonly coupon: {
+    readonly businessKind: "order" | "reservation";
+    readonly discountCents: number;
+    readonly eligibleEndMinutes: number;
+    readonly eligibleStartMinutes: number;
+    readonly minimumSpendCents: number;
+    readonly status: "available" | "expired" | "redeemed" | "reserved";
+    readonly storeCode: string | null;
+    readonly validFrom: Date;
+    readonly validUntil: Date;
+  };
+  readonly endsAt: Date;
+  readonly now: Date;
+  readonly startsAt: Date;
+  readonly storeCode: string;
+  readonly subtotalCents: number;
+}
+
+export type ReservationCouponEligibility =
+  | {
+      readonly discountCents: number;
+      readonly payableCents: number;
+      readonly status: "eligible";
+    }
+  | {
+      readonly reason: ReservationCouponIneligibleReason;
+      readonly status: "ineligible";
+    };
+
+export function evaluateReservationCoupon(
+  input: EvaluateReservationCouponInput,
+): ReservationCouponEligibility {
+  if (input.coupon.status !== "available") {
+    return { reason: "unavailable", status: "ineligible" };
+  }
+  if (input.coupon.businessKind !== input.businessKind) {
+    return { reason: "business-kind", status: "ineligible" };
+  }
+  if (
+    input.coupon.storeCode !== null &&
+    input.coupon.storeCode !== input.storeCode
+  ) {
+    return { reason: "store", status: "ineligible" };
+  }
+  if (input.subtotalCents < input.coupon.minimumSpendCents) {
+    return { reason: "minimum-spend", status: "ineligible" };
+  }
+  if (
+    input.now.getTime() < input.coupon.validFrom.getTime() ||
+    input.now.getTime() >= input.coupon.validUntil.getTime() ||
+    input.endsAt.getTime() > input.coupon.validUntil.getTime()
+  ) {
+    return { reason: "validity", status: "ineligible" };
+  }
+  const start = shanghaiDateParts(input.startsAt);
+  const end = shanghaiDateParts(input.endsAt);
+  const startMinutes = start.hour * 60 + start.minute;
+  const endMinutes = end.hour * 60 + end.minute;
+  const startSerial = localDaySerial(start);
+  const endScalar = localDaySerial(end) * 1_440 + endMinutes;
+  const allDay =
+    input.coupon.eligibleStartMinutes === 0 &&
+    input.coupon.eligibleEndMinutes === 24 * 60;
+  const insideTimeWindow =
+    allDay ||
+    (input.coupon.eligibleEndMinutes > input.coupon.eligibleStartMinutes
+      ? startMinutes >= input.coupon.eligibleStartMinutes &&
+        endScalar <= startSerial * 1_440 + input.coupon.eligibleEndMinutes
+      : (() => {
+          const openingDay =
+            startMinutes < input.coupon.eligibleEndMinutes
+              ? startSerial - 1
+              : startSerial;
+          return (
+            startSerial * 1_440 + startMinutes >=
+              openingDay * 1_440 + input.coupon.eligibleStartMinutes &&
+            endScalar <=
+              (openingDay + 1) * 1_440 + input.coupon.eligibleEndMinutes
+          );
+        })());
+  if (!insideTimeWindow) {
+    return { reason: "time-window", status: "ineligible" };
+  }
+  const discountCents = Math.min(
+    input.subtotalCents,
+    Math.max(0, input.coupon.discountCents),
+  );
+  return {
+    discountCents,
+    payableCents: input.subtotalCents - discountCents,
+    status: "eligible",
   };
 }
 

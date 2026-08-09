@@ -8,6 +8,9 @@ export * from "./schema.js";
 export {
   CustomerSeatBrowseValidationError,
   type CustomerSeatBrowseValidationReason,
+  CustomerReservationCreateConflictError,
+  type CustomerReservationCreateConflictReason,
+  CustomerReservationIdempotencyConflictError,
   DemoTimeAdvanceLimitReachedError,
   DemoTimeNoNextEventError,
   PublicSandboxIdempotencyConflictError,
@@ -19,8 +22,10 @@ export {
 export {
   createPublicSandboxDatabase,
   type CreatePublicSandboxInput,
+  type CreateCustomerPendingReservationInput,
   type CustomerBrowseContextInput,
   type DatabaseCustomerSeatAvailability,
+  type DatabaseCustomerPendingReservation,
   type DatabaseCustomerStoreCatalog,
   type DatabaseRoleContext,
   type PublicSandboxDatabase,

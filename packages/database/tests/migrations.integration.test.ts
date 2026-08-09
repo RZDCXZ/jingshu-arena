@@ -37,6 +37,6 @@ describe("empty Postgres migration", () => {
     const metadata = await client.query<{ key: string; value: string }>(
       "select key, value from jingshu_schema_metadata order by key",
     );
-    expect(metadata.rows).toEqual([{ key: "schema_version", value: "5" }]);
+    expect(metadata.rows).toEqual([{ key: "schema_version", value: "6" }]);
   });
 });

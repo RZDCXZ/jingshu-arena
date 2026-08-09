@@ -296,6 +296,64 @@ export const demoPersonas = pgTable(
   ],
 ).enableRLS();
 
+export const experienceCoupons = pgTable(
+  "experience_coupons",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    customerPersonaId: uuid("customer_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id").references(() => stores.id, {
+      onDelete: "restrict",
+    }),
+    code: text("code").notNull(),
+    displayName: text("display_name").notNull(),
+    businessKind: text("business_kind").notNull(),
+    discountCents: integer("discount_cents").notNull(),
+    minimumSpendCents: integer("minimum_spend_cents").notNull(),
+    eligibleStartMinutes: integer("eligible_start_minutes").notNull(),
+    eligibleEndMinutes: integer("eligible_end_minutes").notNull(),
+    validFrom: timestamp("valid_from", { withTimezone: true }).notNull(),
+    validUntil: timestamp("valid_until", { withTimezone: true }).notNull(),
+    status: text("status").default("available").notNull(),
+    reservedReservationId: uuid("reserved_reservation_id"),
+    reservedUntil: timestamp("reserved_until", { withTimezone: true }),
+  },
+  (table) => [
+    unique("experience_coupons_sandbox_code_unique").on(
+      table.sandboxId,
+      table.code,
+    ),
+    check(
+      "experience_coupons_business_kind",
+      sql`${table.businessKind} IN ('reservation', 'order')`,
+    ),
+    check(
+      "experience_coupons_non_negative_amounts",
+      sql`${table.discountCents} >= 0 AND ${table.minimumSpendCents} >= 0`,
+    ),
+    check(
+      "experience_coupons_time_minutes",
+      sql`${table.eligibleStartMinutes} >= 0 AND ${table.eligibleStartMinutes} < 1440 AND ${table.eligibleEndMinutes} > 0 AND ${table.eligibleEndMinutes} <= 1440`,
+    ),
+    check(
+      "experience_coupons_valid_range",
+      sql`${table.validUntil} > ${table.validFrom}`,
+    ),
+    check(
+      "experience_coupons_status",
+      sql`${table.status} IN ('available', 'reserved', 'redeemed', 'expired')`,
+    ),
+    pgPolicy("experience_coupons_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
 export const reservations = pgTable(
   "reservations",
   {
@@ -315,12 +373,25 @@ export const reservations = pgTable(
     status: text("status").notNull(),
     startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
     endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    holdExpiresAt: timestamp("hold_expires_at", { withTimezone: true }),
+    createdBusinessAt: timestamp("created_business_at", {
+      withTimezone: true,
+    }),
+    priceSnapshot: jsonb("price_snapshot"),
+    couponId: uuid("coupon_id").references(() => experienceCoupons.id, {
+      onDelete: "restrict",
+    }),
+    couponSnapshot: jsonb("coupon_snapshot"),
   },
   (table) => [
     check("reservations_time_range", sql`${table.endsAt} > ${table.startsAt}`),
     check(
       "reservations_status",
       sql`${table.status} IN ('pending-confirmation', 'confirmed', 'arrived', 'in-use', 'completed', 'cancelled', 'expired')`,
+    ),
+    check(
+      "reservations_pending_snapshot",
+      sql`${table.status} <> 'pending-confirmation' OR (${table.holdExpiresAt} IS NOT NULL AND ${table.createdBusinessAt} IS NOT NULL AND ${table.priceSnapshot} IS NOT NULL)`,
     ),
     index("reservations_seat_time_idx").on(
       table.sandboxId,
@@ -329,6 +400,67 @@ export const reservations = pgTable(
       table.endsAt,
     ),
     pgPolicy("reservations_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const reservationBusinessEvents = pgTable(
+  "reservation_business_events",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    reservationId: uuid("reservation_id")
+      .notNull()
+      .references(() => reservations.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    eventData: jsonb("event_data").notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    pgPolicy("reservation_business_events_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const reservationCommandRequests = pgTable(
+  "reservation_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    customerPersonaId: uuid("customer_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    reservationId: uuid("reservation_id")
+      .notNull()
+      .references(() => reservations.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.customerPersonaId,
+        table.idempotencyKeyHash,
+      ],
+      name: "reservation_command_requests_pk",
+    }),
+    pgPolicy("reservation_command_requests_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),

@@ -4,11 +4,14 @@ import type { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import {
   CUSTOMER_MACHINE_PROFILE_CODES,
+  type CreateCustomerPendingReservationRequest,
   type CustomerMachineProfileCode,
+  type CustomerPendingReservationResponse,
   type CustomerSeatAvailabilityResponse,
   type CustomerStoreCatalogResponse,
 } from "@jingshu/contracts";
 import {
+  type CustomerReservationCreateConflictError,
   type CustomerSeatBrowseValidationError,
   type CustomerSeatBrowseValidationReason,
 } from "@jingshu/database";
@@ -16,7 +19,10 @@ import {
 import { readRoleSession } from "./role-session.js";
 import {
   SESSION_COOKIE,
+  UUID_V4_PATTERN,
+  csrfTokensMatch,
   errorBody,
+  isPlainRecord,
   isRoleContextStale,
   isRoleContextUnavailable,
   recordRoleContextDenial,
@@ -27,6 +33,7 @@ const machineProfileCodes = new Set<CustomerMachineProfileCode>(
   CUSTOMER_MACHINE_PROFILE_CODES,
 );
 const safeCodePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const safeSeatCodePattern = /^[A-Z]-\d{2}$/u;
 
 const validationErrors: Record<
   CustomerSeatBrowseValidationReason,
@@ -295,6 +302,10 @@ export function registerCustomerSeatBrowseRoutes(
       return context.json({
         status: "ready",
         area: availability.area,
+        coupons: availability.coupons.map((coupon) => ({
+          ...coupon,
+          validUntil: coupon.validUntil.toISOString(),
+        })),
         machineProfile: availability.machineProfile,
         price: {
           ...availability.price,
@@ -315,6 +326,246 @@ export function registerCustomerSeatBrowseRoutes(
     } catch (error) {
       const failure = customerContextError(error, requestId);
       return context.json(failure.body, failure.status);
+    }
+  });
+
+  app.post("/api/v1/customer/reservations", async (context) => {
+    const requestId = randomUUID();
+    context.header("X-Request-Id", requestId);
+    context.header("Cache-Control", "no-store");
+    if (!services.sandboxDatabase || !services.sessionSecret) {
+      return context.json(
+        errorBody(
+          "CUSTOMER_RESERVATION_SERVICE_UNAVAILABLE",
+          "预约保留暂时不可用，未创建预约也未占用体验券。",
+          requestId,
+        ),
+        503,
+      );
+    }
+    const session = readRoleSession(
+      getCookie(context, SESSION_COOKIE),
+      services.sessionSecret,
+    );
+    if (!session) {
+      return context.json(
+        errorBody(
+          "ROLE_CONTEXT_REQUIRED",
+          "演示角色上下文已失效，请返回公开入口重新选择。",
+          requestId,
+        ),
+        401,
+      );
+    }
+    if (session.role !== "customer") {
+      await recordRoleContextDenial(
+        services,
+        session,
+        requestId,
+        "capability_denied",
+      );
+      return context.json(
+        errorBody(
+          "CUSTOMER_ROLE_REQUIRED",
+          "请切换到顾客角色后创建自己的预约。",
+          requestId,
+        ),
+        403,
+      );
+    }
+    const origin = context.req.header("Origin");
+    if (!origin || !services.allowedOrigins.has(origin)) {
+      await recordRoleContextDenial(
+        services,
+        session,
+        requestId,
+        "invalid_origin",
+      );
+      return context.json(
+        errorBody(
+          "INVALID_REQUEST_ORIGIN",
+          "请求来源无法验证，预约和体验券均未占用。",
+          requestId,
+        ),
+        403,
+      );
+    }
+    if (
+      !csrfTokensMatch(session.csrfToken, context.req.header("X-CSRF-Token"))
+    ) {
+      await recordRoleContextDenial(
+        services,
+        session,
+        requestId,
+        "csrf_context_mismatch",
+      );
+      return context.json(
+        errorBody(
+          "ROLE_CONTEXT_STALE",
+          "当前标签的写入上下文已失效，请刷新后重试。",
+          requestId,
+        ),
+        409,
+      );
+    }
+    const idempotencyKey = context.req.header("Idempotency-Key");
+    if (!idempotencyKey || !UUID_V4_PATTERN.test(idempotencyKey)) {
+      return context.json(
+        errorBody(
+          "INVALID_IDEMPOTENCY_KEY",
+          "预约提交标识已失效，请返回确认页重新提交。",
+          requestId,
+        ),
+        400,
+      );
+    }
+    const parsed: unknown = await context.req.json().catch(() => null);
+    const body = isPlainRecord(parsed) ? parsed : null;
+    const requestedStartsAt =
+      typeof body?.requestedStartsAt === "string"
+        ? new Date(body.requestedStartsAt)
+        : undefined;
+    const allowedKeys = new Set([
+      "areaCode",
+      "couponId",
+      "durationHours",
+      "machineProfileCode",
+      "mode",
+      "requestedStartsAt",
+      "seatCode",
+      "storeCode",
+    ]);
+    if (
+      !body ||
+      Object.keys(body).some((key) => !allowedKeys.has(key)) ||
+      typeof body.areaCode !== "string" ||
+      !safeCodePattern.test(body.areaCode) ||
+      !(
+        body.couponId === null ||
+        (typeof body.couponId === "string" &&
+          UUID_V4_PATTERN.test(body.couponId))
+      ) ||
+      !Number.isInteger(body.durationHours) ||
+      Number(body.durationHours) < 1 ||
+      Number(body.durationHours) > 8 ||
+      typeof body.machineProfileCode !== "string" ||
+      !machineProfileCodes.has(
+        body.machineProfileCode as CustomerMachineProfileCode,
+      ) ||
+      (body.mode !== "immediate" && body.mode !== "future") ||
+      typeof body.seatCode !== "string" ||
+      !safeSeatCodePattern.test(body.seatCode) ||
+      typeof body.storeCode !== "string" ||
+      !safeCodePattern.test(body.storeCode) ||
+      (body.mode === "future" &&
+        (!requestedStartsAt || Number.isNaN(requestedStartsAt.getTime()))) ||
+      (body.mode === "immediate" && body.requestedStartsAt !== undefined)
+    ) {
+      return context.json(
+        errorBody(
+          "CUSTOMER_RESERVATION_REQUEST_INVALID",
+          "预约确认内容不完整，请返回选座后重新确认。",
+          requestId,
+        ),
+        400,
+      );
+    }
+
+    try {
+      const request =
+        body as unknown as CreateCustomerPendingReservationRequest;
+      const result =
+        await services.sandboxDatabase.createCustomerPendingReservation({
+          areaCode: request.areaCode,
+          contextVersion: session.contextVersion,
+          couponId: request.couponId,
+          durationHours: request.durationHours,
+          idempotencyKey,
+          machineProfileCode: request.machineProfileCode,
+          mode: request.mode,
+          personaId: session.personaId,
+          requestId,
+          ...(requestedStartsAt ? { requestedStartsAt } : {}),
+          role: session.role,
+          sandboxId: session.sandboxId,
+          seatCode: request.seatCode,
+          storeCode: request.storeCode,
+        });
+      const response = {
+        holdExpiresAt: result.holdExpiresAt.toISOString(),
+        replayed: result.replayed,
+        reservationId: result.reservationId,
+        snapshot: {
+          ...result.snapshot,
+          price: {
+            ...result.snapshot.price,
+            segments: result.snapshot.price.segments.map((segment) => ({
+              ...segment,
+              endsAt: segment.endsAt.toISOString(),
+              startsAt: segment.startsAt.toISOString(),
+            })),
+          },
+          window: {
+            endsAt: result.snapshot.window.endsAt.toISOString(),
+            startsAt: result.snapshot.window.startsAt.toISOString(),
+          },
+        },
+        status: result.status,
+      } satisfies CustomerPendingReservationResponse;
+      return context.json(response, result.replayed ? 200 : 201);
+    } catch (error) {
+      const contextFailure = customerContextError(error, requestId);
+      if (contextFailure.status !== 503) {
+        return context.json(contextFailure.body, contextFailure.status);
+      }
+      const createConflict =
+        error as Partial<CustomerReservationCreateConflictError>;
+      if (createConflict.code === "CUSTOMER_RESERVATION_CREATE_CONFLICT") {
+        const messages = {
+          "coupon-ineligible":
+            "所选体验券不符合当前门店、时段、金额或有效期条件。",
+          "coupon-not-found": "所选体验券已不存在，请重新选择。",
+          "coupon-unavailable": "所选体验券已被占用或失效，请重新选择。",
+          "customer-conflict": "你在该时段已有另一条有效预约，请调整时段。",
+          "seat-conflict": "该座位刚刚被其他预约占用，请返回重新选座。",
+          "seat-maintenance": "该座位当前处于维护状态，请返回重新选座。",
+          "seat-not-found": "该座位已不属于当前区域或机型，请返回重新选座。",
+        } as const;
+        return context.json(
+          errorBody(
+            `CUSTOMER_RESERVATION_${String(createConflict.reason ?? "conflict")
+              .toUpperCase()
+              .replaceAll("-", "_")}`,
+            messages[createConflict.reason as keyof typeof messages] ??
+              "当前预约条件已变化，请返回重新选座。",
+            requestId,
+          ),
+          409,
+        );
+      }
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "CUSTOMER_RESERVATION_IDEMPOTENCY_CONFLICT"
+      ) {
+        return context.json(
+          errorBody(
+            "CUSTOMER_RESERVATION_IDEMPOTENCY_CONFLICT",
+            "该提交标识已用于另一组预约内容，请返回确认页重新提交。",
+            requestId,
+          ),
+          409,
+        );
+      }
+      return context.json(
+        errorBody(
+          "CUSTOMER_RESERVATION_CREATE_FAILED",
+          "预约保留未能完整创建；没有留下部分预约或体验券占用，可安全重试。",
+          requestId,
+        ),
+        503,
+      );
     }
   });
 }

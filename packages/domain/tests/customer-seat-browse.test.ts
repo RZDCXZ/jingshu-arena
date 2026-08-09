@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   businessDayKey,
   deriveSeatAvailability,
+  evaluateReservationCoupon,
   priceReservationWindow,
   resolveCustomerReservationWindow,
 } from "../src/index.js";
@@ -189,5 +190,79 @@ describe("customer reservation browsing rules", () => {
     expect(midnight.segments.map((segment) => segment.amountCents)).toEqual([
       900, 900, 675, 675,
     ]);
+  });
+
+  it("explains coupon eligibility and caps a reservation discount at zero payable", () => {
+    const base = {
+      businessKind: "reservation" as const,
+      coupon: {
+        businessKind: "reservation" as const,
+        discountCents: 4_000,
+        eligibleEndMinutes: 24 * 60,
+        eligibleStartMinutes: 0,
+        minimumSpendCents: 2_000,
+        status: "available" as const,
+        storeCode: "prism-flagship",
+        validFrom: new Date("2026-08-01T00:00:00.000Z"),
+        validUntil: new Date("2026-08-31T00:00:00.000Z"),
+      },
+      endsAt: new Date("2026-08-10T13:30:00.000Z"),
+      now: new Date("2026-08-10T11:47:23.000Z"),
+      startsAt: new Date("2026-08-10T11:30:00.000Z"),
+      storeCode: "prism-flagship",
+      subtotalCents: 3_600,
+    };
+
+    expect(evaluateReservationCoupon(base)).toEqual({
+      discountCents: 3_600,
+      payableCents: 0,
+      status: "eligible",
+    });
+    expect(
+      evaluateReservationCoupon({
+        ...base,
+        storeCode: "starbridge-standard",
+      }),
+    ).toEqual({ reason: "store", status: "ineligible" });
+    expect(
+      evaluateReservationCoupon({
+        ...base,
+        coupon: { ...base.coupon, minimumSpendCents: 5_000 },
+      }),
+    ).toEqual({ reason: "minimum-spend", status: "ineligible" });
+    expect(
+      evaluateReservationCoupon({
+        ...base,
+        coupon: {
+          ...base.coupon,
+          eligibleEndMinutes: 21 * 60,
+          eligibleStartMinutes: 20 * 60,
+        },
+      }),
+    ).toEqual({ reason: "time-window", status: "ineligible" });
+    expect(
+      evaluateReservationCoupon({
+        ...base,
+        coupon: {
+          ...base.coupon,
+          eligibleEndMinutes: 2 * 60,
+          eligibleStartMinutes: 20 * 60,
+        },
+        endsAt: new Date("2026-08-10T18:00:00.000Z"),
+        startsAt: new Date("2026-08-10T15:00:00.000Z"),
+      }),
+    ).toMatchObject({ status: "eligible" });
+    expect(
+      evaluateReservationCoupon({
+        ...base,
+        coupon: {
+          ...base.coupon,
+          eligibleEndMinutes: 2 * 60,
+          eligibleStartMinutes: 20 * 60,
+        },
+        endsAt: new Date("2026-08-10T20:00:00.000Z"),
+        startsAt: new Date("2026-08-10T15:00:00.000Z"),
+      }),
+    ).toEqual({ reason: "time-window", status: "ineligible" });
   });
 });

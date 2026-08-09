@@ -3889,6 +3889,422 @@ strong {
   cursor: not-allowed;
 }
 
+.customer-step-rail.is-confirm-step > span:nth-child(-n + 2) {
+  color: var(--cyan);
+}
+
+.customer-step-rail.is-confirm-step > span:nth-child(-n + 2) i {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.customer-confirmation-hero {
+  display: grid;
+  gap: 12px;
+  padding: 17px 15px;
+  border: 1px solid #355466;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #102533, #0b1822);
+}
+
+.customer-confirmation-hero > div:nth-child(2) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.customer-confirmation-hero h1 {
+  margin: 0;
+  font-size: 25px;
+  letter-spacing: -0.035em;
+}
+
+.customer-confirmation-hero em {
+  flex: none;
+  padding: 5px 7px;
+  border: 1px solid var(--cyan);
+  border-radius: 999px;
+  color: var(--cyan);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.customer-confirmation-hero p {
+  margin: -4px 0 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #263e4b;
+  color: #90a5af;
+  font-size: 9px;
+}
+
+.customer-confirmation-time {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.customer-confirmation-time > svg {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--cyan);
+}
+
+.customer-confirmation-time > span {
+  display: grid;
+  gap: 5px;
+}
+
+.customer-confirmation-time strong {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.customer-confirmation-time small {
+  color: #8197a2;
+  font-size: 9px;
+}
+
+.customer-money-summary {
+  display: grid;
+  gap: 0;
+}
+
+.customer-money-summary > div {
+  min-height: 47px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid #253b47;
+  color: #a6b6be;
+  font-size: 10px;
+}
+
+.customer-money-summary > div > strong {
+  color: #f0f5f7;
+  font-size: 12px;
+}
+
+.customer-money-summary > div > strong.is-discount {
+  color: var(--lime);
+}
+
+.customer-money-summary > div.is-total {
+  min-height: 58px;
+  border-bottom: 0;
+  color: #e3eaed;
+  font-weight: 750;
+}
+
+.customer-money-summary > div.is-total > strong {
+  color: var(--lime);
+  font-size: 23px;
+}
+
+.customer-price-expand {
+  width: 100%;
+  min-height: 45px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 5px;
+  border-top: 1px solid #2a414d;
+  color: #dbe5e9;
+  font-size: 11px;
+  text-align: left;
+}
+
+.customer-price-expand > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--cyan);
+}
+
+.customer-price-expand svg {
+  width: 16px;
+  height: 16px;
+  transition: transform 160ms ease;
+}
+
+.customer-price-expand svg.is-rotated {
+  transform: rotate(180deg);
+}
+
+.customer-confirm-segments {
+  border-top: 1px solid #273e4a;
+}
+
+.customer-confirm-segments > div {
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  border-bottom: 1px solid #213640;
+}
+
+.customer-confirm-segments > div > span {
+  display: grid;
+  gap: 4px;
+}
+
+.customer-confirm-segments > div > span strong,
+.customer-confirm-segments > div > strong {
+  font-size: 10px;
+}
+
+.customer-confirm-segments small {
+  color: #7f949e;
+  font-size: 8px;
+}
+
+.customer-confirm-segments > div > strong {
+  color: #dfffc8;
+}
+
+.customer-no-coupon,
+.customer-coupon-list > button {
+  width: 100%;
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 1px solid #365260;
+  border-radius: 9px;
+  background: #0b1922;
+  color: #eaf1f4;
+  text-align: left;
+}
+
+.customer-no-coupon {
+  grid-template-columns: 22px minmax(0, 1fr);
+}
+
+.customer-no-coupon > svg,
+.customer-coupon-list > button > svg {
+  width: 21px;
+  height: 21px;
+  color: var(--cyan);
+}
+
+.customer-no-coupon > span,
+.customer-coupon-list > button > span {
+  display: grid;
+  gap: 5px;
+}
+
+.customer-no-coupon strong,
+.customer-coupon-list strong {
+  font-size: 11px;
+}
+
+.customer-no-coupon small,
+.customer-coupon-list small {
+  color: #8398a2;
+  font-size: 8px;
+  line-height: 1.4;
+}
+
+.customer-no-coupon.is-selected,
+.customer-coupon-list > button.is-selected {
+  border-color: var(--lime);
+  background: #14271e;
+  box-shadow: inset 3px 0 var(--lime);
+}
+
+.customer-coupon-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.customer-coupon-list > button.is-unavailable {
+  border-style: dashed;
+  background: #101a20;
+  color: #74868f;
+}
+
+.customer-coupon-list > button.is-unavailable > svg,
+.customer-coupon-list > button.is-unavailable small {
+  color: #7a6f69;
+}
+
+.customer-coupon-empty {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 8px;
+  padding: 11px;
+  border: 1px dashed #38515d;
+  border-radius: 9px;
+  color: #899da7;
+  font-size: 9px;
+}
+
+.customer-coupon-empty svg {
+  width: 19px;
+  height: 19px;
+  color: var(--cyan);
+}
+
+.customer-no-charge-notice {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid #315967;
+  border-radius: 10px;
+  background: #0e2631;
+  color: #a4b7c0;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.customer-no-charge-notice > svg {
+  width: 25px;
+  height: 25px;
+  color: var(--cyan);
+}
+
+.customer-no-charge-notice > span {
+  display: grid;
+  gap: 4px;
+}
+
+.customer-no-charge-notice strong {
+  color: #eef5f7;
+  font-size: 11px;
+}
+
+.customer-confirm-action {
+  position: sticky;
+  z-index: 25;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 0 -14px;
+  padding: 11px 14px calc(11px + env(safe-area-inset-bottom));
+  border-top: 1px solid #375160;
+  background: rgb(8 21 30 / 97%);
+  backdrop-filter: blur(16px);
+}
+
+.customer-confirm-action > span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.customer-confirm-action small {
+  color: #8297a2;
+  font-size: 8px;
+}
+
+.customer-confirm-action strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.customer-confirm-action button {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: var(--lime) !important;
+  color: #09151c;
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.customer-confirm-action button:disabled {
+  background: #32413e !important;
+  color: #82928d;
+  cursor: not-allowed;
+}
+
+.customer-held-state {
+  min-height: 100%;
+  align-content: start;
+  justify-items: center;
+  padding-top: 38px;
+  text-align: center;
+}
+
+.customer-held-icon {
+  width: 68px;
+  height: 68px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #528947;
+  border-radius: 50%;
+  background: #18351f;
+  color: var(--lime);
+}
+
+.customer-held-icon svg {
+  width: 38px;
+  height: 38px;
+}
+
+.customer-held-state > h1 {
+  margin: 3px 0 0;
+  font-size: 25px;
+}
+
+.customer-held-state > p {
+  margin: 0;
+  color: #91a5af;
+  font-size: 10px;
+}
+
+.customer-held-snapshot {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid #395664;
+  border-radius: 11px;
+  background: #0c1d27;
+  text-align: left;
+}
+
+.customer-held-snapshot > span {
+  color: #91a5af;
+  font-size: 9px;
+}
+
+.customer-held-snapshot > strong {
+  font-size: 12px;
+}
+
+.customer-held-snapshot > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding-top: 12px;
+  border-top: 1px solid #2b424e;
+  color: #9bafb8;
+  font-size: 9px;
+}
+
+.customer-held-snapshot > div > strong {
+  color: var(--lime);
+  font-size: 21px;
+}
+
 .customer-bottom-nav {
   min-height: 60px;
   position: sticky;
@@ -4037,8 +4453,13 @@ strong {
     padding-bottom: 132px;
   }
 
+  .customer-scroll-content.has-confirm-action {
+    padding-bottom: 94px;
+  }
+
   .customer-find-action,
   .customer-seat-action,
+  .customer-confirm-action,
   .customer-bottom-nav {
     position: fixed;
     right: 0;
@@ -4060,6 +4481,11 @@ strong {
 
   .customer-seat-action {
     bottom: calc(60px + env(safe-area-inset-bottom));
+    margin: 0;
+  }
+
+  .customer-confirm-action {
+    bottom: 0;
     margin: 0;
   }
 
@@ -4097,6 +4523,10 @@ strong {
 
   .customer-seat-action {
     margin-inline: -10px;
+    padding-inline: 10px;
+  }
+
+  .customer-confirm-action {
     padding-inline: 10px;
   }
 }

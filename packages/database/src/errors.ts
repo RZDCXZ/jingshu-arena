@@ -82,3 +82,32 @@ export class CustomerSeatBrowseValidationError extends Error {
     this.reason = reason;
   }
 }
+
+export type CustomerReservationCreateConflictReason =
+  | "coupon-ineligible"
+  | "coupon-not-found"
+  | "coupon-unavailable"
+  | "customer-conflict"
+  | "seat-conflict"
+  | "seat-maintenance"
+  | "seat-not-found";
+
+export class CustomerReservationCreateConflictError extends Error {
+  readonly code = "CUSTOMER_RESERVATION_CREATE_CONFLICT";
+  readonly reason: CustomerReservationCreateConflictReason;
+
+  constructor(reason: CustomerReservationCreateConflictReason) {
+    super(`Customer pending reservation cannot be created: ${reason}.`);
+    this.name = "CustomerReservationCreateConflictError";
+    this.reason = reason;
+  }
+}
+
+export class CustomerReservationIdempotencyConflictError extends Error {
+  readonly code = "CUSTOMER_RESERVATION_IDEMPOTENCY_CONFLICT";
+
+  constructor() {
+    super("The reservation command key was already used for another payload.");
+    this.name = "CustomerReservationIdempotencyConflictError";
+  }
+}

@@ -7,9 +7,11 @@ import {
   buildPublicSandboxSeed,
   type CustomerReservationMode,
   deriveSeatAvailability,
+  evaluateReservationCoupon,
   type MachineProfileCode,
   priceReservationWindow,
   type ReservationPriceRule,
+  type ReservationCouponEligibility,
   resolveCustomerReservationWindow,
   type SeatAvailability,
   sandboxBusinessTimeAt,
@@ -18,6 +20,8 @@ import {
 } from "@jingshu/domain";
 
 import {
+  CustomerReservationCreateConflictError,
+  CustomerReservationIdempotencyConflictError,
   CustomerSeatBrowseValidationError,
   PublicSandboxIdempotencyConflictError,
   PublicSandboxOwnershipConflictError,
@@ -131,6 +135,15 @@ export interface DatabaseCustomerSeatAvailability {
     }>;
     readonly totalCents: number;
   };
+  readonly coupons: ReadonlyArray<{
+    readonly id: string;
+    readonly code: string;
+    readonly displayName: string;
+    readonly discountCents: number;
+    readonly minimumSpendCents: number;
+    readonly validUntil: Date;
+    readonly eligibility: ReservationCouponEligibility;
+  }>;
   readonly seats: ReadonlyArray<{
     readonly availability: SeatAvailability;
     readonly code: string;
@@ -141,6 +154,54 @@ export interface DatabaseCustomerSeatAvailability {
     readonly endsAt: Date;
     readonly mode: CustomerReservationMode;
     readonly startsAt: Date;
+  };
+}
+
+export interface CreateCustomerPendingReservationInput extends CustomerBrowseContextInput {
+  readonly areaCode: string;
+  readonly couponId: string | null;
+  readonly durationHours: number;
+  readonly idempotencyKey: string;
+  readonly machineProfileCode: MachineProfileCode;
+  readonly mode: CustomerReservationMode;
+  readonly requestId: string;
+  readonly requestedStartsAt?: Date;
+  readonly seatCode: string;
+  readonly storeCode: string;
+}
+
+export interface DatabaseCustomerPendingReservation {
+  readonly replayed: boolean;
+  readonly reservationId: string;
+  readonly status: "pending-confirmation";
+  readonly holdExpiresAt: Date;
+  readonly snapshot: {
+    readonly area: { readonly code: string; readonly displayName: string };
+    readonly coupon: {
+      readonly code: string;
+      readonly displayName: string;
+      readonly discountCents: number;
+    } | null;
+    readonly machineProfile: {
+      readonly code: MachineProfileCode;
+      readonly displayName: string;
+      readonly experienceDescription: string;
+    };
+    readonly price: {
+      readonly discountCents: number;
+      readonly payableCents: number;
+      readonly segments: ReadonlyArray<{
+        readonly amountCents: number;
+        readonly endsAt: Date;
+        readonly multiplierBasisPoints: number;
+        readonly rule: ReservationPriceRule;
+        readonly startsAt: Date;
+      }>;
+      readonly subtotalCents: number;
+    };
+    readonly seat: { readonly code: string };
+    readonly store: { readonly code: string; readonly displayName: string };
+    readonly window: { readonly endsAt: Date; readonly startsAt: Date };
   };
 }
 
@@ -201,6 +262,9 @@ export interface DatabaseRoleContext {
 
 export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   create(input: CreatePublicSandboxInput): Promise<PublicSandboxResult>;
+  createCustomerPendingReservation(
+    input: CreateCustomerPendingReservationInput,
+  ): Promise<DatabaseCustomerPendingReservation>;
   readCurrentRoleContext(
     input: ReadCurrentRoleContextInput,
   ): Promise<DatabaseRoleContext>;
@@ -312,6 +376,57 @@ interface ReservationBrowseRow {
   status: "arrived" | "confirmed" | "in-use" | "pending-confirmation";
 }
 
+interface ExperienceCouponRow {
+  business_kind: "order" | "reservation";
+  code: string;
+  discount_cents: number;
+  display_name: string;
+  eligible_end_minutes: number;
+  eligible_start_minutes: number;
+  id: string;
+  minimum_spend_cents: number;
+  status: "available" | "expired" | "redeemed" | "reserved";
+  store_code: string | null;
+  valid_from: Date;
+  valid_until: Date;
+}
+
+interface ReservationSnapshotRecord {
+  area: { code: string; displayName: string };
+  coupon: {
+    code: string;
+    discountCents: number;
+    displayName: string;
+  } | null;
+  machineProfile: {
+    code: MachineProfileCode;
+    displayName: string;
+    experienceDescription: string;
+  };
+  price: {
+    discountCents: number;
+    payableCents: number;
+    segments: Array<{
+      amountCents: number;
+      endsAt: string;
+      multiplierBasisPoints: number;
+      rule: ReservationPriceRule;
+      startsAt: string;
+    }>;
+    subtotalCents: number;
+  };
+  seat: { code: string };
+  store: { code: string; displayName: string };
+  window: { endsAt: string; startsAt: string };
+}
+
+interface PendingReservationRow {
+  hold_expires_at: Date;
+  id: string;
+  price_snapshot: ReservationSnapshotRecord;
+  status: "pending-confirmation";
+}
+
 interface CreationRequestRow {
   payload_hash: string;
   sandbox_id: string;
@@ -330,6 +445,62 @@ function formatBusinessHours(store: StoreRow): string {
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function pendingReservationResult(
+  row: PendingReservationRow,
+  replayed: boolean,
+): DatabaseCustomerPendingReservation {
+  return {
+    holdExpiresAt: row.hold_expires_at,
+    replayed,
+    reservationId: row.id,
+    snapshot: {
+      ...row.price_snapshot,
+      price: {
+        ...row.price_snapshot.price,
+        segments: row.price_snapshot.price.segments.map((segment) => ({
+          ...segment,
+          endsAt: new Date(segment.endsAt),
+          startsAt: new Date(segment.startsAt),
+        })),
+      },
+      window: {
+        endsAt: new Date(row.price_snapshot.window.endsAt),
+        startsAt: new Date(row.price_snapshot.window.startsAt),
+      },
+    },
+    status: row.status,
+  };
+}
+
+function reservationCouponEligibility(input: {
+  coupon: ExperienceCouponRow;
+  endsAt: Date;
+  now: Date;
+  startsAt: Date;
+  storeCode: string;
+  subtotalCents: number;
+}): ReservationCouponEligibility {
+  return evaluateReservationCoupon({
+    businessKind: "reservation",
+    coupon: {
+      businessKind: input.coupon.business_kind,
+      discountCents: input.coupon.discount_cents,
+      eligibleEndMinutes: input.coupon.eligible_end_minutes,
+      eligibleStartMinutes: input.coupon.eligible_start_minutes,
+      minimumSpendCents: input.coupon.minimum_spend_cents,
+      status: input.coupon.status,
+      storeCode: input.coupon.store_code,
+      validFrom: input.coupon.valid_from,
+      validUntil: input.coupon.valid_until,
+    },
+    endsAt: input.endsAt,
+    now: input.now,
+    startsAt: input.startsAt,
+    storeCode: input.storeCode,
+    subtotalCents: input.subtotalCents,
+  });
 }
 
 function businessTimeForSandbox(sandbox: SandboxRow, wallTime: Date): Date {
@@ -763,16 +934,91 @@ async function materializePublicSandbox(input: {
   const customerPersona = seededPersonas.find(
     (persona) => persona.role === "customer",
   );
+  const availabilityFixturePersona = seededPersonas.find(
+    (persona) => persona.role === "hq",
+  );
   const seatByKey = new Map(
     seededSeats.map((seat) => [`${seat.storeCode}:${seat.code}`, seat]),
   );
   const reservedSeat = seatByKey.get("prism-flagship:A-06");
   const inUseSeat = seatByKey.get("prism-flagship:A-07");
-  if (!customerPersona || !reservedSeat || !inUseSeat) {
+  if (
+    !customerPersona ||
+    !availabilityFixturePersona ||
+    !reservedSeat ||
+    !inUseSeat
+  ) {
     throw new Error(
       "The deterministic reservation availability seed is incomplete.",
     );
   }
+  const flagshipStore = seededStores.find(
+    (store) => store.code === "prism-flagship",
+  );
+  if (!flagshipStore) {
+    throw new Error("The reservation coupon seed store is missing.");
+  }
+  const couponValidFrom = new Date(
+    input.wallTime.getTime() - 24 * 60 * 60 * 1_000,
+  );
+  const couponValidUntil = new Date(
+    input.wallTime.getTime() + 30 * 24 * 60 * 60 * 1_000,
+  );
+  const seededCoupons = [
+    {
+      businessKind: "reservation",
+      code: "reservation-six",
+      discountCents: 600,
+      displayName: "预约立减体验券",
+      eligibleEndMinutes: 1_440,
+      eligibleStartMinutes: 0,
+      id: randomUUID(),
+      minimumSpendCents: 2_000,
+      status: "available",
+      storeId: flagshipStore.id,
+    },
+    {
+      businessKind: "reservation",
+      code: "reservation-premium",
+      discountCents: 1_000,
+      displayName: "高额预约体验券",
+      eligibleEndMinutes: 1_440,
+      eligibleStartMinutes: 0,
+      id: randomUUID(),
+      minimumSpendCents: 5_000,
+      status: "available",
+      storeId: null,
+    },
+  ] as const;
+  await input.client.query(
+    `insert into experience_coupons (
+       id, sandbox_id, customer_persona_id, store_id, code, display_name,
+       business_kind, discount_cents, minimum_spend_cents,
+       eligible_start_minutes, eligible_end_minutes, valid_from, valid_until,
+       status
+     )
+     select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::text[],
+       $6::text[], $7::text[], $8::integer[], $9::integer[], $10::integer[],
+       $11::integer[], $12::timestamptz[], $13::timestamptz[], $14::text[]
+     )`,
+    [
+      seededCoupons.map((coupon) => coupon.id),
+      seededCoupons.map(() => input.sandboxId),
+      seededCoupons.map(() => customerPersona.id),
+      seededCoupons.map((coupon) => coupon.storeId),
+      seededCoupons.map((coupon) => coupon.code),
+      seededCoupons.map((coupon) => coupon.displayName),
+      seededCoupons.map((coupon) => coupon.businessKind),
+      seededCoupons.map((coupon) => coupon.discountCents),
+      seededCoupons.map((coupon) => coupon.minimumSpendCents),
+      seededCoupons.map((coupon) => coupon.eligibleStartMinutes),
+      seededCoupons.map((coupon) => coupon.eligibleEndMinutes),
+      seededCoupons.map(() => couponValidFrom),
+      seededCoupons.map(() => couponValidUntil),
+      seededCoupons.map((coupon) => coupon.status),
+    ],
+  );
   const currentSegmentStart = new Date(
     Math.floor(input.wallTime.getTime() / (30 * 60 * 1_000)) *
       (30 * 60 * 1_000),
@@ -806,7 +1052,7 @@ async function materializePublicSandbox(input: {
       seededReservations.map((reservation) => reservation.id),
       seededReservations.map(() => input.sandboxId),
       seededReservations.map((reservation) => reservation.seat.storeId),
-      seededReservations.map(() => customerPersona.id),
+      seededReservations.map(() => availabilityFixturePersona.id),
       seededReservations.map((reservation) => reservation.seat.id),
       seededReservations.map((reservation) => reservation.status),
       seededReservations.map((reservation) => reservation.startsAt),
@@ -944,6 +1190,355 @@ export function createPublicSandboxDatabase(
         return created;
       } catch (error) {
         await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async createCustomerPendingReservation(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({
+            areaCode: input.areaCode,
+            couponId: input.couponId,
+            durationHours: input.durationHours,
+            machineProfileCode: input.machineProfileCode,
+            mode: input.mode,
+            requestedStartsAt: input.requestedStartsAt?.toISOString() ?? null,
+            seatCode: input.seatCode,
+            storeCode: input.storeCode,
+          }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${input.sandboxId}:${input.personaId}:${idempotencyKeyHash}`],
+        );
+        const existing = await client.query<
+          PendingReservationRow & { payload_hash: string }
+        >(
+          `select request.payload_hash, reservation.id,
+                  'pending-confirmation'::text as status,
+                  reservation.hold_expires_at, reservation.price_snapshot
+             from reservation_command_requests request
+             join reservations reservation on reservation.id = request.reservation_id
+            where request.sandbox_id = $1
+              and request.customer_persona_id = $2
+              and request.idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const existingRow = existing.rows[0];
+        if (existingRow) {
+          if (existingRow.payload_hash !== payloadHash) {
+            throw new CustomerReservationIdempotencyConflictError();
+          }
+          await client.query("commit");
+          return pendingReservationResult(existingRow, true);
+        }
+
+        const storeResult = await client.query<StoreRow>(
+          `select id, code, display_name, seat_count, opens_at, closes_at,
+                  closes_next_day, is_open_24_hours
+             from stores where sandbox_id = $1 and code = $2`,
+          [input.sandboxId, input.storeCode],
+        );
+        const store = storeResult.rows[0];
+        if (!store) {
+          throw new CustomerSeatBrowseValidationError("store-not-found");
+        }
+        const now = businessTimeForSandbox(sandbox, wallTime);
+        const window = resolveCustomerReservationWindow({
+          businessHours: {
+            closesAt: store.closes_at.slice(0, 5),
+            closesNextDay: store.closes_next_day,
+            isOpen24Hours: store.is_open_24_hours,
+            opensAt: store.opens_at.slice(0, 5),
+          },
+          durationHours: input.durationHours,
+          mode: input.mode,
+          now,
+          ...(input.requestedStartsAt
+            ? { requestedStartsAt: input.requestedStartsAt }
+            : {}),
+        });
+        if (window.status === "invalid") {
+          throw new CustomerSeatBrowseValidationError(window.reason);
+        }
+        const areaResult = await client.query<AreaSelectionRow>(
+          `select id, code, display_name from store_areas
+            where sandbox_id = $1 and store_id = $2 and code = $3`,
+          [input.sandboxId, store.id, input.areaCode],
+        );
+        const area = areaResult.rows[0];
+        if (!area) {
+          throw new CustomerSeatBrowseValidationError("area-not-found");
+        }
+        const machineResult = await client.query<MachineSelectionRow>(
+          `select profile.id, profile.code, profile.display_name,
+                  profile.experience_description, plan.base_hourly_cents
+             from machine_profiles profile
+             join price_plans plan on plan.machine_profile_id = profile.id
+            where profile.sandbox_id = $1 and profile.code = $2
+              and profile.archived = false and plan.store_id = $3
+              and plan.area_id = $4 and plan.status = 'active'
+              and plan.effective_from <= $5
+              and (plan.effective_until is null or plan.effective_until > $5)
+            order by plan.version desc limit 1`,
+          [
+            input.sandboxId,
+            input.machineProfileCode,
+            store.id,
+            area.id,
+            window.startsAt,
+          ],
+        );
+        const machine = machineResult.rows[0];
+        if (!machine) {
+          throw new CustomerSeatBrowseValidationError("price-plan-not-found");
+        }
+        const seatResult = await client.query<SeatBrowseRow>(
+          `select id, code, operational_status
+             from seats
+            where sandbox_id = $1 and store_id = $2 and area_id = $3
+              and machine_profile_id = $4 and code = $5`,
+          [input.sandboxId, store.id, area.id, machine.id, input.seatCode],
+        );
+        const seat = seatResult.rows[0];
+        if (!seat) {
+          throw new CustomerReservationCreateConflictError("seat-not-found");
+        }
+        if (seat.operational_status !== "normal") {
+          throw new CustomerReservationCreateConflictError("seat-maintenance");
+        }
+        const conflicts = await client.query<{
+          customer_conflict: boolean;
+          seat_conflict: boolean;
+        }>(
+          `select
+             exists(
+               select 1 from reservations
+                where sandbox_id = $1 and seat_id = $2
+                  and status = any($3::text[])
+                  and starts_at < $5 and ends_at > $4
+             ) as seat_conflict,
+             exists(
+               select 1 from reservations
+                where sandbox_id = $1 and customer_persona_id = $6
+                  and status = any($3::text[])
+                  and starts_at < $5 and ends_at > $4
+             ) as customer_conflict`,
+          [
+            input.sandboxId,
+            seat.id,
+            ["pending-confirmation", "confirmed", "arrived", "in-use"],
+            window.startsAt,
+            window.endsAt,
+            input.personaId,
+          ],
+        );
+        if (conflicts.rows[0]?.seat_conflict) {
+          throw new CustomerReservationCreateConflictError("seat-conflict");
+        }
+        if (conflicts.rows[0]?.customer_conflict) {
+          throw new CustomerReservationCreateConflictError("customer-conflict");
+        }
+
+        const price = priceReservationWindow({
+          baseHourlyCents: machine.base_hourly_cents,
+          endsAt: window.endsAt,
+          startsAt: window.startsAt,
+        });
+        let selectedCoupon: ExperienceCouponRow | null = null;
+        let couponEligibility: ReservationCouponEligibility | null = null;
+        if (input.couponId) {
+          const couponResult = await client.query<ExperienceCouponRow>(
+            `select coupon.id, coupon.code, coupon.display_name,
+                    coupon.business_kind, coupon.discount_cents,
+                    coupon.minimum_spend_cents, coupon.eligible_start_minutes,
+                    coupon.eligible_end_minutes, coupon.valid_from,
+                    coupon.valid_until, coupon.status, store.code as store_code
+               from experience_coupons coupon
+               left join stores store on store.id = coupon.store_id
+              where coupon.sandbox_id = $1
+                and coupon.customer_persona_id = $2 and coupon.id = $3
+              for update of coupon`,
+            [input.sandboxId, input.personaId, input.couponId],
+          );
+          selectedCoupon = couponResult.rows[0] ?? null;
+          if (!selectedCoupon) {
+            throw new CustomerReservationCreateConflictError(
+              "coupon-not-found",
+            );
+          }
+          couponEligibility = reservationCouponEligibility({
+            coupon: selectedCoupon,
+            endsAt: window.endsAt,
+            now,
+            startsAt: window.startsAt,
+            storeCode: store.code,
+            subtotalCents: price.totalCents,
+          });
+          if (couponEligibility.status === "ineligible") {
+            throw new CustomerReservationCreateConflictError(
+              couponEligibility.reason === "unavailable"
+                ? "coupon-unavailable"
+                : "coupon-ineligible",
+            );
+          }
+        }
+        const discountCents =
+          couponEligibility?.status === "eligible"
+            ? couponEligibility.discountCents
+            : 0;
+        const holdExpiresAt = new Date(now.getTime() + 10 * 60 * 1_000);
+        const reservationId = randomUUID();
+        const snapshot: ReservationSnapshotRecord = {
+          area: { code: area.code, displayName: area.display_name },
+          coupon: selectedCoupon
+            ? {
+                code: selectedCoupon.code,
+                discountCents,
+                displayName: selectedCoupon.display_name,
+              }
+            : null,
+          machineProfile: {
+            code: machine.code,
+            displayName: machine.display_name,
+            experienceDescription: machine.experience_description,
+          },
+          price: {
+            discountCents,
+            payableCents: price.totalCents - discountCents,
+            segments: price.segments.map((segment) => ({
+              ...segment,
+              endsAt: segment.endsAt.toISOString(),
+              startsAt: segment.startsAt.toISOString(),
+            })),
+            subtotalCents: price.totalCents,
+          },
+          seat: { code: seat.code },
+          store: { code: store.code, displayName: store.display_name },
+          window: {
+            endsAt: window.endsAt.toISOString(),
+            startsAt: window.startsAt.toISOString(),
+          },
+        };
+        const inserted = await client.query<PendingReservationRow>(
+          `insert into reservations (
+             id, sandbox_id, store_id, customer_persona_id, seat_id, status,
+             starts_at, ends_at, hold_expires_at, created_business_at,
+             price_snapshot, coupon_id, coupon_snapshot
+           ) values ($1, $2, $3, $4, $5, 'pending-confirmation', $6, $7,
+             $8, $9, $10::jsonb, $11, $12::jsonb)
+           returning id, status, hold_expires_at, price_snapshot`,
+          [
+            reservationId,
+            input.sandboxId,
+            store.id,
+            input.personaId,
+            seat.id,
+            window.startsAt,
+            window.endsAt,
+            holdExpiresAt,
+            now,
+            JSON.stringify(snapshot),
+            selectedCoupon?.id ?? null,
+            JSON.stringify(snapshot.coupon),
+          ],
+        );
+        if (selectedCoupon) {
+          const reserved = await client.query(
+            `update experience_coupons
+                set status = 'reserved', reserved_reservation_id = $1,
+                    reserved_until = $2
+              where id = $3 and sandbox_id = $4 and status = 'available'`,
+            [reservationId, holdExpiresAt, selectedCoupon.id, input.sandboxId],
+          );
+          if (reserved.rowCount !== 1) {
+            throw new CustomerReservationCreateConflictError(
+              "coupon-unavailable",
+            );
+          }
+        }
+        await client.query(
+          `insert into reservation_business_events (
+             id, sandbox_id, reservation_id, event_type, event_data,
+             business_occurred_at
+           ) values ($1, $2, $3, 'reservation.pending-created', $4::jsonb, $5)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            reservationId,
+            JSON.stringify({ holdExpiresAt: holdExpiresAt.toISOString() }),
+            now,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, request_id, after_data, business_occurred_at
+           ) values ($1, $2, $3, $4, 'customer', 'reservation.create',
+             'reservation', $5, 'allowed', $6, $7::jsonb, $8)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            store.id,
+            input.personaId,
+            reservationId,
+            input.requestId,
+            JSON.stringify({
+              holdExpiresAt: holdExpiresAt.toISOString(),
+              status: "pending-confirmation",
+            }),
+            now,
+          ],
+        );
+        await client.query(
+          `insert into reservation_command_requests (
+             sandbox_id, customer_persona_id, idempotency_key_hash,
+             payload_hash, reservation_id
+           ) values ($1, $2, $3, $4, $5)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            idempotencyKeyHash,
+            payloadHash,
+            reservationId,
+          ],
+        );
+        await client.query("commit");
+        const insertedRow = inserted.rows[0];
+        if (!insertedRow) {
+          throw new Error("The pending reservation insert returned no row.");
+        }
+        return pendingReservationResult(insertedRow, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        const databaseError = error as {
+          code?: string;
+          constraint?: string;
+        };
+        if (databaseError.code === "23P01") {
+          throw new CustomerReservationCreateConflictError(
+            databaseError.constraint ===
+              "reservations_active_customer_range_excl"
+              ? "customer-conflict"
+              : "seat-conflict",
+          );
+        }
         throw error;
       } finally {
         client.release();
@@ -1187,6 +1782,20 @@ export function createPublicSandboxDatabase(
           endsAt: window.endsAt,
           startsAt: window.startsAt,
         });
+        const couponResult = await client.query<ExperienceCouponRow>(
+          `select coupon.id, coupon.code, coupon.display_name,
+                  coupon.business_kind, coupon.discount_cents,
+                  coupon.minimum_spend_cents, coupon.eligible_start_minutes,
+                  coupon.eligible_end_minutes, coupon.valid_from,
+                  coupon.valid_until, coupon.status, store.code as store_code
+             from experience_coupons coupon
+             left join stores store on store.id = coupon.store_id
+            where coupon.sandbox_id = $1
+              and coupon.customer_persona_id = $2
+              and coupon.business_kind = 'reservation'
+            order by coupon.code`,
+          [input.sandboxId, input.personaId],
+        );
         const result: DatabaseCustomerSeatAvailability = {
           area: { code: area.code, displayName: area.display_name },
           machineProfile: {
@@ -1199,6 +1808,22 @@ export function createPublicSandboxDatabase(
             segments: price.segments,
             totalCents: price.totalCents,
           },
+          coupons: couponResult.rows.map((coupon) => ({
+            code: coupon.code,
+            discountCents: coupon.discount_cents,
+            displayName: coupon.display_name,
+            eligibility: reservationCouponEligibility({
+              coupon,
+              endsAt: window.endsAt,
+              now,
+              startsAt: window.startsAt,
+              storeCode: store.code,
+              subtotalCents: price.totalCents,
+            }),
+            id: coupon.id,
+            minimumSpendCents: coupon.minimum_spend_cents,
+            validUntil: coupon.valid_until,
+          })),
           seats: seatResult.rows.map((seat) => ({
             availability: deriveSeatAvailability({
               endsAt: window.endsAt,

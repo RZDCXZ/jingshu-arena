@@ -587,7 +587,7 @@ export function RoleContextShell({
         </aside>
         <section className="role-workspace">
           {context.role.id === "customer" && activePage === "customer-home" ? (
-            <CustomerSeatBrowser />
+            <CustomerSeatBrowser csrfToken={context.csrfToken} />
           ) : context.role.id === "staff" && activePage === "workbench" ? (
             <RoleWorkbench
               filter={filter}

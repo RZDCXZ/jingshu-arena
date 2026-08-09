@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
@@ -39,8 +39,8 @@ describe("public sandbox creation", () => {
       sandboxId: expect.stringMatching(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
       ),
-      schemaVersion: "5",
-      seedVersion: "2026-08-09.2",
+      schemaVersion: "6",
+      seedVersion: "2026-08-10.1",
       expiresAt: expect.any(Date),
       selectedRole: "customer",
       persona: {
@@ -76,8 +76,8 @@ describe("public sandbox creation", () => {
         sandboxId: expect.stringMatching(
           /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
         ),
-        schemaVersion: "5",
-        seedVersion: "2026-08-09.2",
+        schemaVersion: "6",
+        seedVersion: "2026-08-10.1",
         expiresAt: expect.any(Date),
         businessClock: {
           advanceLimitMilliseconds: 86_400_000,
@@ -186,6 +186,291 @@ describe("public sandbox creation", () => {
         storeCode: "prism-flagship",
       }),
     ).rejects.toMatchObject({ reason: "price-plan-not-found" });
+  });
+
+  it("creates one atomic ten-minute hold with immutable price and coupon snapshots and replays it", async () => {
+    const created = await database.create({
+      creationKey: randomUUID(),
+      selectedRole: "customer",
+      visitorKey: `visitor-${randomUUID()}`,
+    });
+    const command = {
+      areaCode: "competitive-a",
+      contextVersion: created.roleContext.contextVersion,
+      couponId: null,
+      durationHours: 2,
+      idempotencyKey: randomUUID(),
+      machineProfileCode: "competitive" as const,
+      mode: "immediate" as const,
+      personaId: created.roleContext.persona.id,
+      requestId: randomUUID(),
+      role: created.roleContext.role,
+      sandboxId: created.sandboxId,
+      seatCode: "A-08",
+      storeCode: "prism-flagship",
+    };
+    const preview = await database.readCustomerSeatAvailability(command);
+    const coupon = preview.coupons.find(
+      (item) => item.eligibility.status === "eligible",
+    );
+    expect(coupon).toBeDefined();
+
+    const first = await database.createCustomerPendingReservation({
+      ...command,
+      couponId: coupon?.id ?? null,
+    });
+    const replay = await database.createCustomerPendingReservation({
+      ...command,
+      couponId: coupon?.id ?? null,
+    });
+
+    expect(first).toMatchObject({
+      replayed: false,
+      status: "pending-confirmation",
+      snapshot: {
+        area: { code: "competitive-a", displayName: "竞技区 A" },
+        coupon: { code: "reservation-six", discountCents: 600 },
+        machineProfile: { code: "competitive" },
+        price: {
+          discountCents: 600,
+          payableCents: preview.price.totalCents - 600,
+          subtotalCents: preview.price.totalCents,
+        },
+        seat: { code: "A-08" },
+        store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+      },
+    });
+    const holdOffset =
+      first.holdExpiresAt.getTime() -
+      created.roleContext.businessClock.currentTime.getTime();
+    expect(holdOffset).toBeGreaterThanOrEqual(10 * 60_000);
+    expect(holdOffset).toBeLessThan(10 * 60_000 + 1_000);
+    expect(replay).toEqual({ ...first, replayed: true });
+    await expect(
+      database.createCustomerPendingReservation({
+        ...command,
+        couponId: null,
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOMER_RESERVATION_IDEMPOTENCY_CONFLICT",
+    });
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      const persisted = await client.query<{
+        audit_count: string;
+        coupon_status: string;
+        event_count: string;
+      }>(
+        `select
+           (select count(*)::text from audit_events where object_id = $1) as audit_count,
+           (select count(*)::text from reservation_business_events where reservation_id = $1) as event_count,
+           (select status from experience_coupons where reserved_reservation_id = $1) as coupon_status`,
+        [first.reservationId],
+      );
+      expect(persisted.rows).toEqual([
+        { audit_count: "1", coupon_status: "reserved", event_count: "1" },
+      ]);
+      await client.query(
+        "update price_plans set base_hourly_cents = base_hourly_cents + 999 where sandbox_id = $1",
+        [created.sandboxId],
+      );
+      const unchangedSnapshot = await client.query<{
+        subtotal_cents: string;
+      }>(
+        `select price_snapshot #>> '{price,subtotalCents}' as subtotal_cents
+           from reservations where id = $1`,
+        [first.reservationId],
+      );
+      expect(unchangedSnapshot.rows).toEqual([
+        { subtotal_cents: String(preview.price.totalCents) },
+      ]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("lets only one of twenty same-seat commands win and one cross-store customer hold survive", async () => {
+    const sameSeatWorld = await database.create({
+      creationKey: randomUUID(),
+      selectedRole: "customer",
+      visitorKey: `visitor-${randomUUID()}`,
+    });
+    const context = {
+      areaCode: "competitive-a",
+      contextVersion: sameSeatWorld.roleContext.contextVersion,
+      couponId: null,
+      durationHours: 2,
+      machineProfileCode: "competitive" as const,
+      mode: "immediate" as const,
+      personaId: sameSeatWorld.roleContext.persona.id,
+      role: sameSeatWorld.roleContext.role,
+      sandboxId: sameSeatWorld.sandboxId,
+      seatCode: "A-08",
+      storeCode: "prism-flagship",
+    };
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 20 }, () =>
+        database.createCustomerPendingReservation({
+          ...context,
+          idempotencyKey: randomUUID(),
+          requestId: randomUUID(),
+        }),
+      ),
+    );
+    expect(
+      attempts.filter((attempt) => attempt.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      attempts.filter((attempt) => attempt.status === "rejected"),
+    ).toHaveLength(19);
+
+    const crossStoreWorld = await database.create({
+      creationKey: randomUUID(),
+      selectedRole: "customer",
+      visitorKey: `visitor-${randomUUID()}`,
+    });
+    const current = crossStoreWorld.roleContext.businessClock.currentTime;
+    const dateKey = new Intl.DateTimeFormat("en-CA", {
+      day: "2-digit",
+      month: "2-digit",
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+    }).format(current);
+    const tomorrowNoon = new Date(
+      new Date(`${dateKey}T04:00:00.000Z`).getTime() + 24 * 60 * 60_000,
+    );
+    const shared = {
+      contextVersion: crossStoreWorld.roleContext.contextVersion,
+      couponId: null,
+      durationHours: 2,
+      machineProfileCode: "competitive" as const,
+      mode: "future" as const,
+      personaId: crossStoreWorld.roleContext.persona.id,
+      requestedStartsAt: tomorrowNoon,
+      role: crossStoreWorld.roleContext.role,
+      sandboxId: crossStoreWorld.sandboxId,
+    };
+    const crossStore = await Promise.allSettled([
+      database.createCustomerPendingReservation({
+        ...shared,
+        areaCode: "competitive-a",
+        idempotencyKey: randomUUID(),
+        requestId: randomUUID(),
+        seatCode: "A-08",
+        storeCode: "prism-flagship",
+      }),
+      database.createCustomerPendingReservation({
+        ...shared,
+        areaCode: "competitive-lane",
+        idempotencyKey: randomUUID(),
+        requestId: randomUUID(),
+        seatCode: "B-01",
+        storeCode: "starbridge-standard",
+      }),
+    ]);
+    expect(
+      crossStore.filter((attempt) => attempt.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      crossStore.filter((attempt) => attempt.status === "rejected"),
+    ).toHaveLength(1);
+  });
+
+  it("rolls back reservation, coupon, business event, audit and command key when one write fails", async () => {
+    const created = await database.create({
+      creationKey: randomUUID(),
+      selectedRole: "customer",
+      visitorKey: "visitor-" + randomUUID(),
+    });
+    const context = {
+      areaCode: "competitive-a",
+      contextVersion: created.roleContext.contextVersion,
+      durationHours: 2,
+      machineProfileCode: "competitive" as const,
+      mode: "immediate" as const,
+      personaId: created.roleContext.persona.id,
+      role: created.roleContext.role,
+      sandboxId: created.sandboxId,
+      seatCode: "A-08",
+      storeCode: "prism-flagship",
+    };
+    const preview = await database.readCustomerSeatAvailability(context);
+    const coupon = preview.coupons.find(
+      (item) => item.eligibility.status === "eligible",
+    );
+    expect(coupon).toBeDefined();
+    const command = {
+      ...context,
+      couponId: coupon?.id ?? null,
+      idempotencyKey: randomUUID(),
+      requestId: randomUUID(),
+    };
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    await client.query(`
+      create function fail_ticket07_reservation_event() returns trigger
+      language plpgsql as $$
+      begin
+        raise exception 'forced reservation event failure';
+      end
+      $$
+    `);
+    await client.query(`
+      create trigger fail_ticket07_reservation_event
+      before insert on reservation_business_events
+      for each row execute function fail_ticket07_reservation_event()
+    `);
+
+    try {
+      await expect(
+        database.createCustomerPendingReservation(command),
+      ).rejects.toThrow("forced reservation event failure");
+    } finally {
+      await client.query(
+        "drop trigger fail_ticket07_reservation_event on reservation_business_events",
+      );
+      await client.query("drop function fail_ticket07_reservation_event()");
+    }
+
+    const counts = await client.query<{
+      audit_count: string;
+      command_count: string;
+      event_count: string;
+      pending_count: string;
+      reserved_coupon_count: string;
+    }>(
+      `select
+         (select count(*)::text from reservations
+           where sandbox_id = $1 and status = 'pending-confirmation') as pending_count,
+         (select count(*)::text from experience_coupons
+           where sandbox_id = $1 and status = 'reserved') as reserved_coupon_count,
+         (select count(*)::text from reservation_business_events
+           where sandbox_id = $1) as event_count,
+         (select count(*)::text from audit_events
+           where sandbox_id = $1 and action = 'reservation.create') as audit_count,
+         (select count(*)::text from reservation_command_requests
+           where sandbox_id = $1) as command_count`,
+      [created.sandboxId],
+    );
+    expect(counts.rows).toEqual([
+      {
+        audit_count: "0",
+        command_count: "0",
+        event_count: "0",
+        pending_count: "0",
+        reserved_coupon_count: "0",
+      },
+    ]);
+    await client.end();
+
+    await expect(
+      database.createCustomerPendingReservation(command),
+    ).resolves.toMatchObject({
+      replayed: false,
+      status: "pending-confirmation",
+    });
   });
 
   it("replays the same successful world for the same creation key and payload", async () => {

@@ -64,6 +64,13 @@
       "when": 1786240800008,
       "tag": "0008_customer_seat_browse",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786294800000,
+      "tag": "0009_reservation_hold_snapshot",
+      "breakpoints": true
     }
   ]
 }
