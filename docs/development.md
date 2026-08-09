@@ -45,26 +45,34 @@ packages/domain
 
 ## 日常命令
 
-| 命令                     | 用途                                   |
-| ------------------------ | -------------------------------------- |
-| `pnpm dev`               | 同时启动 Web `:3000` 与 API `:3001`    |
-| `pnpm build`             | 构建全部六个工作区模块                 |
-| `pnpm build:web`         | 构建 Next.js Web                       |
-| `pnpm build:api`         | 构建 Hono API                          |
-| `pnpm build:miniprogram` | 生成原生小程序 `apps/miniprogram/dist` |
-| `pnpm format:check`      | 检查统一格式                           |
-| `pnpm lint`              | ESLint 与模块边界门禁                  |
-| `pnpm typecheck`         | 所有工作区运行同一 strict TypeScript   |
-| `pnpm test:unit`         | 快速单元测试                           |
-| `pnpm test:contracts`    | 存储适配器契约测试独立入口             |
-| `pnpm test:postgres`     | 真实临时 Postgres 空库迁移测试         |
-| `pnpm test:e2e`          | Chromium Web 浏览器测试                |
-| `pnpm test:seed`         | seed/reset 测试独立入口                |
-| `pnpm check:sensitive`   | Secret、凭据和真实个人数据模式检查     |
-| `pnpm security:audit`    | 高危依赖漏洞扫描                       |
-| `pnpm verify`            | 本地与 CI 共用的完整验证               |
+| 命令                     | 用途                                                |
+| ------------------------ | --------------------------------------------------- |
+| `pnpm dev`               | 准备本地 Postgres 并启动 Web `:3000` 与 API `:3001` |
+| `pnpm build`             | 构建全部六个工作区模块                              |
+| `pnpm build:web`         | 构建 Next.js Web                                    |
+| `pnpm build:api`         | 构建 Hono API                                       |
+| `pnpm build:miniprogram` | 生成原生小程序 `apps/miniprogram/dist`              |
+| `pnpm format:check`      | 检查统一格式                                        |
+| `pnpm lint`              | ESLint 与模块边界门禁                               |
+| `pnpm typecheck`         | 所有工作区运行同一 strict TypeScript                |
+| `pnpm test:unit`         | 快速单元测试                                        |
+| `pnpm test:contracts`    | 存储适配器契约测试独立入口                          |
+| `pnpm test:postgres`     | 真实临时 Postgres 空库迁移测试                      |
+| `pnpm test:e2e`          | Chromium Web 浏览器测试                             |
+| `pnpm test:seed`         | seed/reset 测试独立入口                             |
+| `pnpm check:sensitive`   | Secret、凭据和真实个人数据模式检查                  |
+| `pnpm security:audit`    | 高危依赖漏洞扫描                                    |
+| `pnpm verify`            | 本地与 CI 共用的完整验证                            |
 
 ## 临时 Postgres
+
+`pnpm dev` 会先准备完整的本地开发依赖：
+
+- 未设置 `DATABASE_URL` 时，通过 Docker 创建仅在本次开发进程存活期间使用的 `postgres:17-alpine` 容器，执行前向迁移后再启动 API 与 Web；退出开发进程时自动销毁容器。
+- 启动器依次读取可选的根目录 `.env` 与 `.env.local`，后者用于本机覆盖且两者都不会提交到 Git。
+- 已在环境文件中设置本地 `DATABASE_URL` 时，复用该数据库并在启动前执行迁移，不创建容器。
+- 未设置 `SESSION_SECRET` 时，每次开发启动生成只存在于当前进程内的随机会话密钥；需要在重启间保留浏览器演示会话时，可在 `.env.local` 中设置至少 32 个字符的本地值。
+- API 或 Web 任一进程启动失败时，另一进程会一并退出，避免只剩 Web 运行并把后端未启动误呈现为角色上下文故障。
 
 `pnpm test:postgres` 不使用 SQLite 或内存数据库：
 

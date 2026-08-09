@@ -16,7 +16,7 @@
     "check:sensitive": "node scripts/check-sensitive-data.mjs",
     "check:toolchain": "node scripts/check-toolchain.mjs",
     "check:workspace": "node scripts/check-workspace.mjs",
-    "dev": "pnpm --parallel --filter @jingshu/api --filter @jingshu/web dev",
+    "dev": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/dev.mjs",
     "format": "prettier --write . --ignore-unknown",
     "format:check": "prettier --check . --ignore-unknown",
     "lint": "eslint . && pnpm check:workspace",
@@ -28,7 +28,7 @@
     "test:e2e": "playwright test",
     "test:postgres": "pnpm --filter @jingshu/database test:postgres",
     "test:seed": "vitest run --config vitest.seed.config.ts --passWithNoTests",
-    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:unit": "vitest run --config vitest.unit.config.ts && node --test scripts/dev.test.mjs",
     "typecheck": "pnpm --recursive --if-present typecheck",
     "verify": "pnpm check:toolchain && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm check:sensitive && pnpm security:audit"
   },
