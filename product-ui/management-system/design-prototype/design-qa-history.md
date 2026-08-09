@@ -2,6 +2,13 @@
 
 本文件保留已经解决的问题，供回归调查使用。当前有效性、待处理问题、验证矩阵和交付结果以 [`design-qa.md`](design-qa.md) 为准。
 
+## Ticket 02 — 统一跨端设计基线与合成命名
+
+- 检查日期：2026-08-09；已验证契约版本：`product-ui/management-system/prod.md` 1.1。
+- 范围：栖光市、棱镜旗舰店、星桥标准店与极点新店在店员、店长和总部状态中的统一命名与布局回归。
+- 证据：`design/qa-ticket02-staff-workbench-comparison.png`、`design/qa-ticket02-staff-workbench-focus.png`、`design/implementation-ticket02-chain-dashboard-1440.png`、`design/implementation-ticket02-store-compare-1024.png`、`design/implementation-ticket02-manager-store-profile-1024.png`。
+- 结论：同视口复核未发现 P0/P1/P2；构建与 Sites 包装测试通过，浏览器控制台 warning/error 为 0，最终结果为 passed。
+
 ## 第 1 轮
 
 - P2：接下来 30 分钟队列缺少金额列，降低了源图的横向信息密度。

@@ -1,18 +1,177 @@
 import { expect, test } from "@playwright/test";
 
-test("public entry explains the demo boundary and all four roles", async ({
+const readyWorld = {
+  status: "ready",
+  replayed: false,
+  role: "customer",
+  persona: {
+    displayName: "林澈",
+    scope: "浏览三店 · 只管理自己的记录",
+  },
+  world: {
+    schemaVersion: "2",
+    seedVersion: "2026-08-09.1",
+    expiresAt: "2026-08-10T12:00:00.000Z",
+    operator: { displayName: "竞枢演示经营方", city: "栖光市" },
+    stores: [
+      {
+        code: "prism-flagship",
+        displayName: "棱镜旗舰店",
+        seatCount: 96,
+        businessHours: "24 小时",
+      },
+      {
+        code: "starbridge-standard",
+        displayName: "星桥标准店",
+        seatCount: 64,
+        businessHours: "10:00–次日 02:00",
+      },
+      {
+        code: "apex-new",
+        displayName: "极点新店",
+        seatCount: 40,
+        businessHours: "12:00–24:00",
+      },
+    ],
+  },
+};
+
+test("public entry explains every boundary without creating a sandbox", async ({
   page,
 }) => {
+  const creationRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().includes("/api/v1/public/sandboxes")
+    ) {
+      creationRequests.push(request.url());
+    }
+  });
+
   await page.goto("/");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "竞枢 · Jingshu Arena" }),
+    page.getByRole("heading", {
+      level: 1,
+      name: "从一次预约，看见四个角色如何共同经营。",
+    }),
   ).toBeVisible();
-  await expect(page.getByText("全部内容均为演示数据")).toBeVisible();
-  await expect(page.getByText("无需注册")).toBeVisible();
-  await expect(page.getByText("模拟支付不会扣款")).toBeVisible();
+  for (const boundary of [
+    "虚构数据",
+    "无需注册",
+    "模拟支付不会扣款",
+    "不连接真实设备",
+  ]) {
+    await expect(page.getByText(boundary).first()).toBeVisible();
+  }
 
   for (const role of ["顾客", "店员", "店长", "总部运营"]) {
-    await expect(page.getByRole("heading", { name: role })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: new RegExp(`进入${role}演示`, "u") }),
+    ).toBeVisible();
   }
+  await expect(page.getByText("推荐起点", { exact: true })).toBeVisible();
+  expect(creationRequests).toEqual([]);
+
+  await page.getByRole("button", { name: "只读了解" }).click();
+  await expect(
+    page.getByRole("heading", { name: "先看清演示边界，再决定是否创建。" }),
+  ).toBeVisible();
+  expect(creationRequests).toEqual([]);
+});
+
+test("role selection shows creation progress and the versioned three-store world", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/public/sandboxes", async (route) => {
+    const request = route.request();
+    expect(request.method()).toBe("POST");
+    expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(request.postDataJSON()).toEqual({ role: "customer" });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    await route.fulfill({ json: readyWorld, status: 201 });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /进入顾客演示/u }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "正在准备顾客视图" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "沙箱已准备完成" }),
+  ).toBeVisible();
+  await expect(page.getByText("栖光市", { exact: true })).toBeVisible();
+  for (const store of ["棱镜旗舰店", "星桥标准店", "极点新店"]) {
+    await expect(page.getByText(store, { exact: true })).toBeVisible();
+  }
+  await expect(page.getByText("Seed 2026-08-09.1")).toBeVisible();
+  expect(page.url()).not.toMatch(/sandbox|token|session/iu);
+});
+
+test("failed creation keeps the same key for a safe retry", async ({
+  page,
+}) => {
+  const creationKeys: string[] = [];
+  let attempt = 0;
+  await page.route("**/api/v1/public/sandboxes", async (route) => {
+    attempt += 1;
+    creationKeys.push(route.request().headers()["idempotency-key"] ?? "");
+    if (attempt === 1) {
+      await route.fulfill({
+        json: {
+          error: {
+            code: "SANDBOX_CREATION_FAILED",
+            message: "演示世界创建失败，未保存部分数据；你可以安全重试。",
+            requestId: "00000000-0000-4000-8000-000000000012",
+          },
+        },
+        status: 503,
+      });
+      return;
+    }
+    await route.fulfill({ json: readyWorld, status: 201 });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /进入顾客演示/u }).click();
+  await expect(
+    page.getByRole("heading", { name: "没有进入半成的演示世界" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "使用原请求安全重试" }).click();
+  await expect(
+    page.getByRole("heading", { name: "沙箱已准备完成" }),
+  ).toBeVisible();
+  expect(creationKeys).toHaveLength(2);
+  expect(creationKeys[1]).toBe(creationKeys[0]);
+});
+
+test("timeout state does not claim success and offers the same safe retry", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/public/sandboxes", async (route) => {
+    await route.fulfill({
+      json: {
+        error: {
+          code: "SANDBOX_CREATION_TIMEOUT",
+          message: "创建结果仍在确认中，请使用原请求重试。",
+          requestId: "00000000-0000-4000-8000-000000000013",
+        },
+      },
+      status: 504,
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /进入店员演示/u }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "创建结果仍在确认中" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "使用原请求安全重试" }),
+  ).toBeVisible();
+  await expect(page.getByText("沙箱已准备完成")).toHaveCount(0);
 });

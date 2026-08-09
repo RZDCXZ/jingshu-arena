@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -10,6 +12,10 @@ const POSTGRES_IMAGE = "postgres:17-alpine";
 const TEST_DATABASE = "jingshu_test";
 const TEST_PASSWORD = "jingshu_test_password";
 const TEST_USER = "jingshu_test";
+const workspaceRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../..",
+);
 
 function assertDisposableDatabase(databaseUrl) {
   const url = new URL(databaseUrl);
@@ -44,14 +50,28 @@ async function waitForPostgres(databaseUrl) {
   throw new Error("Temporary Postgres did not become ready within 30 seconds.");
 }
 
-function runVitest(databaseUrl) {
+async function resetDisposableDatabase(databaseUrl) {
+  const client = new Client({ connectionString: databaseUrl });
+
+  try {
+    await client.connect();
+    await client.query("drop schema if exists drizzle cascade");
+    await client.query("drop schema if exists public cascade");
+    await client.query("create schema public");
+  } finally {
+    await client.end();
+  }
+}
+
+function runVitest(databaseUrl, testFiles) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       "vitest",
-      ["run", "tests/migrations.integration.test.ts"],
+      ["run", "--no-file-parallelism", ...testFiles],
       {
         env: { ...process.env, DATABASE_URL: databaseUrl },
         stdio: "inherit",
+        cwd: workspaceRoot,
       },
     );
 
@@ -72,6 +92,14 @@ function runVitest(databaseUrl) {
 async function main() {
   let containerName;
   let databaseUrl = process.env.DATABASE_URL;
+  const requestedTestFiles = process.argv.slice(2);
+  const testFiles = requestedTestFiles.length
+    ? requestedTestFiles
+    : [
+        "packages/database/tests/migrations.integration.test.ts",
+        "packages/database/tests/public-sandbox.integration.test.ts",
+        "apps/api/src/public-sandbox.integration.test.ts",
+      ];
 
   try {
     if (!databaseUrl) {
@@ -108,7 +136,14 @@ async function main() {
 
     assertDisposableDatabase(databaseUrl);
     await waitForPostgres(databaseUrl);
-    process.exitCode = await runVitest(databaseUrl);
+    for (const testFile of testFiles) {
+      await resetDisposableDatabase(databaseUrl);
+      const exitCode = await runVitest(databaseUrl, [testFile]);
+      if (exitCode !== 0) {
+        process.exitCode = exitCode;
+        break;
+      }
+    }
   } finally {
     if (containerName) {
       execFileSync("docker", ["stop", "--time", "0", containerName], {

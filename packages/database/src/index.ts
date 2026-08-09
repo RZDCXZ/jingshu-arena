@@ -4,7 +4,14 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
 
-export { schemaMetadata } from "./schema.js";
+export * from "./schema.js";
+export {
+  createPublicSandboxDatabase,
+  PublicSandboxIdempotencyConflictError,
+  type CreatePublicSandboxInput,
+  type PublicSandboxDatabase,
+  type PublicSandboxResult,
+} from "./public-sandbox.js";
 
 const { Pool } = pg;
 const migrationsFolder = fileURLToPath(new URL("../drizzle", import.meta.url));

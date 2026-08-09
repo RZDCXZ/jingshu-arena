@@ -14,7 +14,7 @@
     "build": "tsc --project tsconfig.json --noEmit false",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
-    "test:unit": "vitest run src/**/*.test.ts",
+    "test:unit": "vitest run src --exclude '**/*.integration.test.ts'",
     "typecheck": "tsc --project tsconfig.json"
   }
 }
