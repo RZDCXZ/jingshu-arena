@@ -1,0 +1,16 @@
+{
+  "name": "@jingshu/miniprogram",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@jingshu/contracts": "workspace:*",
+    "@jingshu/domain": "workspace:*"
+  },
+  "devDependencies": {
+    "miniprogram-api-typings": "5.2.3"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --project tsconfig.json"
+  }
+}

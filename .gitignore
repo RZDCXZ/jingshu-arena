@@ -7,6 +7,11 @@ node_modules/
 # Build outputs and test artifacts
 dist/
 coverage/
+.next/
+playwright-report/
+test-results/
+*.tsbuildinfo
+project.private.config.json
 
 # Tool caches
 .vite/

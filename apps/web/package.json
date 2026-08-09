@@ -1,0 +1,21 @@
+{
+  "name": "@jingshu/web",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@jingshu/contracts": "workspace:*",
+    "next": "16.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4"
+  },
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev --hostname 127.0.0.1 --port 3000",
+    "start": "next start --hostname 127.0.0.1 --port 3000",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  }
+}

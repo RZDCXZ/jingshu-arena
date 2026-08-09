@@ -1,0 +1,4 @@
+{
+  "desc": "竞枢本地演示不参与搜索索引",
+  "rules": [{ "action": "disallow", "page": "*" }]
+}

@@ -1,0 +1,11 @@
+{
+  "pages": ["pages/index/index"],
+  "window": {
+    "backgroundColor": "#06111d",
+    "backgroundTextStyle": "light",
+    "navigationBarBackgroundColor": "#06111d",
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "竞枢"
+  },
+  "sitemapLocation": "sitemap.json"
+}

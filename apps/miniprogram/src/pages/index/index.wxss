@@ -1,0 +1,78 @@
+.page {
+  min-height: 100vh;
+  padding: 56rpx 34rpx 72rpx;
+  box-sizing: border-box;
+  background:
+    radial-gradient(
+      circle at 10% 0%,
+      rgba(32, 116, 136, 0.24),
+      transparent 520rpx
+    ),
+    #06111d;
+}
+
+.status {
+  padding: 22rpx 24rpx;
+  border: 1rpx solid #244052;
+  border-radius: 14rpx;
+  color: #c9f23b;
+  font-size: 26rpx;
+}
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  margin-top: 84rpx;
+}
+
+.title {
+  color: #f4f7fb;
+  font-size: 58rpx;
+  font-weight: 800;
+  letter-spacing: -2rpx;
+  line-height: 1.2;
+}
+
+.summary {
+  margin-top: 24rpx;
+  color: #b9c5d0;
+  font-size: 32rpx;
+  line-height: 1.55;
+}
+
+.boundary {
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+  margin-top: 58rpx;
+  padding: 30rpx;
+  border: 1rpx solid #1b394c;
+  border-radius: 16rpx;
+  background: rgba(9, 29, 43, 0.9);
+  color: #d9e3eb;
+  font-size: 27rpx;
+}
+
+.capabilities {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+  margin-top: 26rpx;
+}
+
+.capability {
+  display: flex;
+  align-items: center;
+  min-height: 92rpx;
+  padding: 0 24rpx;
+  border-bottom: 1rpx solid #1b3445;
+  color: #d9e3eb;
+  font-size: 28rpx;
+}
+
+.marker {
+  width: 74rpx;
+  color: #54d7f3;
+  font-family: monospace;
+  font-size: 22rpx;
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@jingshu/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json --noEmit false",
+    "typecheck": "tsc --project tsconfig.json"
+  }
+}

@@ -1,0 +1,20 @@
+<view class="page">
+  <view class="status">本地演示 · 不与 Web 同步</view>
+  <view class="hero">
+    <text class="title">竞枢 · JINGSHU ARENA</text>
+    <text class="summary">电竞场馆顾客侧原生微信体验</text>
+  </view>
+
+  <view class="boundary" aria-label="演示边界">
+    <text>全部内容均为演示数据</text>
+    <text>模拟支付不会扣款</text>
+    <text>无需注册或真实身份</text>
+  </view>
+
+  <view class="capabilities">
+    <view class="capability" wx:for="{{roles}}" wx:key="*this">
+      <text class="marker">0{{index + 1}}</text>
+      <text>{{item}}</text>
+    </view>
+  </view>
+</view>
