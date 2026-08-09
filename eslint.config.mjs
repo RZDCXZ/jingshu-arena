@@ -41,4 +41,26 @@ export default typescriptEslint.config(
       },
     },
   },
+  {
+    files: ["packages/domain/src/**/*.{js,ts}"],
+    rules: {
+      "no-restricted-globals": [
+        "error",
+        "App",
+        "Buffer",
+        "Component",
+        "Page",
+        "document",
+        "fetch",
+        "getApp",
+        "localStorage",
+        "navigator",
+        "process",
+        "sessionStorage",
+        "WebSocket",
+        "window",
+        "wx",
+      ],
+    },
+  },
 );

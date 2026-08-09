@@ -234,6 +234,20 @@ invariant(
   "@jingshu/domain must not have runtime dependencies.",
 );
 
+const domainTypeScriptConfig = await readJson(
+  join(root, "packages/domain/tsconfig.json"),
+);
+invariant(
+  JSON.stringify(domainTypeScriptConfig.compilerOptions?.lib) ===
+    JSON.stringify(["ES2023"]),
+  "@jingshu/domain must compile against the ECMAScript library only.",
+);
+invariant(
+  Array.isArray(domainTypeScriptConfig.compilerOptions?.types) &&
+    domainTypeScriptConfig.compilerOptions.types.length === 0,
+  "@jingshu/domain must not load ambient runtime type packages.",
+);
+
 const lockfiles = await collectFiles(root, (path) =>
   path.endsWith("pnpm-lock.yaml"),
 );

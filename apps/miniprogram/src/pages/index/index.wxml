@@ -12,7 +12,7 @@
   </view>
 
   <view class="capabilities">
-    <view class="capability" wx:for="{{roles}}" wx:key="*this">
+    <view class="capability" wx:for="{{capabilities}}" wx:key="*this">
       <text class="marker">0{{index + 1}}</text>
       <text>{{item}}</text>
     </view>

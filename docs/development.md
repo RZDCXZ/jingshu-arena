@@ -81,7 +81,7 @@ packages/domain
 pnpm build:miniprogram
 ```
 
-在微信开发者工具中导入 `apps/miniprogram`。提交的 `project.config.json` 使用游客 AppID 占位值，`miniprogramRoot` 指向生成的 `dist/`；不要把真实 AppID、私钥或上传凭据提交到仓库。小程序只代表独立本地演示，不与 Web 沙箱同步。
+在微信开发者工具中导入 `apps/miniprogram`。提交的 `project.config.json` 使用登记的公开 AppID `wx979479d3ff61d825`，`miniprogramRoot` 指向生成的 `dist/`；AppID 是公开标识，不要把私钥、上传凭据或其他 Secret 提交到仓库。小程序只代表独立本地演示，不与 Web 沙箱同步。
 
 ## 分支与发布边界
 
