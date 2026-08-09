@@ -100,6 +100,7 @@ async function main() {
         "packages/database/tests/migration-upgrade.integration.test.ts",
         "packages/database/tests/public-sandbox.integration.test.ts",
         "apps/api/src/public-sandbox.integration.test.ts",
+        "apps/api/src/customer-seat-browse.integration.test.ts",
         "apps/api/src/role-context.integration.test.ts",
         "apps/api/src/demo-tools.integration.test.ts",
       ];

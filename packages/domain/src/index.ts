@@ -1,7 +1,291 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "4";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-09.1";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "5";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-09.2";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
+
+const HALF_HOUR_MS = 30 * 60 * 1_000;
+const HOUR_MS = 60 * 60 * 1_000;
+const DAY_MS = 24 * HOUR_MS;
+const SHANGHAI_BUSINESS_DAY_START_MINUTES = 6 * 60;
+
+interface ShanghaiDateParts {
+  readonly day: number;
+  readonly hour: number;
+  readonly minute: number;
+  readonly month: number;
+  readonly year: number;
+}
+
+const shanghaiDateTimeFormatter = new Intl.DateTimeFormat("en-CA", {
+  day: "2-digit",
+  hour: "2-digit",
+  hourCycle: "h23",
+  minute: "2-digit",
+  month: "2-digit",
+  timeZone: SANDBOX_BUSINESS_TIME_ZONE,
+  year: "numeric",
+});
+
+function shanghaiDateParts(value: Date): ShanghaiDateParts {
+  const parts = Object.fromEntries(
+    shanghaiDateTimeFormatter
+      .formatToParts(value)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  return {
+    day: parts.day ?? 0,
+    hour: parts.hour ?? 0,
+    minute: parts.minute ?? 0,
+    month: parts.month ?? 0,
+    year: parts.year ?? 0,
+  };
+}
+
+function localDaySerial(parts: ShanghaiDateParts): number {
+  return Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / DAY_MS);
+}
+
+function dateKeyFromSerial(serial: number): string {
+  const value = new Date(serial * DAY_MS);
+  return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, "0")}-${String(value.getUTCDate()).padStart(2, "0")}`;
+}
+
+function clockMinutes(value: string): number {
+  const [hourText, minuteText] = value.split(":");
+  return Number(hourText) * 60 + Number(minuteText);
+}
+
+export function businessDayKey(value: Date): string {
+  const parts = shanghaiDateParts(value);
+  const minutes = parts.hour * 60 + parts.minute;
+  const serial =
+    localDaySerial(parts) -
+    (minutes < SHANGHAI_BUSINESS_DAY_START_MINUTES ? 1 : 0);
+  return dateKeyFromSerial(serial);
+}
+
+export type CustomerReservationMode = "future" | "immediate";
+
+export interface StoreBusinessHours {
+  readonly closesAt: string;
+  readonly closesNextDay: boolean;
+  readonly isOpen24Hours: boolean;
+  readonly opensAt: string;
+}
+
+export type CustomerReservationWindowInvalidReason =
+  | "duration"
+  | "future-start"
+  | "half-hour-alignment"
+  | "outside-business-hours"
+  | "seven-day-window";
+
+interface ResolveCustomerReservationWindowInput {
+  readonly businessHours: StoreBusinessHours;
+  readonly durationHours: number;
+  readonly mode: CustomerReservationMode;
+  readonly now: Date;
+  readonly requestedStartsAt?: Date;
+}
+
+export type CustomerReservationWindowResult =
+  | {
+      readonly endsAt: Date;
+      readonly startsAt: Date;
+      readonly status: "ready";
+    }
+  | {
+      readonly reason: CustomerReservationWindowInvalidReason;
+      readonly status: "invalid";
+    };
+
+function isInsideBusinessHours(
+  startsAt: Date,
+  endsAt: Date,
+  businessHours: StoreBusinessHours,
+): boolean {
+  if (businessHours.isOpen24Hours) return true;
+
+  const start = shanghaiDateParts(startsAt);
+  const end = shanghaiDateParts(endsAt);
+  const startMinutes = start.hour * 60 + start.minute;
+  const startSerial = localDaySerial(start);
+  const endScalar = localDaySerial(end) * 1_440 + end.hour * 60 + end.minute;
+  const opensAt = clockMinutes(businessHours.opensAt);
+  const closesAt = clockMinutes(businessHours.closesAt);
+
+  if (businessHours.closesNextDay) {
+    const openingDay = startMinutes < closesAt ? startSerial - 1 : startSerial;
+    return (
+      startSerial * 1_440 + startMinutes >= openingDay * 1_440 + opensAt &&
+      endScalar <= (openingDay + 1) * 1_440 + closesAt
+    );
+  }
+
+  const closingMinutes = closesAt === 0 ? 1_440 : closesAt;
+  return (
+    startMinutes >= opensAt && endScalar <= startSerial * 1_440 + closingMinutes
+  );
+}
+
+export function resolveCustomerReservationWindow(
+  input: ResolveCustomerReservationWindowInput,
+): CustomerReservationWindowResult {
+  if (
+    !Number.isInteger(input.durationHours) ||
+    input.durationHours < 1 ||
+    input.durationHours > 8
+  ) {
+    return { reason: "duration", status: "invalid" };
+  }
+
+  const currentSegmentStart = new Date(
+    Math.floor(input.now.getTime() / HALF_HOUR_MS) * HALF_HOUR_MS,
+  );
+  const startsAt =
+    input.mode === "immediate" ? currentSegmentStart : input.requestedStartsAt;
+  if (
+    !startsAt ||
+    (input.mode === "future" && startsAt.getTime() <= input.now.getTime())
+  ) {
+    return { reason: "future-start", status: "invalid" };
+  }
+  if (startsAt.getTime() % HALF_HOUR_MS !== 0) {
+    return { reason: "half-hour-alignment", status: "invalid" };
+  }
+  if (
+    input.mode === "future" &&
+    startsAt.getTime() > currentSegmentStart.getTime() + 7 * DAY_MS
+  ) {
+    return { reason: "seven-day-window", status: "invalid" };
+  }
+
+  const endsAt = new Date(startsAt.getTime() + input.durationHours * HOUR_MS);
+  if (!isInsideBusinessHours(startsAt, endsAt, input.businessHours)) {
+    return { reason: "outside-business-hours", status: "invalid" };
+  }
+  return { endsAt, startsAt, status: "ready" };
+}
+
+export type SeatOperationalStatus = "maintenance" | "normal";
+export type SeatAvailability =
+  "available" | "in-use" | "maintenance" | "reserved";
+export type ReservationAvailabilityStatus =
+  "arrived" | "confirmed" | "in-use" | "pending-confirmation";
+
+interface ReservationAvailabilityRange {
+  readonly endsAt: Date;
+  readonly startsAt: Date;
+  readonly status: ReservationAvailabilityStatus;
+}
+
+interface DeriveSeatAvailabilityInput {
+  readonly endsAt: Date;
+  readonly operationalStatus: SeatOperationalStatus;
+  readonly reservations: ReadonlyArray<ReservationAvailabilityRange>;
+  readonly startsAt: Date;
+}
+
+export function deriveSeatAvailability(
+  input: DeriveSeatAvailabilityInput,
+): SeatAvailability {
+  if (input.operationalStatus === "maintenance") return "maintenance";
+  const overlapping = input.reservations.filter(
+    (reservation) =>
+      reservation.startsAt.getTime() < input.endsAt.getTime() &&
+      reservation.endsAt.getTime() > input.startsAt.getTime(),
+  );
+  if (overlapping.some((reservation) => reservation.status === "in-use")) {
+    return "in-use";
+  }
+  return overlapping.length > 0 ? "reserved" : "available";
+}
+
+export type ReservationPriceRule =
+  "weekday-base" | "weekday-evening" | "weekday-overnight" | "weekend";
+
+export interface ReservationPriceSegment {
+  readonly amountCents: number;
+  readonly endsAt: Date;
+  readonly multiplierBasisPoints: number;
+  readonly rule: ReservationPriceRule;
+  readonly startsAt: Date;
+}
+
+interface PriceReservationWindowInput {
+  readonly baseHourlyCents: number;
+  readonly endsAt: Date;
+  readonly startsAt: Date;
+}
+
+export interface ReservationPricePreview {
+  readonly segments: ReadonlyArray<ReservationPriceSegment>;
+  readonly totalCents: number;
+}
+
+export function priceReservationWindow(
+  input: PriceReservationWindowInput,
+): ReservationPricePreview {
+  if (
+    !Number.isInteger(input.baseHourlyCents) ||
+    input.baseHourlyCents < 0 ||
+    input.startsAt.getTime() % HALF_HOUR_MS !== 0 ||
+    input.endsAt.getTime() <= input.startsAt.getTime() ||
+    (input.endsAt.getTime() - input.startsAt.getTime()) % HALF_HOUR_MS !== 0
+  ) {
+    throw new RangeError(
+      "Reservation price windows use aligned half-hours and integer cents.",
+    );
+  }
+
+  const segments: ReservationPriceSegment[] = [];
+  for (
+    let segmentStart = input.startsAt.getTime();
+    segmentStart < input.endsAt.getTime();
+    segmentStart += HALF_HOUR_MS
+  ) {
+    const startsAt = new Date(segmentStart);
+    const parts = shanghaiDateParts(startsAt);
+    const dayOfWeek = new Date(
+      Date.UTC(parts.year, parts.month - 1, parts.day),
+    ).getUTCDay();
+    const minutes = parts.hour * 60 + parts.minute;
+    const weekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const rule: ReservationPriceRule = weekend
+      ? "weekend"
+      : minutes < 6 * 60
+        ? "weekday-overnight"
+        : minutes >= 18 * 60
+          ? "weekday-evening"
+          : "weekday-base";
+    const multiplierBasisPoints =
+      rule === "weekend"
+        ? 11_500
+        : rule === "weekday-overnight"
+          ? 9_000
+          : rule === "weekday-evening"
+            ? 12_000
+            : 10_000;
+    const amountCents = Math.floor(
+      (input.baseHourlyCents * multiplierBasisPoints + 10_000) / 20_000,
+    );
+    segments.push({
+      amountCents,
+      endsAt: new Date(segmentStart + HALF_HOUR_MS),
+      multiplierBasisPoints,
+      rule,
+      startsAt,
+    });
+  }
+  return {
+    segments,
+    totalCents: segments.reduce(
+      (total, segment) => total + segment.amountCents,
+      0,
+    ),
+  };
+}
 
 export type SandboxBusinessTimeAdvanceMode = "next-event" | "half-hour";
 
@@ -74,7 +358,26 @@ export function planSandboxBusinessTimeAdvance(
 
 type PublicSandboxRole = "customer" | "staff" | "manager" | "hq";
 
+export type MachineProfileCode = "competitive" | "flagship" | "standard";
+
+interface MachineProfileSeed {
+  readonly code: MachineProfileCode;
+  readonly displayName: string;
+  readonly experienceDescription: string;
+}
+
+interface StoreAreaSeed {
+  readonly code: string;
+  readonly displayName: string;
+  readonly machineProfileSeatCounts: Readonly<
+    Record<MachineProfileCode, number>
+  >;
+  readonly seatCount: number;
+}
+
 interface PublicSandboxStoreSeed {
+  readonly areas: ReadonlyArray<StoreAreaSeed>;
+  readonly baseHourlyCents: Readonly<Record<MachineProfileCode, number>>;
   readonly code: string;
   readonly displayName: string;
   readonly seatCount: number;
@@ -82,6 +385,9 @@ interface PublicSandboxStoreSeed {
   readonly closesAt: string;
   readonly closesNextDay: boolean;
   readonly isOpen24Hours: boolean;
+  readonly machineProfileSeatCounts: Readonly<
+    Record<MachineProfileCode, number>
+  >;
 }
 
 interface PublicSandboxPersonaSeed {
@@ -99,12 +405,62 @@ export interface PublicSandboxSeed {
     readonly displayName: string;
     readonly city: string;
   };
+  readonly machineProfiles: ReadonlyArray<MachineProfileSeed>;
   readonly stores: ReadonlyArray<PublicSandboxStoreSeed>;
   readonly personas: ReadonlyArray<PublicSandboxPersonaSeed>;
 }
 
+const machineProfileSeeds = [
+  {
+    code: "standard",
+    displayName: "标准型",
+    experienceDescription: "1080p / 144Hz",
+  },
+  {
+    code: "competitive",
+    displayName: "竞技型",
+    experienceDescription: "2K / 180Hz",
+  },
+  {
+    code: "flagship",
+    displayName: "旗舰型",
+    experienceDescription: "2K / 240Hz",
+  },
+] as const satisfies ReadonlyArray<MachineProfileSeed>;
+
 const storeSeeds = [
   {
+    areas: [
+      {
+        code: "competitive-a",
+        displayName: "竞技区 A",
+        machineProfileSeatCounts: { competitive: 16, flagship: 4, standard: 4 },
+        seatCount: 24,
+      },
+      {
+        code: "competitive-b",
+        displayName: "竞技区 B",
+        machineProfileSeatCounts: { competitive: 16, flagship: 4, standard: 4 },
+        seatCount: 24,
+      },
+      {
+        code: "standard-zone",
+        displayName: "标准区",
+        machineProfileSeatCounts: { competitive: 0, flagship: 0, standard: 24 },
+        seatCount: 24,
+      },
+      {
+        code: "immersion-zone",
+        displayName: "沉浸区",
+        machineProfileSeatCounts: { competitive: 8, flagship: 8, standard: 8 },
+        seatCount: 24,
+      },
+    ],
+    baseHourlyCents: {
+      competitive: 1_500,
+      flagship: 2_200,
+      standard: 1_000,
+    },
     code: "prism-flagship",
     displayName: "棱镜旗舰店",
     seatCount: 96,
@@ -112,8 +468,38 @@ const storeSeeds = [
     closesAt: "00:00",
     closesNextDay: false,
     isOpen24Hours: true,
+    machineProfileSeatCounts: {
+      competitive: 40,
+      flagship: 16,
+      standard: 40,
+    },
   },
   {
+    areas: [
+      {
+        code: "front-hall",
+        displayName: "星桥前厅",
+        machineProfileSeatCounts: { competitive: 0, flagship: 4, standard: 20 },
+        seatCount: 24,
+      },
+      {
+        code: "competitive-lane",
+        displayName: "竞技长廊",
+        machineProfileSeatCounts: { competitive: 24, flagship: 0, standard: 0 },
+        seatCount: 24,
+      },
+      {
+        code: "quiet-zone",
+        displayName: "静音区",
+        machineProfileSeatCounts: { competitive: 0, flagship: 4, standard: 12 },
+        seatCount: 16,
+      },
+    ],
+    baseHourlyCents: {
+      competitive: 1_200,
+      flagship: 1_800,
+      standard: 800,
+    },
     code: "starbridge-standard",
     displayName: "星桥标准店",
     seatCount: 64,
@@ -121,8 +507,38 @@ const storeSeeds = [
     closesAt: "02:00",
     closesNextDay: true,
     isOpen24Hours: false,
+    machineProfileSeatCounts: {
+      competitive: 24,
+      flagship: 8,
+      standard: 32,
+    },
   },
   {
+    areas: [
+      {
+        code: "arrival-hall",
+        displayName: "跃点大厅",
+        machineProfileSeatCounts: { competitive: 0, flagship: 0, standard: 16 },
+        seatCount: 16,
+      },
+      {
+        code: "competitive-zone",
+        displayName: "竞速区",
+        machineProfileSeatCounts: { competitive: 12, flagship: 0, standard: 0 },
+        seatCount: 12,
+      },
+      {
+        code: "immersion-zone",
+        displayName: "沉浸区",
+        machineProfileSeatCounts: { competitive: 0, flagship: 4, standard: 8 },
+        seatCount: 12,
+      },
+    ],
+    baseHourlyCents: {
+      competitive: 1_000,
+      flagship: 1_500,
+      standard: 700,
+    },
     code: "apex-new",
     displayName: "极点新店",
     seatCount: 40,
@@ -130,6 +546,11 @@ const storeSeeds = [
     closesAt: "00:00",
     closesNextDay: false,
     isOpen24Hours: false,
+    machineProfileSeatCounts: {
+      competitive: 12,
+      flagship: 4,
+      standard: 24,
+    },
   },
 ] as const satisfies ReadonlyArray<PublicSandboxStoreSeed>;
 
@@ -170,7 +591,16 @@ export function buildPublicSandboxSeed(): PublicSandboxSeed {
       displayName: "竞枢演示经营方",
       city: "栖光市",
     },
-    stores: storeSeeds.map((store) => ({ ...store })),
+    machineProfiles: machineProfileSeeds.map((profile) => ({ ...profile })),
+    stores: storeSeeds.map((store) => ({
+      ...store,
+      areas: store.areas.map((area) => ({
+        ...area,
+        machineProfileSeatCounts: { ...area.machineProfileSeatCounts },
+      })),
+      baseHourlyCents: { ...store.baseHourlyCents },
+      machineProfileSeatCounts: { ...store.machineProfileSeatCounts },
+    })),
     personas: personaSeeds.map((persona) => ({ ...persona })),
   };
 }

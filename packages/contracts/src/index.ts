@@ -7,6 +7,86 @@ export const PUBLIC_ROLES = ["customer", "staff", "manager", "hq"] as const;
 
 export type PublicRole = (typeof PUBLIC_ROLES)[number];
 
+export const CUSTOMER_MACHINE_PROFILE_CODES = [
+  "standard",
+  "competitive",
+  "flagship",
+] as const;
+
+export type CustomerMachineProfileCode =
+  (typeof CUSTOMER_MACHINE_PROFILE_CODES)[number];
+export type CustomerReservationMode = "future" | "immediate";
+export type CustomerSeatAvailability =
+  "available" | "in-use" | "maintenance" | "reserved";
+export type CustomerReservationPriceRule =
+  "weekday-base" | "weekday-evening" | "weekday-overnight" | "weekend";
+
+export interface CustomerStoreCatalogResponse {
+  readonly status: "ready";
+  readonly city: string;
+  readonly currentTime: string;
+  readonly bookingRules: {
+    readonly durationHours: { readonly maximum: 8; readonly minimum: 1 };
+    readonly futureDays: 7;
+    readonly halfHourAligned: true;
+    readonly immediateUsesCurrentSegment: true;
+  };
+  readonly stores: ReadonlyArray<{
+    readonly areas: ReadonlyArray<{
+      readonly code: string;
+      readonly displayName: string;
+      readonly seatCount: number;
+    }>;
+    readonly businessHours: string;
+    readonly closesAt: string;
+    readonly closesNextDay: boolean;
+    readonly code: string;
+    readonly displayName: string;
+    readonly isOpen24Hours: boolean;
+    readonly machineProfiles: ReadonlyArray<{
+      readonly baseHourlyCents: number;
+      readonly code: CustomerMachineProfileCode;
+      readonly displayName: string;
+      readonly experienceDescription: string;
+      readonly seatCount: number;
+    }>;
+    readonly opensAt: string;
+    readonly seatCount: number;
+  }>;
+}
+
+export interface CustomerSeatAvailabilityResponse {
+  readonly status: "ready";
+  readonly area: { readonly code: string; readonly displayName: string };
+  readonly machineProfile: {
+    readonly code: CustomerMachineProfileCode;
+    readonly displayName: string;
+    readonly experienceDescription: string;
+  };
+  readonly price: {
+    readonly baseHourlyCents: number;
+    readonly segments: ReadonlyArray<{
+      readonly amountCents: number;
+      readonly endsAt: string;
+      readonly multiplierBasisPoints: number;
+      readonly rule: CustomerReservationPriceRule;
+      readonly startsAt: string;
+    }>;
+    readonly totalCents: number;
+  };
+  readonly seats: ReadonlyArray<{
+    readonly availability: CustomerSeatAvailability;
+    readonly code: string;
+    readonly operationalStatus: "maintenance" | "normal";
+  }>;
+  readonly store: { readonly code: string; readonly displayName: string };
+  readonly window: {
+    readonly endsAt: string;
+    readonly mode: CustomerReservationMode;
+    readonly startsAt: string;
+  };
+}
+
 export const DEMO_TIME_DUE_HANDLER_KINDS = [
   "pending-reservation-expiration",
   "pending-order-expiration",

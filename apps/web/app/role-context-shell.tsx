@@ -26,6 +26,7 @@ import { DemoTimeDialog, SandboxResetDialog } from "./demo-tool-dialogs";
 import { RoleSwitchDialog, StaleRoleDialog } from "./role-context-dialogs";
 import { roleMeta, type RolePageId } from "./role-context-model";
 import { RoleWorkbench } from "./role-workbench";
+import { CustomerSeatBrowser } from "./customer-seat-browser";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -35,6 +36,7 @@ function Brand() {
       <Image
         aria-hidden="true"
         alt=""
+        priority
         src={jingshuMark}
         width={34}
         height={34}
@@ -437,7 +439,7 @@ export function RoleContextShell({
 
   return (
     <div
-      className={`role-shell ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}
+      className={`role-shell ${context.role.id === "customer" ? "is-customer" : ""} ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}
     >
       <header className="role-shell-topbar" {...backgroundProps}>
         <div className="role-topbar-brand">
@@ -584,7 +586,9 @@ export function RoleContextShell({
           </div>
         </aside>
         <section className="role-workspace">
-          {context.role.id === "staff" && activePage === "workbench" ? (
+          {context.role.id === "customer" && activePage === "customer-home" ? (
+            <CustomerSeatBrowser />
+          ) : context.role.id === "staff" && activePage === "workbench" ? (
             <RoleWorkbench
               filter={filter}
               inspectorOpen={inspectorOpen}

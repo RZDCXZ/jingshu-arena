@@ -39,8 +39,8 @@ describe("public sandbox creation", () => {
       sandboxId: expect.stringMatching(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
       ),
-      schemaVersion: "4",
-      seedVersion: "2026-08-09.1",
+      schemaVersion: "5",
+      seedVersion: "2026-08-09.2",
       expiresAt: expect.any(Date),
       selectedRole: "customer",
       persona: {
@@ -76,8 +76,8 @@ describe("public sandbox creation", () => {
         sandboxId: expect.stringMatching(
           /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
         ),
-        schemaVersion: "4",
-        seedVersion: "2026-08-09.1",
+        schemaVersion: "5",
+        seedVersion: "2026-08-09.2",
         expiresAt: expect.any(Date),
         businessClock: {
           advanceLimitMilliseconds: 86_400_000,
@@ -125,6 +125,67 @@ describe("public sandbox creation", () => {
         },
       },
     });
+  });
+
+  it("materializes exact areas, machine profiles, seats and query-derived availability", async () => {
+    const created = await database.create({
+      creationKey: "00000000-0000-4000-8000-000000000018",
+      selectedRole: "customer",
+      visitorKey: "visitor-000000000018",
+    });
+    const context = {
+      contextVersion: created.roleContext.contextVersion,
+      personaId: created.roleContext.persona.id,
+      role: created.roleContext.role,
+      sandboxId: created.sandboxId,
+    } as const;
+
+    const catalog = await database.readCustomerStoreCatalog(context);
+    expect(catalog.city).toBe("栖光市");
+    expect(catalog.stores.map((store) => store.seatCount)).toEqual([
+      96, 64, 40,
+    ]);
+    expect(
+      catalog.stores.map((store) =>
+        store.machineProfiles.map((profile) => profile.seatCount),
+      ),
+    ).toEqual([
+      [40, 40, 16],
+      [32, 24, 8],
+      [24, 12, 4],
+    ]);
+    expect(catalog.stores[0]?.areas).toHaveLength(4);
+
+    const availability = await database.readCustomerSeatAvailability({
+      ...context,
+      areaCode: "competitive-a",
+      durationHours: 2,
+      machineProfileCode: "competitive",
+      mode: "immediate",
+      storeCode: "prism-flagship",
+    });
+    expect(availability.seats).toHaveLength(16);
+    expect(availability.seats.map((seat) => seat.availability)).toEqual(
+      expect.arrayContaining([
+        "available",
+        "in-use",
+        "maintenance",
+        "reserved",
+      ]),
+    );
+    expect(availability.price.segments).toHaveLength(4);
+    expect(Number.isInteger(availability.price.totalCents)).toBe(true);
+
+    await expect(
+      database.readCustomerSeatAvailability({
+        ...context,
+        areaCode: "standard-zone",
+        durationHours: 2,
+        machineProfileCode: "competitive",
+        mode: "immediate",
+        storeCode: "prism-flagship",
+      }),
+    ).rejects.toMatchObject({ reason: "price-plan-not-found" });
   });
 
   it("replays the same successful world for the same creation key and payload", async () => {

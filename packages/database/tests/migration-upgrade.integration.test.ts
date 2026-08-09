@@ -229,9 +229,11 @@ describe("role-context expand migration", () => {
       { business_time_advance_ms: 0, role_context_role: null },
     ]);
 
+    await applyMigration("0008_customer_seat_browse.sql");
+
     const metadata = await client.query<{ value: string }>(
       "select value from jingshu_schema_metadata where key = 'schema_version'",
     );
-    expect(metadata.rows).toEqual([{ value: "4" }]);
+    expect(metadata.rows).toEqual([{ value: "5" }]);
   });
 });

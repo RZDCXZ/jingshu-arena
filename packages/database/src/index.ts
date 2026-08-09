@@ -6,6 +6,8 @@ import pg from "pg";
 
 export * from "./schema.js";
 export {
+  CustomerSeatBrowseValidationError,
+  type CustomerSeatBrowseValidationReason,
   DemoTimeAdvanceLimitReachedError,
   DemoTimeNoNextEventError,
   PublicSandboxIdempotencyConflictError,
@@ -17,10 +19,14 @@ export {
 export {
   createPublicSandboxDatabase,
   type CreatePublicSandboxInput,
+  type CustomerBrowseContextInput,
+  type DatabaseCustomerSeatAvailability,
+  type DatabaseCustomerStoreCatalog,
   type DatabaseRoleContext,
   type PublicSandboxDatabase,
   type PublicSandboxDatabaseOptions,
   type PublicSandboxResult,
+  type ReadCustomerSeatAvailabilityInput,
   type RecordRoleContextDenialInput,
   type ReadCurrentRoleContextInput,
   type ReadRoleContextInput,

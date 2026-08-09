@@ -144,6 +144,19 @@ test.beforeEach(async ({ context }) => {
   let businessTime = "2026-08-09T11:30:00.000Z";
   let advancedMilliseconds = 0;
 
+  await context.route("**/api/v1/customer/stores", async (route) => {
+    await route.fulfill({
+      json: {
+        error: {
+          code: "CUSTOMER_STORE_CATALOG_UNAVAILABLE",
+          message: "共享壳层测试不加载顾客门店目录。",
+          requestId: "00000000-0000-4000-8000-000000000607",
+        },
+      },
+      status: 503,
+    });
+  });
+
   await context.route("**/api/v1/public/visitor", async (route) => {
     await route.fulfill({ status: 204 });
   });

@@ -60,3 +60,25 @@ export class DemoTimeNoNextEventError extends Error {
     this.name = "DemoTimeNoNextEventError";
   }
 }
+
+export type CustomerSeatBrowseValidationReason =
+  | "area-not-found"
+  | "duration"
+  | "future-start"
+  | "half-hour-alignment"
+  | "machine-profile-not-found"
+  | "outside-business-hours"
+  | "price-plan-not-found"
+  | "seven-day-window"
+  | "store-not-found";
+
+export class CustomerSeatBrowseValidationError extends Error {
+  readonly code = "CUSTOMER_SEAT_BROWSE_INVALID";
+  readonly reason: CustomerSeatBrowseValidationReason;
+
+  constructor(reason: CustomerSeatBrowseValidationReason) {
+    super(`Customer seat browse query is invalid: ${reason}.`);
+    this.name = "CustomerSeatBrowseValidationError";
+    this.reason = reason;
+  }
+}

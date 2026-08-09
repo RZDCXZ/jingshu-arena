@@ -7,6 +7,7 @@ import { registerRoleAccessRoutes } from "./role-access-routes.js";
 import { registerRoleContextRoutes } from "./role-context-routes.js";
 import type { AppServices } from "./route-support.js";
 import { registerDemoToolsRoutes } from "./demo-tools-routes.js";
+import { registerCustomerSeatBrowseRoutes } from "./customer-seat-browse-routes.js";
 
 interface AppOptions {
   allowedOrigins?: ReadonlyArray<string>;
@@ -41,6 +42,7 @@ export function createApp(options: AppOptions = {}) {
   registerRoleContextRoutes(app, services);
   registerRoleAccessRoutes(app, services);
   registerDemoToolsRoutes(app, services);
+  registerCustomerSeatBrowseRoutes(app, services);
   registerPublicSandboxRoutes(app, services);
 
   return app;

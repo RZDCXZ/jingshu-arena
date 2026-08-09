@@ -57,6 +57,13 @@
       "when": 1786240800007,
       "tag": "0007_dual_clock_reset",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786240800008,
+      "tag": "0008_customer_seat_browse",
+      "breakpoints": true
     }
   ]
 }

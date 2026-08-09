@@ -24,6 +24,53 @@ describe("public sandbox seed", () => {
       "星桥标准店",
       "极点新店",
     ]);
+    expect(first.machineProfiles).toEqual([
+      {
+        code: "standard",
+        displayName: "标准型",
+        experienceDescription: "1080p / 144Hz",
+      },
+      {
+        code: "competitive",
+        displayName: "竞技型",
+        experienceDescription: "2K / 180Hz",
+      },
+      {
+        code: "flagship",
+        displayName: "旗舰型",
+        experienceDescription: "2K / 240Hz",
+      },
+    ]);
+    expect(
+      first.stores.map((store) => ({
+        areas: store.areas.reduce((sum, area) => sum + area.seatCount, 0),
+        machines: Object.values(store.machineProfileSeatCounts).reduce(
+          (sum, count) => sum + count,
+          0,
+        ),
+        profileCounts: store.machineProfileSeatCounts,
+        seats: store.seatCount,
+      })),
+    ).toEqual([
+      {
+        areas: 96,
+        machines: 96,
+        profileCounts: { competitive: 40, flagship: 16, standard: 40 },
+        seats: 96,
+      },
+      {
+        areas: 64,
+        machines: 64,
+        profileCounts: { competitive: 24, flagship: 8, standard: 32 },
+        seats: 64,
+      },
+      {
+        areas: 40,
+        machines: 40,
+        profileCounts: { competitive: 12, flagship: 4, standard: 24 },
+        seats: 40,
+      },
+    ]);
     expect(first.personas).toHaveLength(4);
     expect(first.personas.every((persona) => persona.protected)).toBe(true);
   });

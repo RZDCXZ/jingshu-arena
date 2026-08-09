@@ -3,6 +3,7 @@ import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   boolean,
   check,
+  index,
   integer,
   jsonb,
   pgPolicy,
@@ -128,6 +129,145 @@ export const stores = pgTable(
   ],
 ).enableRLS();
 
+export const machineProfiles = pgTable(
+  "machine_profiles",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    code: text("code").notNull(),
+    displayName: text("display_name").notNull(),
+    experienceDescription: text("experience_description").notNull(),
+    archived: boolean("archived").default(false).notNull(),
+  },
+  (table) => [
+    unique("machine_profiles_sandbox_code_unique").on(
+      table.sandboxId,
+      table.code,
+    ),
+    pgPolicy("machine_profiles_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const storeAreas = pgTable(
+  "store_areas",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "cascade" }),
+    code: text("code").notNull(),
+    displayName: text("display_name").notNull(),
+    sortOrder: integer("sort_order").notNull(),
+  },
+  (table) => [
+    unique("store_areas_sandbox_store_code_unique").on(
+      table.sandboxId,
+      table.storeId,
+      table.code,
+    ),
+    check("store_areas_positive_sort_order", sql`${table.sortOrder} >= 0`),
+    pgPolicy("store_areas_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const seats = pgTable(
+  "seats",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "cascade" }),
+    areaId: uuid("area_id")
+      .notNull()
+      .references(() => storeAreas.id, { onDelete: "restrict" }),
+    machineProfileId: uuid("machine_profile_id")
+      .notNull()
+      .references(() => machineProfiles.id, { onDelete: "restrict" }),
+    code: text("code").notNull(),
+    sortOrder: integer("sort_order").notNull(),
+    operationalStatus: text("operational_status").default("normal").notNull(),
+  },
+  (table) => [
+    unique("seats_sandbox_store_code_unique").on(
+      table.sandboxId,
+      table.storeId,
+      table.code,
+    ),
+    check(
+      "seats_operational_status",
+      sql`${table.operationalStatus} IN ('normal', 'maintenance')`,
+    ),
+    check("seats_positive_sort_order", sql`${table.sortOrder} >= 0`),
+    pgPolicy("seats_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const pricePlans = pgTable(
+  "price_plans",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "cascade" }),
+    areaId: uuid("area_id")
+      .notNull()
+      .references(() => storeAreas.id, { onDelete: "restrict" }),
+    machineProfileId: uuid("machine_profile_id")
+      .notNull()
+      .references(() => machineProfiles.id, { onDelete: "restrict" }),
+    version: integer("version").notNull(),
+    baseHourlyCents: integer("base_hourly_cents").notNull(),
+    effectiveFrom: timestamp("effective_from", {
+      withTimezone: true,
+    }).notNull(),
+    effectiveUntil: timestamp("effective_until", { withTimezone: true }),
+    status: text("status").default("active").notNull(),
+  },
+  (table) => [
+    unique("price_plans_scope_version_unique").on(
+      table.sandboxId,
+      table.storeId,
+      table.areaId,
+      table.machineProfileId,
+      table.version,
+    ),
+    check("price_plans_positive_version", sql`${table.version} > 0`),
+    check(
+      "price_plans_non_negative_base_price",
+      sql`${table.baseHourlyCents} >= 0`,
+    ),
+    check(
+      "price_plans_effective_range",
+      sql`${table.effectiveUntil} IS NULL OR ${table.effectiveUntil} > ${table.effectiveFrom}`,
+    ),
+    check("price_plans_status", sql`${table.status} IN ('active', 'archived')`),
+    pgPolicy("price_plans_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
 export const demoPersonas = pgTable(
   "demo_personas",
   {
@@ -150,6 +290,45 @@ export const demoPersonas = pgTable(
       sql`${table.role} IN ('customer', 'staff', 'manager', 'hq')`,
     ),
     pgPolicy("demo_personas_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const reservations = pgTable(
+  "reservations",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "cascade" }),
+    customerPersonaId: uuid("customer_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "restrict" }),
+    seatId: uuid("seat_id")
+      .notNull()
+      .references(() => seats.id, { onDelete: "restrict" }),
+    status: text("status").notNull(),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    check("reservations_time_range", sql`${table.endsAt} > ${table.startsAt}`),
+    check(
+      "reservations_status",
+      sql`${table.status} IN ('pending-confirmation', 'confirmed', 'arrived', 'in-use', 'completed', 'cancelled', 'expired')`,
+    ),
+    index("reservations_seat_time_idx").on(
+      table.sandboxId,
+      table.seatId,
+      table.startsAt,
+      table.endsAt,
+    ),
+    pgPolicy("reservations_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),
