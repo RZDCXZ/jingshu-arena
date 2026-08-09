@@ -4,7 +4,9 @@
 
 **Blocked by:** 03 — 公开入口与版本化三店沙箱。
 
-**Status:** ready-for-agent
+**Triage:** ready-for-agent
+
+**State:** open
 
 - [ ] 服务端把四个公开入口映射到固定受保护演示人物，并签发包含沙箱、角色、人物和门店范围的 HttpOnly、Secure、SameSite=Lax 会话。
 - [ ] API 只信任服务端角色上下文；伪造 URL、请求体或请求头中的角色、门店和沙箱不能扩大权限。
@@ -16,3 +18,5 @@
 - [ ] 使用 Product Design 插件的 image-to-code 工作流实现共享演示壳、角色切换器、未提交表单确认和旧角色阻断状态，所有可见控件具有真实行为。
 - [ ] 使用 Product Design design-qa 对照管理端原型的默认 1440×1024 状态和 1024×768 收起导航状态，检查字体、间距、颜色、图标、文案、焦点及 reduced-motion，P0/P1/P2 清零并通过。
 - [ ] 键盘可以完成角色切换，焦点正确进入和返回对话框，角色与状态不只依赖颜色表达。
+
+## Comments

@@ -1,5 +1,10 @@
 # 竞枢管理端设计覆盖说明
 
+- 状态：功能覆盖完整；跨端正式名称仍待 [`议题 02`](../../../.scratch/jingshu-basic-rc/issues/02-unify-design-baseline.md) 同步到当前实现。
+- 功能契约：`../prod.md`
+- 共享内容基线：`../../README.md`
+- 视觉基线：`design/reference/selected-night-operations-console.png`
+
 ## 交付形态
 
 这是一个可运行、可交互的管理端高保真设计原型。视觉方向采用用户选择的“夜间运营控制台”：深色高密度布局、实时状态信号、荧光绿主操作、青色数据反馈和琥珀/红色异常分级。

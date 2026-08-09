@@ -1,18 +1,35 @@
-# Prototype Instructions
+# 管理端正式设计参考指南
 
-Run the local server yourself and open the preview in the browser available to this environment. Do not give the user server-start instructions when you can run it.
+## 资料与决策
 
-Before making substantial visual changes, use the Product Design plugin's `get-context` skill when the visual source is unclear or no longer matches the current goal. When the user gives durable prototype-specific design feedback, preferences, or decisions, record them in `AGENTS.md`.
+规划或实现管理端正式设计参考变更前，先读完根目录 `AGENTS.md` 要求的管理系统参考资料，包括当前 QA 状态。
 
-When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
+功能决策写入 `../prod.md`，覆盖变化写入 `design-coverage.md`，渲染或交互证据写入 `design-qa.md`。本文件只记录工作流、编辑边界和持久原型不变量。
 
-Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
+## 预览与交付
 
-## Prototype decisions
+启动本地服务，并在当前环境可用的浏览器中打开预览。自行验证受影响状态和交互；当前环境能提供可点击地址时，将本地预览交给用户。
 
-- Product design input: [`../prod.md`](../prod.md).
-- Selected visual source: [`design/reference/selected-night-operations-console.png`](design/reference/selected-night-operations-console.png).
-- Coverage and latest visual QA: [`design-coverage.md`](design-coverage.md) and [`design-qa.md`](design-qa.md).
-- The user selected the second generated visual direction: a dark, high-contrast “night operations console” with charcoal/navy surfaces, restrained cyan information accents, lime primary actions, compact outlined icons, continuous queue surfaces, and a right-side context inspector.
-- The default 1440 × 1024 screen must faithfully recreate the selected staff workbench reference while the broader prototype extends the same visual language across staff, store manager, headquarters, and shared sandbox flows.
-- This prototype is the management-side deliverable. The customer mini-program and H5 are represented only where cross-role context is needed; they are not a separate UI build here.
+每次交付正式设计参考前：
+
+1. 运行 `npm run build`。
+2. 在 `1440 × 1024` 和 `1024 × 768` 下验证每个受影响状态及主要交互。
+3. 公开入口或顾客 H5 发生变化时，还要验证 `360px`。
+4. 确认浏览器控制台没有本次变更引起的警告或错误。
+
+交付到 Sites 时，还要运行 `npm run test:sites`，并确认 `dist/client/index.html`、`dist/server/index.js` 和 `dist/.openai/hosting.json` 都存在。除非用户明确要求分享、发布或部署，否则保持本地工作。
+
+所有必要命令通过，且变化后的视觉或交互证据已记录到 `design-qa.md` 后，交付才算完成。
+
+## 编辑边界
+
+- 应用 UI 写入 `src/`。
+- 保留 `.openai/hosting.json`、`worker/index.js`、`scripts/prepare-sites-build.mjs` 和 `tests/sites-worker.test.mjs`，确保同一原型继续兼容 Sites。
+
+## 原型不变量
+
+- 产品行为以 `../prod.md` 为准。
+- 选定视觉源为 `design/reference/selected-night-operations-console.png`。
+- 保持深色、高对比度的夜间运营方向：炭灰/海军蓝表面、克制的青色信息强调、青柠色主操作、紧凑描边图标、连续队列表面和右侧上下文检查器。
+- 默认 `1440 × 1024` 状态应忠实还原选定的店员工作台；店员、店长、总部和共享沙箱流程使用同一视觉语言。
+- 该原型是管理侧交付物。只有跨角色上下文确有需要时，才展示顾客小程序或 H5 内容。

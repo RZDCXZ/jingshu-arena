@@ -4,7 +4,9 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Triage:** ready-for-agent
+
+**State:** resolved
 
 - [x] 根工作区只产生一个 pnpm lockfile，并精确锁定 Node.js 24.18.0、pnpm 9.15.9、Next.js 16.3.0、React 19.2.8、Hono 4.13.1、@hono/node-server 2.1.0、Drizzle ORM 0.45.2、Drizzle Kit 0.31.10、TypeScript 6.0.3 和 Playwright 1.62.1。
 - [x] 工作区包含单一多角色 Web 应用、Hono API、原生微信小程序、纯领域规则、共享契约和数据库六个逻辑模块，依赖方向符合 ADR-0014 与 ADR-0015。

@@ -4,7 +4,9 @@
 
 **Blocked by:** 36 — 全系统安全、并发、可访问性与性能门禁。
 
-**Status:** ready-for-agent
+**Triage:** ready-for-agent
+
+**State:** open
 
 - [ ] 探针验证 EdgeOne 对锁定 Node/pnpm/Next.js 构建的实际支持，不把公开文档或本地构建成功当作平台验证。
 - [ ] 同源 /api/v1 路由进入 Hono Cloud Function，其余请求进入 Next.js，不依赖 EdgeOne 不支持的 redirects 或 rewrites。
@@ -18,3 +20,5 @@
 - [ ] 建立生产等价预览、前向 expand/contract 迁移、应用回滚和重新部署上一成功构建的演练。
 - [ ] 报告记录平台配置、构建版本、日期、地区、测试步骤、原始结果、限制、回滚结果和是否通过，不包含任何 Secret。
 - [ ] 探针未全部通过前，文档和 UI 不声称目标运行时、图片上传、SSE、清理或大陆访问已经验收。
+
+## Comments

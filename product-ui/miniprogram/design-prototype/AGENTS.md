@@ -1,79 +1,48 @@
-# Mobile Prototype Agent Guide
+# 小程序正式设计参考指南
 
-## Prototype Instructions
+## 资料与决策
 
-In ChatGPT Work Mode, run `sites-preview start "$PWD"`, open `http://terminal.local:4173/` in the cloud browser, and verify the rendered app and its primary interactions. Keep that preview open and tell the user to inspect it in the cloud browser; do not present the local URL as a user-facing chat link. In Codex Desktop, run the local server yourself, open the preview in the in-app browser, and provide the clickable local URL. Do not deploy to Sites unless the user explicitly asks to share, publish, or deploy. Do not give the user server-start instructions when you can run it.
+规划或实现小程序正式设计参考变更前，先读完根目录 `AGENTS.md` 要求的小程序参考资料，包括当前 QA 状态。产品契约决定行为，选定图片决定视觉方向，覆盖记录决定可到达的页面、状态和旅程。
 
-Before planning or implementing any mobile-app change, read this `AGENTS.md` in full. It is the source of truth for the template's runtime and component guidance.
+功能决策写入 `../prod.md`，覆盖变化写入 `design-coverage.md`，渲染或交互证据写入 `design-qa.md`。本文件只记录工作流、编辑边界和持久运行时不变量。
 
-Before making substantial visual changes, use the Product Design plugin's `get-context` skill when the visual source is unclear or no longer matches the current goal. When the user gives durable prototype-specific design feedback, preferences, or decisions, record them in `AGENTS.md`.
+## 预览
 
-When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
+- **ChatGPT 工作模式：**运行 `sites-preview start "$PWD"`，在云端浏览器打开 `http://terminal.local:4173/`，验证渲染结果和主要交互。保持预览供用户查看；说明检查位置，不要把仅终端可访问的本地地址当作聊天链接。
+- **Codex Desktop：**启动本地服务，在应用内浏览器打开并验证预览，然后提供可点击的本地地址。
+- **发布：**除非用户明确要求分享、发布或部署，否则保持本地工作。当前环境允许时，为用户启动服务。
 
-## Jingshu Mini Program Design Decisions
+## 交付门禁
 
-- The approved visual source is `design/reference/selected-reservation-first-home.png`.
-- Preserve the management system's deep navy, cyan feedback, lime primary action, restrained amber/red semantics, compact radii, thin separators, and operational typography.
-- The product-level hero task is seat reservation. Home must prioritize “预约座位 / 查找可订座位”.
-- Repair and counter-shopping actions are contextual secondary actions available only from an eligible active reservation; they must never read as the app's primary purpose.
-- The prototype must cover `MP-00` through `MP-18`, include the `MP-19` system-state gallery, and keep the reservation, order, repair, and reset journeys clickable end to end.
+每次交付正式设计参考前：
 
-## Editing Boundary
+1. 运行 `npm run check:runtime`。
+2. 运行 `npm run test:runtime`。
+3. 运行 `npm run build`。
+4. 打开每个受影响状态，完成每项受影响的主要交互，并确认浏览器控制台没有本次变更引起的警告或错误。
+5. 布局、安全区、滚动、设备外壳、键盘行为或触控交互发生变化时，同时验证 iPhone 和 Pixel 10。
 
-- Build app-specific UI in `src/Prototype.tsx` and `src/prototype.css`.
-- Treat `src/App.tsx`, `src/main.tsx`, `src/styles.css`, `src/mobile/`, `public/assets/iphone/`, `public/assets/android/`, `public/assets/status/`, `vite.config.ts`, `worker/index.js`, and `scripts/prepare-sites-build.mjs` as protected runtime files. Do not edit, replace, remove, or recreate them unless the user explicitly asks to change the mobile runtime itself. For an explicit runtime change, update the affected lock hashes only after verifying the new runtime behavior.
-- Run `npm run check:runtime` before preview or handoff. If it fails, restore the protected runtime instead of weakening or bypassing the check.
-- `npm run build` preserves the mobile runtime and prepares the static Cloudflare Worker output required by Sites. Before a Sites handoff, confirm `dist/client/index.html`, `dist/server/index.js`, `dist/.openai/hosting.json`, and source `.openai/hosting.json` exist, then run `npm run test:sites`. Do not replace this project with a Vinext starter.
+交付到 Sites 时，还要运行 `npm run test:sites`，并确认 `dist/client/index.html`、`dist/server/index.js`、`dist/.openai/hosting.json` 以及源码中的 `.openai/hosting.json` 都存在。
 
-## Runtime Contract
+所有必要命令通过，且变化后的视觉或交互证据已记录到 `design-qa.md` 后，交付才算完成。
 
-- Preserve the mobile device runtime unless the user's task explicitly asks otherwise. Do not replace it with a standalone page. Visual fidelity applies to app-owned content inside the device screen, not to template-owned device chrome.
-- Keep `App` composed around `PhoneFrame` -> `KeyboardProvider`, with `StatusBar`, app content, `HomeIndicator`, and `KeyboardDock` mounted inside the phone frame. `StatusBar` and the iOS home indicator are overlaid device chrome. When the Android keyboard is closed, the app viewport reserves the protected navigation-bar region instead of painting behind it. When the Android keyboard is open, preserve the current full-screen keyboard layout: its asset includes the IME navigation strip and the separate black navigation bar is hidden. iOS screens continue to paint behind the home-indicator area and own their safe-area content padding.
-- Preserve the `iPhone` / `Pixel 10` device picker and both calibrated device presets. The Pixel screen is `427 x 952`; its `32 x 32` camera circle and `public/assets/android/navigation-bar.svg` bottom navigation bar are protected device chrome, not app content.
-- Preserve the device picker's intentionally lightweight Codex styling in the top-right corner: its trigger wrapper is borderless and transparent, its trigger sizes to content, and its right-aligned menu uses the compact 3px inset plus the specified hairline and elevation shadow layers. Keep the prototype root and default app screen white.
-- Preserve `StatusBar` as live device chrome, including its platform-specific typography, source status-icon assets, and spacing. Pixel 10 uses Roboto, Android indicators, and 32px top, left, and right padding. iPhone uses its iOS indicators, system typography, and calibrated spacing. Do not hardcode screenshot times like `9:41` into the status bar, replace its real-time clock, or move status bar content into app markup unless the user explicitly asks for a fixed/mock device time.
-- `PhoneFrame` owns the calibrated device frame, screen portal, device picker, camera cutout, and custom cursor. Keep device assets in `public/assets/iphone/` and `public/assets/android/`; if an asset fails to load, repair the asset path or restore the asset instead of removing the frame, keyboard, or image render.
-- Use `MobileScroll` directly for simple single-screen prototypes. Use `FlowStack` for conventional multi-screen flows whose routes can own their fixed header and footer; when using it, define each route as a `FlowScreen`: `{ id, header?, headerHeight?, footer?, footerHeight?, render }`, and use `flow.push(screen)`, `flow.pop()`, and `flow.replace(screen)` from `FlowStack` render callbacks or `useFlow()` instead of introducing another router.
-- Use `Carousel` for a carousel, horizontal rail, swipeable cards, image or media strip, horizontally scrollable cards, chip rail, or other horizontal collection.
-- For a layered app shell—such as a persistent composer, independently presented sheet, pushed/peek sidebar, or app-wide transition—compose directly in `Prototype.tsx` rather than forcing it through `FlowStack`. Keep app-owned fixed chrome as sibling layers outside `MobileScroll`.
-- When using `FlowScreen`, put route-owned fixed headers or footers in `FlowScreen.header` or `FlowScreen.footer`. Set `headerHeight` to the visible app-toolbar height; `FlowStack` adds the device's top safe-area/status-bar inset automatically. Do not include `StatusBar` or its height in the header. Set `footerHeight` to the full app-footer height. `FlowScreen.footer` is an overlay, not reserved layout space; screens using it must add their own bottom content padding such as `padding-bottom: calc(var(--flow-footer-height) + var(--mobile-safe-area-height) + 24px)` so final content can scroll above the footer while still painting behind it.
-- Render only scrollable content inside `MobileScroll`; it is for content that should move with scroll and rubber-band overscroll. Keep app-owned headers, nav bars, tabs, composers, and overlays outside it. This keeps scroll physics, safe areas, keyboard insets, scrollbars, and drag click suppression active without letting content paint under fixed chrome.
-- Buttons, links, cards, and images inside `MobileScroll` should still allow drag scrolling when the pointer moves beyond tap slop. Use `data-scroll-drag="ignore"` only for rare controls that must own the drag gesture themselves.
-- Do not add `var(--keyboard-height)` to ordinary screen/content padding inside `MobileScroll`; the scroll viewport already shrinks above the simulated keyboard. For custom fixed composers, search bars, or toast chrome, use `useKeyboardInsets().bottomInset`. It is relative to the app viewport: Android returns `0` while the closed-keyboard viewport already reserves navigation, then returns the keyboard height while open; iOS continues to clear the home indicator while closed and ride directly above the keyboard while open. Do not pin custom bottom chrome to `bottom: 0` or only `keyboardHeight`.
-- Use `KeyboardInput`, `KeyboardTextarea`, or `MobileTextField` for every text-entry control. A raw `input` or `textarea` disconnects focus, keyboard animation, safe-area insets, and attached surfaces.
-- Use `BottomSheet` for phone-scoped sheets. Its props are `open`, `onOpenChange`, `title`, optional `description`, optional `snap`, and `children`; it renders through the phone screen portal and dismisses the keyboard before opening.
+## 竞枢设计不变量
 
-## Horizontal Carousels
+- 已批准的视觉源为 `design/reference/selected-reservation-first-home.png`。
+- 视觉保真调整只作用于设备屏幕内由应用负责的内容；设备外壳以移动运行时为真相源。
+- 保持管理系统的深海军蓝、青色反馈、青柠色主操作、克制的琥珀/红色语义、紧凑圆角、细分隔线和运营型排版。
+- 座位预约是产品级主任务。首页优先展示“预约座位 / 查找可订座位”。
+- 报修和柜台商品操作是上下文相关的次要动作，只在存在符合条件的有效预约时提供。
+- 覆盖范围包括 `MP-00` 至 `MP-18`、`MP-19` 系统状态画廊，以及可点击的预约、订单、报修和重置旅程。
 
-- Use `Carousel` for horizontally draggable cards, images, media, chips, or other horizontal collections. Do not recreate these with `overflow-x`, custom pointer handlers, or a generic div.
-- `Carousel` can be nested directly inside `MobileScroll`. It owns horizontal gestures and automatically yields vertical gestures to the parent.
-- Never put `data-scroll-drag="ignore"` on or around a `Carousel`; doing so prevents vertical parent scrolling when a gesture begins inside it.
-- Do not add CSS scroll snapping to `Carousel`; its runtime owns momentum and release motion.
-- Use `data-scroll-drag="ignore"` only when a control must prevent parent scrolling in every drag direction.
+## 编辑边界
 
-See `src/mobile/COMPONENTS.md` for the full component and gesture contract.
+- 应用专属 UI 写入 `src/Prototype.tsx` 和 `src/prototype.css`。
+- 受保护的运行时文件包括 `src/App.tsx`、`src/main.tsx`、`src/styles.css`、`src/mobile/`、`public/assets/iphone/`、`public/assets/android/`、`public/assets/status/`、`vite.config.ts`、`worker/index.js` 和 `scripts/prepare-sites-build.mjs`。
+- 只有用户明确要求修改运行时时才改动受保护文件。先验证新行为，再使用现有锁定脚本，只更新受影响文件的运行时锁哈希。
+- `npm run check:runtime` 失败表示必须恢复受保护运行时，或有意更新运行时；该检查始终是权威门禁。
+- 保留现有移动运行时和 Sites 构建流水线，不替换项目脚手架。
 
-## Keyboard Rule
+## 运行时与组件契约
 
-The simulated keyboard is a separate top-layer component. Before presenting anything that behaves like iOS navigation or modal UI, dismiss it first.
-
-Call `keyboard.hide()` before:
-
-- pushing, popping, or replacing FlowStack routes
-- opening bottom sheets, action sheets, dialogs, menus, or navigation sheets
-- starting transitions where the destination should not inherit text-input focus
-
-`FlowStack` already hides the keyboard for `push`, `pop`, and `replace`. `BottomSheet` already hides it before opening. If you add new modal/sheet/navigation primitives, follow the same rule.
-
-When a composer, search surface, or other keyboard-attached component closes, call `keyboard.hide()` in the same event before changing that component's open state. Position attached surfaces from `useKeyboardInsets()` rather than a separate timer or visibility flag so both dismiss together.
-
-When any text-entry control loses focus, dismiss the simulated keyboard. If the control is custom or does not use the runtime's keyboard-aware fields, handle its blur event and call `keyboard.hide()` explicitly. Keep the keyboard open only when focus is moving directly to another text-entry control that should share the same keyboard session.
-
-## Interaction Rules
-
-- Do not trigger buttons or inputs after a pointer has become a drag. Preserve the drag suppression behavior in `MobileScroll`.
-- Do not allow native browser image/file dragging inside the phone frame. Preserve the phone-level `dragstart` suppression and non-draggable image styles so scroll drags that begin on images still scroll the prototype.
-- Use `KeyboardInput`, `KeyboardTextarea`, or `MobileTextField` for text entry so the simulated keyboard and safe-area insets stay connected.
-- Fixed phone chrome should not animate with pushed screens. Screen content can animate; the status bar, camera cutout, and preview chrome should stay put.
-- Keep the keyboard below the home indicator/safe area layer in z-index, and above ordinary app UI while visible.
-- Keep the home indicator as the topmost safe-area layer in the z-index above everything else in the prototype.
+使用或修改 `PhoneFrame`、`StatusBar`、`MobileScroll`、`FlowStack`、`Carousel`、键盘感知字段、键盘联动表面或 `BottomSheet` 前，完整阅读 [`src/mobile/COMPONENTS.md`](src/mobile/COMPONENTS.md)。该文件是设备外壳、布局归属、手势、键盘内边距（inset）和组件 API 的唯一真相源。

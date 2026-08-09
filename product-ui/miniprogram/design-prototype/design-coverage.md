@@ -1,10 +1,11 @@
 # 竞枢微信小程序设计覆盖
 
-状态：完整高保真可交互原型  
-功能契约：`../prod.md`  
-视觉基线：`design/reference/selected-reservation-first-home.png`  
-本地预览：`http://localhost:4173/?screen=home`  
-审阅索引：`http://localhost:4173/?screen=INDEX`
+- 状态：完整高保真可交互原型
+- 功能契约：`../prod.md`
+- 共享内容基线：`../../README.md`
+- 视觉基线：`design/reference/selected-reservation-first-home.png`
+- 本地预览：`http://localhost:4173/?screen=home`
+- 审阅索引：`http://localhost:4173/?screen=INDEX`
 
 ## 设计结论
 

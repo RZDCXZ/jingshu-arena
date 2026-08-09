@@ -1,51 +1,27 @@
-# Domain Docs
+# 领域文档工作流
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+这是一个单上下文仓库。根目录的 [`CONTEXT.md`](../../CONTEXT.md) 是领域词汇表；已接受的决策位于 [`docs/adr/`](../adr/)。
 
-## Before exploring, read these
+## 开始领域工作前
 
-- **`CONTEXT.md`** at the repo root, or
-- **`CONTEXT-MAP.md`** at the repo root if it exists — it points at one `CONTEXT.md` per context. Read each one relevant to the topic.
-- **`docs/adr/`** — read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
+1. 命名或修改领域概念前，阅读 `CONTEXT.md`。
+2. 扫描 `docs/adr/` 中的全部文件名，然后阅读所有涉及本次词汇、规则、不变量、状态转换、数据边界或架构的 ADR。
+3. 使用词汇表中的规范术语追踪受影响的代码和测试。
 
-If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
+只有当每个受影响概念都使用词汇表中的规范术语，且每个相关的已接受 ADR 都已纳入考虑，探索阶段才算完成。
 
-## File structure
+## 使用规范词汇
 
-Single-context repo (most repos):
+在议题标题、提案、假设、代码和测试中，使用 `CONTEXT.md` 定义的术语。将每条 `_避免使用_` 视为明确的同义词边界。
 
-```
-/
-├── CONTEXT.md
-├── docs/adr/
-│   ├── 0001-event-sourced-orders.md
-│   └── 0002-postgres-for-write-model.md
-└── src/
-```
+需要的概念不在词汇表中时，先确认现有术语是否已经覆盖它。确实需要新增且含义已经确定的概念，应记录到 `CONTEXT.md`；`domain-modeling` 工作流可用时应使用该工作流。
 
-Multi-context repo (presence of `CONTEXT-MAP.md` at the root):
+## 保留决策历史
 
-```
-/
-├── CONTEXT-MAP.md
-├── docs/adr/                          ← system-wide decisions
-└── src/
-    ├── ordering/
-    │   ├── CONTEXT.md
-    │   └── docs/adr/                  ← context-specific decisions
-    └── billing/
-        ├── CONTEXT.md
-        └── docs/adr/
-```
+提议或实现与已接受 ADR 冲突的变更前，先明确指出冲突。说明 ADR、具体冲突点，以及为何可能值得重新讨论。
 
-## Use the glossary's vocabulary
+示例：
 
-When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `CONTEXT.md`. Don't drift to synonyms the glossary explicitly avoids.
+> _与 [ADR-0017](../adr/0017-current-state-with-append-only-business-events.md) 冲突：通过重放完整事件流重建当前状态，会替换已接受的当前状态模型。_
 
-If the concept you need isn't in the glossary yet, that's a signal — either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
-
-## Flag ADR conflicts
-
-If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
-
-> _Contradicts ADR-0007 (event-sourced orders) — but worth reopening because…_
+只有当新术语已记录在唯一位置、新的持久性决策已有 ADR，且没有静默覆盖任何已接受 ADR，领域工作才算完成。
