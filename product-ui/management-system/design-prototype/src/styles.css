@@ -732,6 +732,10 @@ button.metric-card:hover {
   width: min(780px, 100%);
 }
 
+.modal-time {
+  width: min(700px, 100%);
+}
+
 .modal-header,
 .drawer-header {
   min-height: 66px;
@@ -2955,6 +2959,80 @@ progress::-webkit-progress-value {
   gap: 14px;
   margin-bottom: 15px;
 }
+.time-mode-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  margin-bottom: 14px;
+}
+.time-current-strip {
+  min-height: 70px;
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  border: 1px solid #315166;
+  border-radius: var(--radius);
+  background: #0b2130;
+}
+.time-current-strip > svg {
+  width: 28px;
+  height: 28px;
+  color: var(--cyan);
+}
+.time-current-strip > span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+}
+.time-current-strip small {
+  color: var(--muted);
+  font-size: 9px;
+}
+.time-current-strip strong {
+  color: var(--cyan);
+  font-size: 16px;
+}
+.time-current-strip > span:last-child {
+  justify-self: end;
+  color: var(--muted);
+  font-size: 9px;
+}
+.time-mode-grid button {
+  min-height: 100px;
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  text-align: left;
+}
+.time-modal-intro {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.65;
+}
+.time-mode-grid button:hover,
+.time-mode-grid button:focus-visible,
+.time-mode-grid button.is-selected {
+  border-color: var(--cyan);
+  background: var(--cyan-soft);
+}
+.time-mode-grid button strong {
+  font-size: 11px;
+}
+.time-mode-grid button small {
+  color: var(--cyan);
+  font-size: 9px;
+}
+.time-mode-grid button span {
+  color: var(--muted);
+  font-size: 9px;
+}
 .time-preview > div {
   display: grid;
   gap: 5px;
@@ -2963,8 +3041,8 @@ progress::-webkit-progress-value {
   border-radius: var(--radius);
 }
 .time-preview > div:last-child {
-  border-color: #3f6335;
-  background: var(--lime-soft);
+  border-color: #2d536a;
+  background: #0b2130;
 }
 .time-preview span {
   color: var(--muted);
@@ -2972,6 +3050,9 @@ progress::-webkit-progress-value {
 }
 .time-preview strong {
   font-size: 24px;
+}
+.time-preview > div:last-child strong {
+  color: var(--cyan);
 }
 .time-preview > svg {
   color: var(--muted);
@@ -3001,10 +3082,16 @@ progress::-webkit-progress-value {
   margin: 14px 0;
 }
 .reset-impact span {
+  display: grid;
+  gap: 4px;
   padding: 9px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   color: var(--muted);
+  font-size: 10px;
+}
+.reset-impact strong {
+  color: var(--text);
   font-size: 10px;
 }
 .check-row {

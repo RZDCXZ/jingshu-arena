@@ -122,6 +122,15 @@ export function roleContextBody(
       schemaVersion: context.schemaVersion,
       seedVersion: context.seedVersion,
       expiresAt: context.expiresAt.toISOString(),
+      businessClock: {
+        advanceLimitMilliseconds:
+          context.businessClock.advanceLimitMilliseconds,
+        advancedMilliseconds: context.businessClock.advancedMilliseconds,
+        currentTime: context.businessClock.currentTime.toISOString(),
+        remainingAdvanceMilliseconds:
+          context.businessClock.remainingAdvanceMilliseconds,
+        timeZone: context.businessClock.timeZone,
+      },
     },
     freshness: {
       mode: "manual",

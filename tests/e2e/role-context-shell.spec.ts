@@ -65,6 +65,8 @@ function roleContext(
   role: PublicRole,
   contextVersion: number,
   csrfToken: string,
+  businessTime = "2026-08-09T11:30:00.000Z",
+  advancedMilliseconds = 0,
 ): RoleContextReadyResponse {
   const details = roleDetails[role];
   return {
@@ -80,13 +82,20 @@ function roleContext(
     },
     capabilities: [...details.capabilities],
     sandbox: {
-      schemaVersion: "3",
+      schemaVersion: "4",
       seedVersion: "2026-08-09.1",
       expiresAt: "2026-08-10T12:00:00.000Z",
+      businessClock: {
+        advanceLimitMilliseconds: 86_400_000,
+        advancedMilliseconds,
+        currentTime: businessTime,
+        remainingAdvanceMilliseconds: 86_400_000 - advancedMilliseconds,
+        timeZone: "Asia/Shanghai",
+      },
     },
     freshness: {
       mode: "manual",
-      observedAt: "2026-08-09T11:30:00.000Z",
+      observedAt: new Date().toISOString(),
     },
   };
 }
@@ -99,7 +108,7 @@ function sandboxReady(role: PublicRole): PublicSandboxReadyResponse {
     role,
     persona: { displayName: details.persona, scope: details.scope },
     world: {
-      schemaVersion: "3",
+      schemaVersion: "4",
       seedVersion: "2026-08-09.1",
       expiresAt: "2026-08-10T12:00:00.000Z",
       operator: { displayName: "竞枢演示经营方", city: "栖光市" },
@@ -132,6 +141,8 @@ test.beforeEach(async ({ context }) => {
   let currentRole: PublicRole = "staff";
   let contextVersion = 1;
   let csrfToken = "csrf-context-version-1-token-value";
+  let businessTime = "2026-08-09T11:30:00.000Z";
+  let advancedMilliseconds = 0;
 
   await context.route("**/api/v1/public/visitor", async (route) => {
     await route.fulfill({ status: 204 });
@@ -140,6 +151,8 @@ test.beforeEach(async ({ context }) => {
     currentRole = route.request().postDataJSON().role as PublicRole;
     contextVersion = 1;
     csrfToken = "csrf-context-version-1-token-value";
+    businessTime = "2026-08-09T11:30:00.000Z";
+    advancedMilliseconds = 0;
     hasSession = true;
     await route.fulfill({ json: sandboxReady(currentRole), status: 201 });
   });
@@ -196,7 +209,13 @@ test.beforeEach(async ({ context }) => {
         return;
       }
       await route.fulfill({
-        json: roleContext(currentRole, contextVersion, csrfToken),
+        json: roleContext(
+          currentRole,
+          contextVersion,
+          csrfToken,
+          businessTime,
+          advancedMilliseconds,
+        ),
         status: 200,
       });
       return;
@@ -227,13 +246,144 @@ test.beforeEach(async ({ context }) => {
       return;
     }
     await route.fulfill({
-      json: roleContext(currentRole, contextVersion, csrfToken),
+      json: roleContext(
+        currentRole,
+        contextVersion,
+        csrfToken,
+        businessTime,
+        advancedMilliseconds,
+      ),
       status: 200,
     });
   };
   await context.route("**/api/v1/demo/context", serveContext);
   await context.route("**/api/v1/demo/context/refresh", serveContext);
   await context.route("**/api/v1/demo/context/switch", serveContext);
+  await context.route("**/api/v1/demo/time", async (route) => {
+    const current = new Date(businessTime);
+    const halfHour = new Date(current.getTime() + 30 * 60_000).toISOString();
+    const nextEvent = new Date(current.getTime() + 15 * 60_000).toISOString();
+    await route.fulfill({
+      json: {
+        status: "ready",
+        clock: {
+          advanceLimitMilliseconds: 86_400_000,
+          advancedMilliseconds,
+          currentTime: businessTime,
+          remainingAdvanceMilliseconds: 86_400_000 - advancedMilliseconds,
+          timeZone: "Asia/Shanghai",
+        },
+        halfHour: {
+          afterTime: halfHour,
+          impacts: [{ count: 2, kind: "pending-order-expiration" }],
+        },
+        nextEvent: {
+          afterTime: nextEvent,
+          impacts: [{ count: 1, kind: "reservation-no-show" }],
+        },
+      },
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/demo/time/advance", async (route) => {
+    const request = route.request();
+    expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+    expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+    if (request.headers()["x-test-advance-failed"] === "1") {
+      await route.fulfill({
+        json: {
+          error: {
+            code: "DEMO_TIME_ADVANCE_FAILED",
+            message:
+              "到期处理未能全部完成，时钟和业务状态均未改变；可以安全重试。",
+            requestId: "00000000-0000-4000-8000-000000000505",
+          },
+        },
+        status: 503,
+      });
+      return;
+    }
+    const body = request.postDataJSON() as {
+      mode: "half-hour" | "next-event";
+    };
+    const beforeTime = businessTime;
+    const advanceBy = body.mode === "half-hour" ? 30 * 60_000 : 15 * 60_000;
+    businessTime = new Date(
+      new Date(businessTime).getTime() + advanceBy,
+    ).toISOString();
+    advancedMilliseconds += advanceBy;
+    await route.fulfill({
+      json: {
+        status: "advanced",
+        replayed: false,
+        mode: body.mode,
+        beforeTime,
+        afterTime: businessTime,
+        clock: {
+          advanceLimitMilliseconds: 86_400_000,
+          advancedMilliseconds,
+          remainingAdvanceMilliseconds: 86_400_000 - advancedMilliseconds,
+          timeZone: "Asia/Shanghai",
+        },
+        impacts:
+          body.mode === "half-hour"
+            ? [{ count: 2, kind: "pending-order-expiration" }]
+            : [{ count: 1, kind: "reservation-no-show" }],
+      },
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/demo/reset", async (route) => {
+    const request = route.request();
+    expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+    expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+    if (request.headers()["x-test-reset-failed"] === "1") {
+      await route.fulfill({
+        json: {
+          error: {
+            code: "SANDBOX_RESET_FAILED",
+            message: "全新沙箱创建失败，当前沙箱仍完整保留；可以安全重试。",
+            requestId: "00000000-0000-4000-8000-000000000506",
+          },
+        },
+        status: 503,
+      });
+      return;
+    }
+    currentRole = "customer";
+    contextVersion = 1;
+    csrfToken = "csrf-reset-sandbox-version-1-token-value";
+    businessTime = "2026-08-09T11:30:00.000Z";
+    advancedMilliseconds = 0;
+    await route.fulfill({
+      json: {
+        status: "ready",
+        replayed: false,
+        previousSandboxInvalidated: true,
+        result: {
+          targetRole: "customer",
+          persona: { displayName: "林澈" },
+          sandbox: {
+            ...roleContext(
+              currentRole,
+              contextVersion,
+              csrfToken,
+              businessTime,
+              advancedMilliseconds,
+            ).sandbox,
+          },
+        },
+        context: roleContext(
+          currentRole,
+          contextVersion,
+          csrfToken,
+          businessTime,
+          advancedMilliseconds,
+        ),
+      },
+      status: 201,
+    });
+  });
 });
 
 async function enterStaffShell(page: Page) {
@@ -302,6 +452,233 @@ test("shared shell exposes the signed persona, role, scope, lifecycle, and fresh
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(roleTrigger).toBeFocused();
+});
+
+test("business-time tool previews impacts and commits the clock atomically", async ({
+  context,
+  page,
+}) => {
+  await enterStaffShell(page);
+  const otherTab = await context.newPage();
+  await otherTab.goto("/");
+  await expect(
+    otherTab.getByRole("button", {
+      name: /打开业务时间工具，当前 19:30/u,
+    }),
+  ).toBeVisible();
+  const otherTabFilter = otherTab.getByRole("searchbox", {
+    name: "筛选当前队列",
+  });
+  await otherTabFilter.fill("林澈");
+
+  const timeTrigger = page.getByRole("button", {
+    name: /打开业务时间工具/u,
+  });
+  await expect(timeTrigger).toHaveAttribute("aria-label", /当前 19:30/u);
+  await timeTrigger.click();
+  await expect(
+    page.getByRole("heading", { name: "选择业务时间推进方式" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("真实服务器时间、TTL、验证码", { exact: false }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: /向前推进 30 分钟/u }).click();
+  await expect(page.getByText(/19:30.*20:00/u).first()).toBeVisible();
+  await expect(page.getByText("待支付订单过期")).toBeVisible();
+  await expect(page.getByText("2 项")).toBeVisible();
+  await page.getByRole("button", { name: "查看推进影响" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "确认业务时间与到期影响" }),
+  ).toBeVisible();
+  await expect(page.getByText("真实服务器时间保持不变。")).toBeVisible();
+  await page.getByRole("button", { name: "确认并原子推进" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "业务时间已完整推进" }),
+  ).toBeVisible();
+  await expect(page.getByText("已处理到期对象")).toBeVisible();
+  await page.getByRole("button", { name: "返回当前角色" }).click();
+  await expect(
+    page.getByRole("button", { name: /打开业务时间工具，当前 20:00/u }),
+  ).toBeVisible();
+  await expect(
+    otherTab.getByRole("button", {
+      name: /打开业务时间工具，当前 20:00/u,
+    }),
+  ).toBeVisible();
+  await expect(otherTabFilter).toHaveValue("林澈");
+  await expect(timeTrigger).toBeFocused();
+});
+
+test("failed time transaction keeps the old clock and safely retries one request", async ({
+  page,
+}) => {
+  await enterStaffShell(page);
+  let firstAttempt = true;
+  await page.route("**/api/v1/demo/time/advance", async (route) => {
+    if (firstAttempt) {
+      firstAttempt = false;
+      await route.fallback({
+        headers: {
+          ...route.request().headers(),
+          "x-test-advance-failed": "1",
+        },
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page
+    .getByRole("button", { name: /打开业务时间工具，当前 19:30/u })
+    .click();
+  await page.getByRole("button", { name: /向前推进 30 分钟/u }).click();
+  await page.getByRole("button", { name: "查看推进影响" }).click();
+  await page.getByRole("button", { name: "确认并原子推进" }).click();
+
+  await expect(
+    page.getByText("时钟和业务状态均未改变；可以安全重试。"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "使用同一请求安全重试" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "使用同一请求安全重试" }).click();
+  await expect(
+    page.getByRole("heading", { name: "业务时间已完整推进" }),
+  ).toBeVisible();
+});
+
+test("business-time tool explains the exact 24-hour cap", async ({ page }) => {
+  await enterStaffShell(page);
+  await page.route("**/api/v1/demo/time", async (route) => {
+    await route.fulfill({
+      json: {
+        status: "ready",
+        clock: {
+          advanceLimitMilliseconds: 86_400_000,
+          advancedMilliseconds: 86_400_000,
+          currentTime: "2026-08-10T11:30:00.000Z",
+          remainingAdvanceMilliseconds: 0,
+          timeZone: "Asia/Shanghai",
+        },
+        halfHour: { afterTime: null, impacts: [] },
+        nextEvent: null,
+      },
+      status: 200,
+    });
+  });
+
+  await page.getByRole("button", { name: /打开业务时间工具/u }).click();
+  await expect(
+    page.getByRole("heading", { name: "已达到本沙箱的推进上限" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("累计业务时间最多可向前推进 24 小时"),
+  ).toBeVisible();
+  await expect(
+    page.getByText("如需从标准故事起点重新演示，请关闭后使用顶栏“重置沙箱”。"),
+  ).toBeVisible();
+});
+
+test("sandbox reset requires two confirmations and invalidates old tabs", async ({
+  context,
+  page,
+}) => {
+  await enterStaffShell(page);
+  const otherTab = await context.newPage();
+  await otherTab.goto("/");
+  await expect(
+    otherTab.getByRole("heading", { name: "现场脉冲" }),
+  ).toBeVisible();
+
+  const resetTrigger = page.getByRole("button", {
+    name: "重置为全新标准沙箱",
+  });
+  await resetTrigger.click();
+  await expect(
+    page.getByRole("heading", {
+      name: "重置会替换四个角色的整条演示故事",
+    }),
+  ).toBeVisible();
+  for (const role of ["顾客", "店员", "店长", "总部运营"]) {
+    await expect(page.getByText(role, { exact: true }).last()).toBeVisible();
+  }
+  await page.getByRole("button", { name: "继续二次确认" }).click();
+  const confirmation = page.getByRole("checkbox", {
+    name: /我了解顾客、店员、店长与总部运营/u,
+  });
+  await expect(
+    page.getByRole("button", { name: "创建新沙箱并使旧沙箱失效" }),
+  ).toBeDisabled();
+  await confirmation.check();
+  await page.getByRole("button", { name: "创建新沙箱并使旧沙箱失效" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "全新标准沙箱已就绪" }),
+  ).toBeVisible();
+  const staleBlock = otherTab.getByRole("alertdialog", {
+    name: "当前标签的旧沙箱已失效",
+  });
+  await expect(staleBlock).toBeVisible();
+  await expect(
+    staleBlock.getByText("旧沙箱中的四角色对象和写操作均已停止"),
+  ).toBeVisible();
+  await staleBlock.getByRole("button", { name: "进入全新标准沙箱" }).click();
+  await expect(
+    otherTab.getByRole("button", {
+      name: "林澈 顾客 浏览三店 · 只管理自己的记录，打开角色切换",
+    }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "回到主演示起点" }).click();
+  await expect(
+    page.getByRole("button", {
+      name: "林澈 顾客 浏览三店 · 只管理自己的记录，打开角色切换",
+    }),
+  ).toBeVisible();
+  await expect(resetTrigger).toBeFocused();
+});
+
+test("failed sandbox reset preserves the old story and retries safely", async ({
+  page,
+}) => {
+  await enterStaffShell(page);
+  let firstAttempt = true;
+  await page.route("**/api/v1/demo/reset", async (route) => {
+    if (firstAttempt) {
+      firstAttempt = false;
+      await route.fallback({
+        headers: {
+          ...route.request().headers(),
+          "x-test-reset-failed": "1",
+        },
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.getByRole("button", { name: "重置为全新标准沙箱" }).click();
+  await page.getByRole("button", { name: "继续二次确认" }).click();
+  await page
+    .getByRole("checkbox", {
+      name: /我了解顾客、店员、店长与总部运营/u,
+    })
+    .check();
+  await page.getByRole("button", { name: "创建新沙箱并使旧沙箱失效" }).click();
+
+  await expect(
+    page.getByText("全新沙箱创建失败，当前沙箱仍完整保留"),
+  ).toBeVisible();
+  await expect(
+    page.locator('button[aria-label="周宁 店员 棱镜旗舰店，打开角色切换"]'),
+  ).toBeAttached();
+  await page.getByRole("button", { name: "安全重试创建新沙箱" }).click();
+  await expect(
+    page.getByRole("heading", { name: "全新标准沙箱已就绪" }),
+  ).toBeVisible();
 });
 
 test("dirty queue input requires confirmation and keyboard switching rotates the visible context", async ({

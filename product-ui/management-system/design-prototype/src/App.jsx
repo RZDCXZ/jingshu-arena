@@ -105,11 +105,15 @@ export function App() {
   const [repairStates, setRepairStates] = useState({});
   const [handoverSubmitted, setHandoverSubmitted] = useState(false);
   const [demoStep, setDemoStep] = useState(3);
-  const [businessTime, setBusinessTime] = useState("19:30");
+  const [businessTime, setBusinessTime] = useState(
+    new URLSearchParams(window.location.search).get("businessTime") || "19:30",
+  );
   const [dataMode, setDataMode] = useState("live");
   const [toast, setToast] = useState(null);
   const [timeLoading, setTimeLoading] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [timeResult, setTimeResult] = useState(null);
+  const [resetResult, setResetResult] = useState(false);
   const [actionModal, setActionModal] = useState(null);
   const [exportModal, setExportModal] = useState(null);
   const [liveOpsTab, setLiveOpsTab] = useState("reservations");
@@ -248,17 +252,24 @@ export function App() {
     const [targetRole, targetPage] = targets[step] || [role, page];
     setRole(targetRole);
     setPage(targetPage);
-    if (step === 7) setOverlay("time");
-    if (step === 12) setOverlay("reset");
+    if (step === 7) {
+      setTimeResult(null);
+      setOverlay("time");
+    }
+    if (step === 12) {
+      setResetResult(false);
+      setOverlay("reset");
+    }
   }
 
-  function advanceTime() {
+  function advanceTime(mode, impacts, after) {
+    const before = businessTime;
     setTimeLoading(true);
     window.setTimeout(() => {
-      setBusinessTime((time) => (time === "19:30" ? "20:00" : "20:30"));
+      setBusinessTime(after);
       setDemoStep((step) => Math.max(step, 8));
       setTimeLoading(false);
-      setOverlay(null);
+      setTimeResult({ after, before, impacts, mode });
       setToast({
         tone: "success",
         text: "业务时间已推进，跨越期限的状态变化已完成",
@@ -277,8 +288,7 @@ export function App() {
       setBusinessTime("19:30");
       setDataMode("live");
       setResetLoading(false);
-      setOverlay(null);
-      setPublicView(true);
+      setResetResult(true);
     }, 900);
   }
 
@@ -479,7 +489,10 @@ export function App() {
           <button
             aria-label={`业务时间 ${businessTime}`}
             data-tooltip="业务时间"
-            onClick={() => setOverlay("time")}
+            onClick={() => {
+              setTimeResult(null);
+              setOverlay("time");
+            }}
           >
             <Clock />
             <span>业务时间</span>
@@ -496,7 +509,10 @@ export function App() {
           <button
             aria-label="重置演示数据"
             data-tooltip="重置演示数据"
-            onClick={() => setOverlay("reset")}
+            onClick={() => {
+              setResetResult(false);
+              setOverlay("reset");
+            }}
           >
             <Repeat />
             <span>重置演示数据</span>
@@ -659,14 +675,27 @@ export function App() {
         <TimeAdvanceModal
           businessTime={businessTime}
           loading={timeLoading}
+          result={timeResult}
+          scenario={
+            new URLSearchParams(window.location.search).get("timeState") ||
+            "ready"
+          }
           onClose={() => setOverlay(null)}
           onAdvance={advanceTime}
         />
       )}
       {overlay === "reset" && (
         <ResetModal
+          error={
+            new URLSearchParams(window.location.search).get("resetState") ===
+            "error"
+          }
           loading={resetLoading}
-          onClose={() => setOverlay(null)}
+          result={resetResult}
+          onClose={() => {
+            setOverlay(null);
+            if (resetResult) setPublicView(true);
+          }}
           onReset={resetSandbox}
         />
       )}

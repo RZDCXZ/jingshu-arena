@@ -11,6 +11,13 @@ import { issueRoleSession } from "./role-session.js";
 
 const sessionSecret = "unit-role-context-session-secret-32-bytes";
 const roleContext = {
+  businessClock: {
+    advanceLimitMilliseconds: 86_400_000,
+    advancedMilliseconds: 0,
+    currentTime: new Date(),
+    remainingAdvanceMilliseconds: 86_400_000,
+    timeZone: "Asia/Shanghai",
+  },
   contextVersion: 1,
   expiresAt: new Date(Date.now() + 60_000),
   persona: {
@@ -38,8 +45,14 @@ const roleContext = {
 
 function databaseThrowing(error: Error): PublicSandboxDatabase {
   return {
+    advanceDemoTime: vi.fn(async () => {
+      throw error;
+    }),
     close: vi.fn(),
     create: vi.fn(),
+    readDemoTime: vi.fn(async () => {
+      throw error;
+    }),
     readCurrentRoleContext: vi.fn(async () => {
       throw error;
     }),
@@ -47,6 +60,9 @@ function databaseThrowing(error: Error): PublicSandboxDatabase {
       throw error;
     }),
     recordRoleContextDenial: vi.fn(),
+    resetSandbox: vi.fn(async () => {
+      throw error;
+    }),
     switchRoleContext: vi.fn(),
   };
 }

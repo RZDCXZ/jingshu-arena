@@ -30,6 +30,12 @@ import {
   StatusPill,
 } from "./ui.jsx";
 
+function shiftClockTime(value, minutes) {
+  const [hours, currentMinutes] = value.split(":").map(Number);
+  const shifted = (hours * 60 + currentMinutes + minutes) % (24 * 60);
+  return `${String(Math.floor(shifted / 60)).padStart(2, "0")}:${String(shifted % 60).padStart(2, "0")}`;
+}
+
 export function PublicEntry({ onCreate, onExplore }) {
   const roles = [
     {
@@ -381,105 +387,298 @@ export function TimeAdvanceModal({
   onClose,
   onAdvance,
   loading = false,
+  result = null,
+  scenario = "ready",
 }) {
+  const [mode, setMode] = useState("next-event");
+  const [confirming, setConfirming] = useState(false);
+  const afterTime =
+    mode === "next-event"
+      ? shiftClockTime(businessTime, 15)
+      : shiftClockTime(businessTime, 30);
+  const impacts =
+    mode === "next-event"
+      ? ["1 条预约进入爽约处理", "1 个到店窗口关闭"]
+      : ["2 个待支付订单过期", "1 条预约进入自动完成检查"];
+
+  if (result) {
+    return (
+      <Modal
+        title="业务时间已完整推进"
+        eyebrow="事务成功 · 双时间审计已写入"
+        onClose={onClose}
+        size="time"
+        footer={
+          <Button tone="primary" onClick={onClose}>
+            返回当前角色
+          </Button>
+        }
+      >
+        <InlineNotice tone="success" title="时钟与到期对象已一起提交">
+          系统按固定顺序完成到期处理；真实 TTL 与安全截止时间保持不变。
+        </InlineNotice>
+        <div className="time-preview">
+          <div>
+            <span>推进前</span>
+            <strong>{result.before}</strong>
+            <small>上海业务时间</small>
+          </div>
+          <ArrowRight />
+          <div>
+            <span>推进后</span>
+            <strong>{result.after}</strong>
+            <small>累计最多推进 24 小时</small>
+          </div>
+        </div>
+        <div className="impact-list">
+          <strong>已处理到期对象</strong>
+          {result.impacts.map((impact) => (
+            <span key={impact}>
+              <Check />
+              {impact}
+            </span>
+          ))}
+        </div>
+      </Modal>
+    );
+  }
+
+  if (scenario === "limit") {
+    return (
+      <Modal
+        title="已达到本沙箱的推进上限"
+        eyebrow="上海业务时钟 · 24 小时累计上限"
+        onClose={onClose}
+        size="time"
+        footer={
+          <Button tone="primary" onClick={onClose}>
+            知道了
+          </Button>
+        }
+      >
+        <InlineNotice tone="warning" title="业务时间与对象保持不变">
+          如需从标准故事起点重新演示，请关闭后使用顶栏“重置演示数据”。
+        </InlineNotice>
+      </Modal>
+    );
+  }
+
   return (
     <Modal
-      title="推进沙箱业务时间"
-      eyebrow="共享演示工具 · 不属于任何业务角色"
+      title={confirming ? "确认业务时间与到期影响" : "选择业务时间推进方式"}
+      eyebrow="上海业务时钟 · 不属于任何业务角色"
       onClose={onClose}
+      size="time"
       footer={
-        <>
-          <Button tone="secondary" onClick={onClose}>
-            取消
-          </Button>
-          <Button
-            tone="primary"
-            icon={ClockClockwise}
-            loading={loading}
-            onClick={() => onAdvance("30")}
-          >
-            推进 +30 分钟
-          </Button>
-        </>
+        confirming ? (
+          <>
+            <Button tone="secondary" onClick={() => setConfirming(false)}>
+              返回修改
+            </Button>
+            <Button
+              tone="primary"
+              icon={ClockClockwise}
+              loading={loading}
+              onClick={() => onAdvance(mode, impacts, afterTime)}
+            >
+              {loading
+                ? "正在原子推进…"
+                : scenario === "error"
+                  ? "使用同一请求安全重试"
+                  : "确认并原子推进"}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button tone="secondary" onClick={onClose}>
+              取消
+            </Button>
+            <Button
+              tone="primary"
+              trailing={ArrowRight}
+              onClick={() => setConfirming(true)}
+            >
+              查看推进影响
+            </Button>
+          </>
+        )
       }
     >
-      <div className="time-preview">
-        <div>
-          <span>推进前</span>
-          <strong>{businessTime}</strong>
-          <small>2026-08-08 · 上海时间</small>
-        </div>
-        <ArrowRight />
-        <div>
-          <span>推进后</span>
-          <strong>{businessTime === "19:30" ? "20:00" : "20:30"}</strong>
-          <small>累计最多推进 24 小时</small>
-        </div>
-      </div>
-      <InlineNotice tone="warning" title="将处理跨越的业务期限">
-        预约/订单超时、爽约、自动完成、考勤缺勤与交接异常会按固定顺序在同一事务中处理；任一步失败则整次推进失败。
-      </InlineNotice>
-      <div className="impact-list">
-        <strong>预计影响</strong>
-        <span>
-          <ClockClockwise />1 条预约进入自动完成检查
-        </span>
-        <span>
-          <ClockClockwise />2 个到店窗口发生变化
-        </span>
-        <span>
-          <ClockClockwise />1 个交接截止时间接近
-        </span>
-      </div>
-      <p className="modal-footnote">
-        业务时间推进不会改变沙箱 24 小时寿命、会话安全、限流或文件清理时间。
-      </p>
+      {!confirming && (
+        <>
+          <p className="time-modal-intro">
+            先预览前后时间和到期对象，再进入确认。真实服务器时间、TTL、验证码与安全截止时间不会跟随推进。
+          </p>
+          <div className="time-current-strip">
+            <ClockClockwise />
+            <span>
+              <small>当前业务时间</small>
+              <strong>{businessTime}</strong>
+            </span>
+            <span>已推进 0 分钟 · 剩余 24 小时</span>
+          </div>
+          <div className="time-mode-grid">
+            <button
+              className={mode === "next-event" ? "is-selected" : ""}
+              aria-pressed={mode === "next-event"}
+              onClick={() => setMode("next-event")}
+            >
+              <strong>推进到下一事件</strong>
+              <small>{businessTime} → {shiftClockTime(businessTime, 15)}</small>
+              <span>1 条预约进入爽约处理</span>
+            </button>
+            <button
+              className={mode === "half-hour" ? "is-selected" : ""}
+              aria-pressed={mode === "half-hour"}
+              onClick={() => setMode("half-hour")}
+            >
+              <strong>向前推进 30 分钟</strong>
+              <small>{businessTime} → {shiftClockTime(businessTime, 30)}</small>
+              <span>2 个待支付订单过期</span>
+            </button>
+          </div>
+        </>
+      )}
+      {confirming && (
+        <>
+          <div className="time-preview">
+            <div>
+              <span>推进前</span>
+              <strong>{businessTime}</strong>
+              <small>2026-08-08 · 上海时间</small>
+            </div>
+            <ArrowRight />
+            <div>
+              <span>推进后</span>
+              <strong>{afterTime}</strong>
+              <small>累计最多推进 24 小时</small>
+            </div>
+          </div>
+          {scenario === "error" ? (
+            <InlineNotice tone="danger" title="上次事务已完整回滚">
+              业务时间和到期对象均未改变；本次重试会复用同一幂等请求。
+            </InlineNotice>
+          ) : (
+            <InlineNotice tone="warning" title="将处理跨越的业务期限">
+              预约/订单超时、爽约、自动完成、考勤缺勤与交接异常会按固定顺序在同一事务中处理；任一步失败则整次推进失败。
+            </InlineNotice>
+          )}
+          <div className="impact-list">
+            <strong>本次到期对象</strong>
+            {impacts.map((impact) => (
+              <span key={impact}>
+                <ClockClockwise />
+                {impact}
+              </span>
+            ))}
+          </div>
+          <p className="modal-footnote">
+            业务时间推进不会改变沙箱 24 小时寿命、会话安全、限流或文件清理时间。
+          </p>
+        </>
+      )}
     </Modal>
   );
 }
 
-export function ResetModal({ onClose, onReset, loading = false }) {
+export function ResetModal({
+  onClose,
+  onReset,
+  loading = false,
+  result = false,
+  error = false,
+}) {
   const [confirmed, setConfirmed] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+
+  if (result) {
+    return (
+      <Modal
+        title="全新标准沙箱已就绪"
+        eyebrow="重置成功 · 旧沙箱已失效"
+        onClose={onClose}
+        size="time"
+        footer={
+          <Button tone="primary" onClick={onClose}>
+            回到顾客主演示起点
+          </Button>
+        }
+      >
+        <InlineNotice tone="success" title="新沙箱已完整创建并切换">
+          当前角色已回到顾客，业务时间累计值和四角色故事均从标准种子重新开始。
+        </InlineNotice>
+      </Modal>
+    );
+  }
+
   return (
     <Modal
-      title="重置整个演示沙箱"
+      title={
+        confirming
+          ? "最后确认：创建并切换到全新沙箱"
+          : "重置会替换四个角色的整条演示故事"
+      }
       eyebrow="不可撤销的演示操作"
       onClose={onClose}
+      size="time"
       footer={
-        <>
-          <Button tone="secondary" onClick={onClose}>
-            保留当前沙箱
-          </Button>
-          <Button
-            tone="danger"
-            icon={Warning}
-            loading={loading}
-            disabled={!confirmed}
-            onClick={onReset}
-          >
-            创建新沙箱并重置
-          </Button>
-        </>
+        confirming ? (
+          <>
+            <Button tone="secondary" onClick={() => setConfirming(false)}>
+              返回查看影响
+            </Button>
+            <Button
+              tone="danger"
+              icon={Warning}
+              loading={loading}
+              disabled={!confirmed}
+              onClick={onReset}
+            >
+              {loading
+                ? "正在创建并校验…"
+                : error
+                  ? "安全重试创建新沙箱"
+                  : "创建新沙箱并使旧沙箱失效"}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button tone="secondary" onClick={onClose}>
+              保留当前沙箱
+            </Button>
+            <Button tone="primary" trailing={ArrowRight} onClick={() => setConfirming(true)}>
+              继续二次确认
+            </Button>
+          </>
+        )
       }
     >
-      <InlineNotice tone="danger" title="四个角色的当前业务都会失效">
-        系统会创建一个全新的标准种子沙箱并切换当前会话；旧沙箱立即封锁并进入异步清理。
-      </InlineNotice>
-      <div className="reset-impact">
-        <span>预约、商品订单与模拟退款</span>
-        <span>报修、座位维护与备件流水</span>
-        <span>会员成长与体验券</span>
-        <span>员工排班、考勤与交接</span>
-        <span>审计、导出证据与主演示进度</span>
-      </div>
-      <label className="check-row">
-        <input
-          type="checkbox"
-          checked={confirmed}
-          onChange={(event) => setConfirmed(event.target.checked)}
-        />
-        <span>我了解当前四角色故事会由新的标准种子替换。</span>
-      </label>
+      {error && confirming ? (
+        <InlineNotice tone="danger" title="新沙箱创建失败，当前沙箱已保留">
+          重试会复用同一幂等请求；页面不会丢弃当前四角色故事，也不会创建多个替代沙箱。
+        </InlineNotice>
+      ) : (
+        <InlineNotice tone="danger" title="四个角色的当前业务都会失效">
+          系统会创建一个全新的标准种子沙箱并切换当前会话；旧沙箱立即封锁并进入异步清理。
+        </InlineNotice>
+      )}
+      {!confirming ? (
+        <div className="reset-impact">
+          <span><strong>顾客</strong>预约、订单、会员与个人故事进度</span>
+          <span><strong>店员</strong>当班队列、考勤与交接故事进度</span>
+          <span><strong>店长</strong>门店配置、库存与人员管理故事进度</span>
+          <span><strong>总部运营</strong>跨店对比、连锁配置与审计故事进度</span>
+        </div>
+      ) : (
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={confirmed}
+            onChange={(event) => setConfirmed(event.target.checked)}
+          />
+          <span>我了解顾客、店员、店长与总部运营的当前数据和故事进度都会被全新标准种子替换。</span>
+        </label>
+      )}
     </Modal>
   );
 }

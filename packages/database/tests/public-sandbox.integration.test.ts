@@ -39,7 +39,7 @@ describe("public sandbox creation", () => {
       sandboxId: expect.stringMatching(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
       ),
-      schemaVersion: "3",
+      schemaVersion: "4",
       seedVersion: "2026-08-09.1",
       expiresAt: expect.any(Date),
       selectedRole: "customer",
@@ -76,9 +76,16 @@ describe("public sandbox creation", () => {
         sandboxId: expect.stringMatching(
           /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
         ),
-        schemaVersion: "3",
+        schemaVersion: "4",
         seedVersion: "2026-08-09.1",
         expiresAt: expect.any(Date),
+        businessClock: {
+          advanceLimitMilliseconds: 86_400_000,
+          advancedMilliseconds: 0,
+          currentTime: expect.any(Date),
+          remainingAdvanceMilliseconds: 86_400_000,
+          timeZone: "Asia/Shanghai",
+        },
         contextVersion: 1,
         role: "customer",
         persona: {
@@ -130,7 +137,22 @@ describe("public sandbox creation", () => {
     const first = await database.create(command);
     const retry = await database.create(command);
 
-    expect(retry).toEqual({ ...first, replayed: true });
+    expect(retry).toEqual({
+      ...first,
+      replayed: true,
+      roleContext: {
+        ...first.roleContext,
+        businessClock: {
+          ...first.roleContext.businessClock,
+          currentTime: expect.any(Date),
+        },
+      },
+    });
+    expect(
+      retry.roleContext.businessClock.currentTime.getTime(),
+    ).toBeGreaterThanOrEqual(
+      first.roleContext.businessClock.currentTime.getTime(),
+    );
   });
 
   it("limits business reads to the active sandbox through Postgres RLS", async () => {
@@ -286,7 +308,17 @@ describe("public sandbox creation", () => {
       visitorKey: "upgraded-visitor-000000000017",
     });
 
-    expect(upgraded).toEqual({ ...original, replayed: true });
+    expect(upgraded).toEqual({
+      ...original,
+      replayed: true,
+      roleContext: {
+        ...original.roleContext,
+        businessClock: {
+          ...original.roleContext.businessClock,
+          currentTime: expect.any(Date),
+        },
+      },
+    });
 
     const claimed = new Client({ connectionString: databaseUrl });
     await claimed.connect();

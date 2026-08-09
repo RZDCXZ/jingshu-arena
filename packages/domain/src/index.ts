@@ -1,5 +1,76 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "3";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "4";
 export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-09.1";
+export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
+export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
+
+export type SandboxBusinessTimeAdvanceMode = "next-event" | "half-hour";
+
+interface SandboxBusinessTimeInput {
+  readonly advancedMilliseconds: number;
+  readonly businessAnchor: Date;
+  readonly wallAnchor: Date;
+  readonly wallTime: Date;
+}
+
+interface SandboxBusinessTimeAdvanceInput {
+  readonly accumulatedAdvanceMilliseconds: number;
+  readonly currentBusinessTime: Date;
+  readonly mode: SandboxBusinessTimeAdvanceMode;
+  readonly nextEventTime: Date | null;
+}
+
+export function sandboxBusinessTimeAt({
+  advancedMilliseconds,
+  businessAnchor,
+  wallAnchor,
+  wallTime,
+}: SandboxBusinessTimeInput): Date {
+  return new Date(
+    businessAnchor.getTime() +
+      (wallTime.getTime() - wallAnchor.getTime()) +
+      advancedMilliseconds,
+  );
+}
+
+export function planSandboxBusinessTimeAdvance(
+  input: SandboxBusinessTimeAdvanceInput,
+):
+  | {
+      readonly status: "ready";
+      readonly accumulatedAdvanceMilliseconds: number;
+      readonly advanceByMilliseconds: number;
+      readonly afterBusinessTime: Date;
+    }
+  | { readonly status: "limit-reached"; readonly limitMilliseconds: number }
+  | { readonly status: "no-next-event" } {
+  const advanceByMilliseconds =
+    input.mode === "half-hour"
+      ? 30 * 60 * 1_000
+      : (input.nextEventTime?.getTime() ?? 0) -
+        input.currentBusinessTime.getTime();
+
+  if (input.mode === "next-event" && advanceByMilliseconds <= 0) {
+    return { status: "no-next-event" };
+  }
+
+  const accumulatedAdvanceMilliseconds =
+    input.accumulatedAdvanceMilliseconds + advanceByMilliseconds;
+  if (accumulatedAdvanceMilliseconds > SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS) {
+    return {
+      limitMilliseconds: SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS,
+      status: "limit-reached",
+    };
+  }
+
+  return {
+    accumulatedAdvanceMilliseconds,
+    advanceByMilliseconds,
+    afterBusinessTime: new Date(
+      input.currentBusinessTime.getTime() + advanceByMilliseconds,
+    ),
+    status: "ready",
+  };
+}
 
 type PublicSandboxRole = "customer" | "staff" | "manager" | "hq";
 

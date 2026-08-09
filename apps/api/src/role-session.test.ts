@@ -14,6 +14,13 @@ const secret = "ticket-04-role-session-unit-secret-32-bytes";
 
 function roleContext(expiresAt: Date): DatabaseRoleContext {
   return {
+    businessClock: {
+      advanceLimitMilliseconds: 86_400_000,
+      advancedMilliseconds: 0,
+      currentTime: new Date(),
+      remainingAdvanceMilliseconds: 86_400_000,
+      timeZone: "Asia/Shanghai",
+    },
     contextVersion: 4,
     expiresAt,
     persona: {

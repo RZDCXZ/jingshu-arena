@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   boolean,
   check,
@@ -6,6 +7,7 @@ import {
   jsonb,
   pgPolicy,
   pgTable,
+  primaryKey,
   text,
   time,
   timestamp,
@@ -34,6 +36,24 @@ export const sandboxes = pgTable(
       .defaultNow()
       .notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    businessTimeAnchorAt: timestamp("business_time_anchor_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+    businessTimeAnchorWallAt: timestamp("business_time_anchor_wall_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+    businessTimeAdvanceMs: integer("business_time_advance_ms")
+      .default(0)
+      .notNull(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    replacedBySandboxId: uuid("replaced_by_sandbox_id").references(
+      (): AnyPgColumn => sandboxes.id,
+      { onDelete: "set null" },
+    ),
     roleContextRole: text("role_context_role"),
     roleContextVersion: integer("role_context_version").default(1).notNull(),
   },
@@ -45,6 +65,10 @@ export const sandboxes = pgTable(
     check(
       "sandboxes_positive_role_context_version",
       sql`${table.roleContextVersion} > 0`,
+    ),
+    check(
+      "sandboxes_business_time_advance_range",
+      sql`${table.businessTimeAdvanceMs} >= 0 AND ${table.businessTimeAdvanceMs} <= 86400000`,
     ),
     check(
       "sandboxes_public_role_context_role",
@@ -154,6 +178,9 @@ export const auditEvents = pgTable(
     requestId: uuid("request_id").notNull(),
     beforeData: jsonb("before_data"),
     afterData: jsonb("after_data"),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }),
     recordedAt: timestamp("recorded_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -165,6 +192,36 @@ export const auditEvents = pgTable(
     ),
     check("audit_events_result", sql`${table.result} IN ('allowed', 'denied')`),
     pgPolicy("audit_events_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const sandboxCommandRequests = pgTable(
+  "sandbox_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    commandType: text("command_type").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    resultData: jsonb("result_data"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.sandboxId, table.commandType, table.idempotencyKeyHash],
+      name: "sandbox_command_requests_pk",
+    }),
+    check(
+      "sandbox_command_requests_command_type",
+      sql`${table.commandType} IN ('demo_time.advance', 'sandbox.reset')`,
+    ),
+    pgPolicy("sandbox_command_requests_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),

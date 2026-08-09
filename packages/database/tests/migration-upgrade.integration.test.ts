@@ -159,4 +159,79 @@ describe("role-context expand migration", () => {
     );
     expect(rolling.rows).toEqual([{ role_context_role: null }]);
   });
+
+  it("adds dual-clock and reset structures with safe defaults for rolling writers", async () => {
+    await applyMigration("0007_dual_clock_reset.sql");
+
+    const rolling = await client.query<{
+      business_time_advance_ms: number;
+      business_time_anchor_at: Date;
+      business_time_anchor_wall_at: Date;
+      created_at: Date;
+      expires_at: Date;
+      invalidated_at: Date | null;
+    }>(
+      `select business_time_advance_ms, business_time_anchor_at,
+              business_time_anchor_wall_at, created_at, expires_at,
+              invalidated_at
+         from sandboxes
+        where id = '00000000-0000-4000-8000-000000000602'`,
+    );
+    expect(rolling.rows).toEqual([
+      {
+        business_time_advance_ms: 0,
+        business_time_anchor_at: expect.any(Date),
+        business_time_anchor_wall_at: expect.any(Date),
+        created_at: expect.any(Date),
+        expires_at: expect.any(Date),
+        invalidated_at: null,
+      },
+    ]);
+    expect(rolling.rows[0]?.business_time_anchor_at).toEqual(
+      rolling.rows[0]?.created_at,
+    );
+    expect(rolling.rows[0]?.business_time_anchor_wall_at).toEqual(
+      rolling.rows[0]?.created_at,
+    );
+
+    const rollingSandboxId = "00000000-0000-4000-8000-000000000603";
+    const rollingCreationHash = "rolling-creation-hash-000000000603";
+    await client.query("begin");
+    await client.query("set local role jingshu_runtime");
+    await client.query("select set_config('app.sandbox_id', $1, true)", [
+      rollingSandboxId,
+    ]);
+    await client.query("select set_config('app.creation_key_hash', $1, true)", [
+      rollingCreationHash,
+    ]);
+    await client.query(
+      `insert into sandbox_creation_requests (
+         creation_key_hash, visitor_key_hash, payload_hash, sandbox_id, selected_role
+       ) values ($1, 'rolling-visitor-603', 'rolling-payload-603', $2, 'customer')`,
+      [rollingCreationHash, rollingSandboxId],
+    );
+    await client.query(
+      `insert into sandboxes (id, schema_version, seed_version, expires_at)
+       values ($1, '3', 'rolling-seed', now() + interval '24 hours')`,
+      [rollingSandboxId],
+    );
+    await client.query("commit");
+
+    const defaults = await client.query<{
+      business_time_advance_ms: number;
+      role_context_role: string | null;
+    }>(
+      `select business_time_advance_ms, role_context_role
+         from sandboxes where id = $1`,
+      [rollingSandboxId],
+    );
+    expect(defaults.rows).toEqual([
+      { business_time_advance_ms: 0, role_context_role: null },
+    ]);
+
+    const metadata = await client.query<{ value: string }>(
+      "select value from jingshu_schema_metadata where key = 'schema_version'",
+    );
+    expect(metadata.rows).toEqual([{ value: "4" }]);
+  });
 });

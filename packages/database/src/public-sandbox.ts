@@ -3,7 +3,26 @@ import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import type { PoolClient } from "pg";
 import type { PublicRole } from "@jingshu/contracts";
-import { buildPublicSandboxSeed } from "@jingshu/domain";
+import {
+  buildPublicSandboxSeed,
+  sandboxBusinessTimeAt,
+  SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS,
+  SANDBOX_BUSINESS_TIME_ZONE,
+} from "@jingshu/domain";
+
+import {
+  PublicSandboxIdempotencyConflictError,
+  PublicSandboxOwnershipConflictError,
+  RoleContextStaleError,
+  RoleContextUnavailableError,
+} from "./errors.js";
+import {
+  createSandboxDemoToolMethods,
+  type DatabaseBusinessClock,
+  type DemoTimeDueHandlerRegistry,
+  type SandboxDemoToolMethods,
+  type WallClock,
+} from "./sandbox-demo-tools.js";
 
 const { Pool } = pg;
 
@@ -83,6 +102,7 @@ export interface DatabaseRoleContext {
   schemaVersion: string;
   seedVersion: string;
   expiresAt: Date;
+  businessClock: DatabaseBusinessClock;
   contextVersion: number;
   role: PublicRole;
   persona: {
@@ -102,7 +122,7 @@ export interface DatabaseRoleContext {
   };
 }
 
-export interface PublicSandboxDatabase {
+export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   create(input: CreatePublicSandboxInput): Promise<PublicSandboxResult>;
   readCurrentRoleContext(
     input: ReadCurrentRoleContextInput,
@@ -115,40 +135,9 @@ export interface PublicSandboxDatabase {
   close(): Promise<void>;
 }
 
-export class RoleContextStaleError extends Error {
-  readonly code = "ROLE_CONTEXT_STALE";
-
-  constructor() {
-    super("The role context version is no longer current.");
-    this.name = "RoleContextStaleError";
-  }
-}
-
-export class RoleContextUnavailableError extends Error {
-  readonly code = "ROLE_CONTEXT_UNAVAILABLE";
-
-  constructor() {
-    super("The role context is missing, invalid, or expired.");
-    this.name = "RoleContextUnavailableError";
-  }
-}
-
-export class PublicSandboxIdempotencyConflictError extends Error {
-  readonly code = "PUBLIC_SANDBOX_IDEMPOTENCY_CONFLICT";
-
-  constructor() {
-    super("The creation key was already used with another payload.");
-    this.name = "PublicSandboxIdempotencyConflictError";
-  }
-}
-
-export class PublicSandboxOwnershipConflictError extends Error {
-  readonly code = "PUBLIC_SANDBOX_OWNERSHIP_CONFLICT";
-
-  constructor() {
-    super("The creation key belongs to another visitor.");
-    this.name = "PublicSandboxOwnershipConflictError";
-  }
+export interface PublicSandboxDatabaseOptions {
+  readonly dueHandlers?: DemoTimeDueHandlerRegistry;
+  readonly wallClock?: WallClock;
 }
 
 const storeSeeds = publicSandboxSeed.stores;
@@ -159,9 +148,18 @@ interface SandboxRow {
   schema_version: string;
   seed_version: string;
   expires_at: Date;
+  business_time_anchor_at: Date;
+  business_time_anchor_wall_at: Date;
+  business_time_advance_ms: number;
+  invalidated_at: Date | null;
   role_context_role: PublicRole | null;
   role_context_version: number;
 }
+
+const SANDBOX_ROW_COLUMNS = `id, schema_version, seed_version, expires_at,
+  invalidated_at, role_context_role, role_context_version,
+  business_time_anchor_at, business_time_anchor_wall_at,
+  business_time_advance_ms`;
 
 interface PersonaRow {
   id: string;
@@ -208,10 +206,20 @@ function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function businessTimeForSandbox(sandbox: SandboxRow, wallTime: Date): Date {
+  return sandboxBusinessTimeAt({
+    advancedMilliseconds: sandbox.business_time_advance_ms,
+    businessAnchor: sandbox.business_time_anchor_at,
+    wallAnchor: sandbox.business_time_anchor_wall_at,
+    wallTime,
+  });
+}
+
 function buildRoleContext(
   sandbox: SandboxRow,
   persona: PersonaRow,
   stores: ReadonlyArray<StoreRow>,
+  wallTime: Date,
 ): DatabaseRoleContext {
   const scopedStores =
     persona.role === "customer" || persona.role === "hq"
@@ -225,6 +233,15 @@ function buildRoleContext(
     schemaVersion: sandbox.schema_version,
     seedVersion: sandbox.seed_version,
     expiresAt: sandbox.expires_at,
+    businessClock: {
+      advanceLimitMilliseconds: SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS,
+      advancedMilliseconds: sandbox.business_time_advance_ms,
+      currentTime: businessTimeForSandbox(sandbox, wallTime),
+      remainingAdvanceMilliseconds:
+        SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS -
+        sandbox.business_time_advance_ms,
+      timeZone: SANDBOX_BUSINESS_TIME_ZONE,
+    },
     contextVersion: sandbox.role_context_version,
     role: persona.role,
     persona: {
@@ -255,15 +272,15 @@ async function readSandboxResult(
   sandboxId: string,
   creationRole: PublicRole,
   replayed: boolean,
+  wallTime: Date,
 ): Promise<PublicSandboxResult> {
   const sandbox = await client.query<SandboxRow>(
-    `select id, schema_version, seed_version, expires_at,
-            role_context_role, role_context_version
+    `select ${SANDBOX_ROW_COLUMNS}
        from sandboxes where id = $1 for update`,
     [sandboxId],
   );
   let sandboxRow = sandbox.rows[0];
-  if (!sandboxRow) {
+  if (!sandboxRow || sandboxRow.invalidated_at !== null) {
     throw new Error("The public sandbox transaction returned incomplete data.");
   }
   if (sandboxRow.role_context_role === null) {
@@ -271,8 +288,7 @@ async function readSandboxResult(
       `update sandboxes
           set role_context_role = $2
         where id = $1 and role_context_role is null
-      returning id, schema_version, seed_version, expires_at,
-                role_context_role, role_context_version`,
+      returning ${SANDBOX_ROW_COLUMNS}`,
       [sandboxId, creationRole],
     );
     sandboxRow = claimed.rows[0] ?? sandboxRow;
@@ -321,6 +337,7 @@ async function readSandboxResult(
     sandboxRow,
     currentPersonaRow,
     orderedStores,
+    wallTime,
   );
 
   return {
@@ -349,12 +366,121 @@ async function readSandboxResult(
   };
 }
 
+async function materializePublicSandbox(input: {
+  client: PoolClient;
+  expiresAt: Date;
+  sandboxId: string;
+  selectedRole: PublicRole;
+  wallTime: Date;
+}): Promise<PublicSandboxResult> {
+  const operatorId = randomUUID();
+  await input.client.query(
+    `insert into sandboxes (
+       id, schema_version, seed_version, expires_at, role_context_role,
+       business_time_anchor_at, business_time_anchor_wall_at
+     ) values ($1, $2, $3, $4, $5, $6, $6)`,
+    [
+      input.sandboxId,
+      publicSandboxSeed.schemaVersion,
+      publicSandboxSeed.seedVersion,
+      input.expiresAt,
+      input.selectedRole,
+      input.wallTime,
+    ],
+  );
+  await input.client.query(
+    `insert into operators (id, sandbox_id, display_name, city)
+     values ($1, $2, $3, $4)`,
+    [
+      operatorId,
+      input.sandboxId,
+      publicSandboxSeed.operator.displayName,
+      publicSandboxSeed.operator.city,
+    ],
+  );
+
+  const seededStores = storeSeeds.map((store) => ({
+    ...store,
+    id: randomUUID(),
+  }));
+  const storeIds = new Map(seededStores.map((store) => [store.code, store.id]));
+  await input.client.query(
+    `insert into stores (
+       id, sandbox_id, operator_id, code, display_name, seat_count,
+       opens_at, closes_at, closes_next_day, is_open_24_hours
+     )
+     select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::text[],
+       $6::integer[], $7::time[], $8::time[], $9::boolean[], $10::boolean[]
+     )`,
+    [
+      seededStores.map((store) => store.id),
+      seededStores.map(() => input.sandboxId),
+      seededStores.map(() => operatorId),
+      seededStores.map((store) => store.code),
+      seededStores.map((store) => store.displayName),
+      seededStores.map((store) => store.seatCount),
+      seededStores.map((store) => store.opensAt),
+      seededStores.map((store) => store.closesAt),
+      seededStores.map((store) => store.closesNextDay),
+      seededStores.map((store) => store.isOpen24Hours),
+    ],
+  );
+
+  const seededPersonas = personaSeeds.map((persona) => ({
+    ...persona,
+    id: randomUUID(),
+    storeId: persona.storeCode
+      ? (storeIds.get(persona.storeCode) ?? null)
+      : null,
+  }));
+  await input.client.query(
+    `insert into demo_personas (
+       id, sandbox_id, store_id, role, display_name, scope, protected
+     )
+     select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::text[],
+       $5::text[], $6::text[], $7::boolean[]
+     )`,
+    [
+      seededPersonas.map((persona) => persona.id),
+      seededPersonas.map(() => input.sandboxId),
+      seededPersonas.map((persona) => persona.storeId),
+      seededPersonas.map((persona) => persona.role),
+      seededPersonas.map((persona) => persona.displayName),
+      seededPersonas.map((persona) => persona.scope),
+      seededPersonas.map((persona) => persona.protected),
+    ],
+  );
+
+  return readSandboxResult(
+    input.client,
+    input.sandboxId,
+    input.selectedRole,
+    false,
+    input.wallTime,
+  );
+}
+
 export function createPublicSandboxDatabase(
   databaseUrl: string,
+  options: PublicSandboxDatabaseOptions = {},
 ): PublicSandboxDatabase {
   const pool = new Pool({ connectionString: databaseUrl });
+  const wallClock = options.wallClock ?? { now: () => new Date() };
+  const demoToolMethods = createSandboxDemoToolMethods(
+    pool,
+    {
+      dueHandlers: options.dueHandlers ?? {},
+      sandboxLifetimeMilliseconds: SANDBOX_LIFETIME_MS,
+      wallClock,
+    },
+    materializePublicSandbox,
+    readSandboxResult,
+  );
 
   return {
+    ...demoToolMethods,
     async create(input) {
       const client = await pool.connect();
 
@@ -362,9 +488,9 @@ export function createPublicSandboxDatabase(
         await client.query("begin");
         await client.query("set local role jingshu_runtime");
 
+        const wallTime = wallClock.now();
         const sandboxId = randomUUID();
-        const operatorId = randomUUID();
-        const expiresAt = new Date(Date.now() + SANDBOX_LIFETIME_MS);
+        const expiresAt = new Date(wallTime.getTime() + SANDBOX_LIFETIME_MS);
         const creationKeyHash = hash(input.creationKey);
         const visitorKeyHash = hash(input.visitorKey);
         const payloadHash = hash(
@@ -437,6 +563,7 @@ export function createPublicSandboxDatabase(
             existing.sandbox_id,
             existing.selected_role,
             true,
+            wallTime,
           );
           await client.query("commit");
           return replayed;
@@ -445,91 +572,13 @@ export function createPublicSandboxDatabase(
         await client.query("select set_config('app.sandbox_id', $1, true)", [
           sandboxId,
         ]);
-        await client.query(
-          `insert into sandboxes (
-             id, schema_version, seed_version, expires_at, role_context_role
-           ) values ($1, $2, $3, $4, $5)`,
-          [
-            sandboxId,
-            publicSandboxSeed.schemaVersion,
-            publicSandboxSeed.seedVersion,
-            expiresAt,
-            input.selectedRole,
-          ],
-        );
-        await client.query(
-          `insert into operators (id, sandbox_id, display_name, city)
-           values ($1, $2, $3, $4)`,
-          [
-            operatorId,
-            sandboxId,
-            publicSandboxSeed.operator.displayName,
-            publicSandboxSeed.operator.city,
-          ],
-        );
-
-        const seededStores = storeSeeds.map((store) => ({
-          ...store,
-          id: randomUUID(),
-        }));
-        const storeIds = new Map(
-          seededStores.map((store) => [store.code, store.id]),
-        );
-        await client.query(
-          `insert into stores (
-             id, sandbox_id, operator_id, code, display_name, seat_count,
-             opens_at, closes_at, closes_next_day, is_open_24_hours
-           )
-           select * from unnest(
-             $1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::text[],
-             $6::integer[], $7::time[], $8::time[], $9::boolean[], $10::boolean[]
-           )`,
-          [
-            seededStores.map((store) => store.id),
-            seededStores.map(() => sandboxId),
-            seededStores.map(() => operatorId),
-            seededStores.map((store) => store.code),
-            seededStores.map((store) => store.displayName),
-            seededStores.map((store) => store.seatCount),
-            seededStores.map((store) => store.opensAt),
-            seededStores.map((store) => store.closesAt),
-            seededStores.map((store) => store.closesNextDay),
-            seededStores.map((store) => store.isOpen24Hours),
-          ],
-        );
-
-        const seededPersonas = personaSeeds.map((persona) => ({
-          ...persona,
-          id: randomUUID(),
-          storeId: persona.storeCode
-            ? (storeIds.get(persona.storeCode) ?? null)
-            : null,
-        }));
-        await client.query(
-          `insert into demo_personas (
-             id, sandbox_id, store_id, role, display_name, scope, protected
-           )
-           select * from unnest(
-             $1::uuid[], $2::uuid[], $3::uuid[], $4::text[],
-             $5::text[], $6::text[], $7::boolean[]
-           )`,
-          [
-            seededPersonas.map((persona) => persona.id),
-            seededPersonas.map(() => sandboxId),
-            seededPersonas.map((persona) => persona.storeId),
-            seededPersonas.map((persona) => persona.role),
-            seededPersonas.map((persona) => persona.displayName),
-            seededPersonas.map((persona) => persona.scope),
-            seededPersonas.map((persona) => persona.protected),
-          ],
-        );
-
-        const created = await readSandboxResult(
+        const created = await materializePublicSandbox({
           client,
+          expiresAt,
           sandboxId,
-          input.selectedRole,
-          false,
-        );
+          selectedRole: input.selectedRole,
+          wallTime,
+        });
         await client.query("commit");
         return created;
       } catch (error) {
@@ -541,6 +590,7 @@ export function createPublicSandboxDatabase(
     },
     async readCurrentRoleContext(input) {
       const client = await pool.connect();
+      const wallTime = wallClock.now();
 
       try {
         await client.query("begin");
@@ -550,13 +600,16 @@ export function createPublicSandboxDatabase(
         ]);
 
         const sandbox = await client.query<SandboxRow>(
-          `select id, schema_version, seed_version, expires_at,
-                  role_context_role, role_context_version
+          `select ${SANDBOX_ROW_COLUMNS}
              from sandboxes where id = $1 for update`,
           [input.sandboxId],
         );
         let sandboxRow = sandbox.rows[0];
-        if (!sandboxRow || sandboxRow.expires_at.getTime() <= Date.now()) {
+        if (
+          !sandboxRow ||
+          sandboxRow.invalidated_at !== null ||
+          sandboxRow.expires_at.getTime() <= wallTime.getTime()
+        ) {
           throw new RoleContextUnavailableError();
         }
         if (!sandboxRow.role_context_role && input.claimRole) {
@@ -564,8 +617,7 @@ export function createPublicSandboxDatabase(
             `update sandboxes
                 set role_context_role = $2
               where id = $1 and role_context_role is null
-            returning id, schema_version, seed_version, expires_at,
-                      role_context_role, role_context_version`,
+            returning ${SANDBOX_ROW_COLUMNS}`,
             [input.sandboxId, input.claimRole],
           );
           sandboxRow = claimed.rows[0] ?? sandboxRow;
@@ -598,8 +650,7 @@ export function createPublicSandboxDatabase(
                 set role_context_version = role_context_version + 1
               where id = $1 and role_context_version = $2
                     and role_context_role = $3
-            returning id, schema_version, seed_version, expires_at,
-                      role_context_role, role_context_version`,
+            returning ${SANDBOX_ROW_COLUMNS}`,
             [input.sandboxId, input.fence.contextVersion, input.fence.role],
           );
           const fencedRow = fenced.rows[0];
@@ -608,9 +659,11 @@ export function createPublicSandboxDatabase(
           await client.query(
             `insert into audit_events (
                id, sandbox_id, store_id, persona_id, role, action, object_type,
-               object_id, result, reason, request_id, before_data, after_data
+               object_id, result, reason, request_id, before_data, after_data,
+               business_occurred_at, recorded_at
              ) values ($1, $2, $3, $4, $5, 'role_context.recover',
-               'role_context', null, 'allowed', null, $6, $7::jsonb, $8::jsonb)`,
+               'role_context', null, 'allowed', null, $6, $7::jsonb, $8::jsonb,
+               $9, $10)`,
             [
               randomUUID(),
               input.sandboxId,
@@ -626,6 +679,8 @@ export function createPublicSandboxDatabase(
                 contextVersion: fencedRow.role_context_version,
                 role: fencedRow.role_context_role,
               }),
+              businessTimeForSandbox(fencedRow, wallTime),
+              wallTime,
             ],
           );
         }
@@ -648,6 +703,7 @@ export function createPublicSandboxDatabase(
           sandboxRow,
           personaRow,
           orderedStores,
+          wallTime,
         );
         await client.query("commit");
         return roleContext;
@@ -660,6 +716,7 @@ export function createPublicSandboxDatabase(
     },
     async readRoleContext(input) {
       const client = await pool.connect();
+      const wallTime = wallClock.now();
 
       try {
         await client.query("begin");
@@ -669,13 +726,16 @@ export function createPublicSandboxDatabase(
         ]);
 
         const sandbox = await client.query<SandboxRow>(
-          `select id, schema_version, seed_version, expires_at,
-                  role_context_role, role_context_version
+          `select ${SANDBOX_ROW_COLUMNS}
              from sandboxes where id = $1`,
           [input.sandboxId],
         );
         const sandboxRow = sandbox.rows[0];
-        if (!sandboxRow || sandboxRow.expires_at.getTime() <= Date.now()) {
+        if (
+          !sandboxRow ||
+          sandboxRow.invalidated_at !== null ||
+          sandboxRow.expires_at.getTime() <= wallTime.getTime()
+        ) {
           throw new RoleContextUnavailableError();
         }
         if (
@@ -714,6 +774,7 @@ export function createPublicSandboxDatabase(
           sandboxRow,
           personaRow,
           orderedStores,
+          wallTime,
         );
         await client.query("commit");
         return roleContext;
@@ -726,6 +787,7 @@ export function createPublicSandboxDatabase(
     },
     async switchRoleContext(input) {
       const client = await pool.connect();
+      const wallTime = wallClock.now();
 
       try {
         await client.query("begin");
@@ -735,13 +797,16 @@ export function createPublicSandboxDatabase(
         ]);
 
         const sandbox = await client.query<SandboxRow>(
-          `select id, schema_version, seed_version, expires_at,
-                  role_context_role, role_context_version
+          `select ${SANDBOX_ROW_COLUMNS}
              from sandboxes where id = $1 for update`,
           [input.sandboxId],
         );
         const sandboxRow = sandbox.rows[0];
-        if (!sandboxRow || sandboxRow.expires_at.getTime() <= Date.now()) {
+        if (
+          !sandboxRow ||
+          sandboxRow.invalidated_at !== null ||
+          sandboxRow.expires_at.getTime() <= wallTime.getTime()
+        ) {
           throw new RoleContextUnavailableError();
         }
         if (
@@ -779,8 +844,7 @@ export function createPublicSandboxDatabase(
                   role_context_role = $3
             where id = $1 and role_context_version = $2
                   and role_context_role = $4
-          returning id, schema_version, seed_version, expires_at,
-                    role_context_role, role_context_version`,
+          returning ${SANDBOX_ROW_COLUMNS}`,
           [input.sandboxId, input.contextVersion, input.targetRole, input.role],
         );
         const updatedSandboxRow = updatedSandbox.rows[0];
@@ -789,8 +853,10 @@ export function createPublicSandboxDatabase(
         await client.query(
           `insert into audit_events (
              id, sandbox_id, store_id, persona_id, role, action, object_type,
-             object_id, result, reason, request_id, before_data, after_data
-           ) values ($1, $2, $3, $4, $5, $6, $7, $8, 'allowed', null, $9, $10::jsonb, $11::jsonb)`,
+             object_id, result, reason, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, $6, $7, $8, 'allowed', null, $9,
+             $10::jsonb, $11::jsonb, $12, $13)`,
           [
             randomUUID(),
             input.sandboxId,
@@ -809,6 +875,8 @@ export function createPublicSandboxDatabase(
               contextVersion: updatedSandboxRow.role_context_version,
               role: targetPersonaRow.role,
             }),
+            businessTimeForSandbox(updatedSandboxRow, wallTime),
+            wallTime,
           ],
         );
 
@@ -830,6 +898,7 @@ export function createPublicSandboxDatabase(
           updatedSandboxRow,
           targetPersonaRow,
           orderedStores,
+          wallTime,
         );
         await client.query("commit");
         return switched;
@@ -842,6 +911,7 @@ export function createPublicSandboxDatabase(
     },
     async recordRoleContextDenial(input) {
       const client = await pool.connect();
+      const wallTime = wallClock.now();
 
       try {
         await client.query("begin");
@@ -849,12 +919,20 @@ export function createPublicSandboxDatabase(
         await client.query("select set_config('app.sandbox_id', $1, true)", [
           input.sandboxId,
         ]);
+        const sandbox = await client.query<SandboxRow>(
+          `select ${SANDBOX_ROW_COLUMNS} from sandboxes where id = $1`,
+          [input.sandboxId],
+        );
+        const businessOccurredAt = sandbox.rows[0]
+          ? businessTimeForSandbox(sandbox.rows[0], wallTime)
+          : wallTime;
         await client.query(
           `insert into audit_events (
              id, sandbox_id, store_id, persona_id, role, action, object_type,
-             object_id, result, reason, request_id
+             object_id, result, reason, request_id, business_occurred_at,
+             recorded_at
            ) values ($1, $2, $3, $4, $5, $6, $7,
-                     $8, 'denied', $9, $10)`,
+                     $8, 'denied', $9, $10, $11, $12)`,
           [
             randomUUID(),
             input.sandboxId,
@@ -866,6 +944,8 @@ export function createPublicSandboxDatabase(
             input.objectId ?? null,
             input.reason,
             input.requestId,
+            businessOccurredAt,
+            wallTime,
           ],
         );
         await client.query("commit");

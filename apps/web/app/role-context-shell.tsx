@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import {
+  ArrowCounterClockwise,
   ArrowClockwise,
   CaretDown,
   Clock,
@@ -12,10 +13,16 @@ import {
   User,
   X,
 } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
-import type { RoleContextReadyResponse } from "@jingshu/contracts";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
+import type {
+  DemoTimeAdvancedResponse,
+  RoleContextReadyResponse,
+  SandboxResetReadyResponse,
+} from "@jingshu/contracts";
 
 import jingshuMark from "../../../product-ui/management-system/design-prototype/public/assets/jingshu-mark.png";
+import { DemoTimeDialog, SandboxResetDialog } from "./demo-tool-dialogs";
 import { RoleSwitchDialog, StaleRoleDialog } from "./role-context-dialogs";
 import { roleMeta, type RolePageId } from "./role-context-model";
 import { RoleWorkbench } from "./role-workbench";
@@ -47,6 +54,56 @@ function formatShanghaiTimestamp(value: string) {
     month: "2-digit",
     timeZone: "Asia/Shanghai",
   }).format(new Date(value));
+}
+
+function formatShanghaiTime(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone: "Asia/Shanghai",
+  }).format(new Date(value));
+}
+
+function BusinessTimeButton({
+  currentTime,
+  observedAt,
+  onOpen,
+  triggerRef,
+}: {
+  currentTime: string;
+  observedAt: string;
+  onOpen: () => void;
+  triggerRef: RefObject<HTMLButtonElement | null>;
+}) {
+  const [wallTime, setWallTime] = useState<number | null>(null);
+
+  useEffect(() => {
+    const update = () => setWallTime(Date.now());
+    update();
+    const timer = window.setInterval(update, 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const elapsedMilliseconds =
+    wallTime === null ? 0 : Math.max(0, wallTime - Date.parse(observedAt));
+  const liveBusinessTime = new Date(
+    Date.parse(currentTime) + elapsedMilliseconds,
+  ).toISOString();
+  const label = formatShanghaiTime(liveBusinessTime);
+
+  return (
+    <button
+      aria-label={`打开业务时间工具，当前 ${label}`}
+      className="role-business-time"
+      onClick={onOpen}
+      ref={triggerRef}
+      type="button"
+    >
+      <Clock />
+      <span>业务时间</span> <strong>{label}</strong>
+    </button>
+  );
 }
 
 function ContextPage({
@@ -113,14 +170,20 @@ export function RoleContextShell({
   const [filter, setFilter] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [roleDialogOpen, setRoleDialogOpen] = useState(false);
+  const [demoToolDialog, setDemoToolDialog] = useState<"reset" | "time" | null>(
+    null,
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [stale, setStale] = useState(false);
+  const [staleReason, setStaleReason] = useState<"reset" | "role">("role");
   const [toolPanel, setToolPanel] = useState<"life" | "story" | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState("");
   const roleTriggerRef = useRef<HTMLButtonElement>(null);
   const profileTriggerRef = useRef<HTMLButtonElement>(null);
   const activeRoleTriggerRef = useRef<HTMLButtonElement>(null);
+  const timeTriggerRef = useRef<HTMLButtonElement>(null);
+  const resetTriggerRef = useRef<HTMLButtonElement>(null);
   const broadcastRef = useRef<BroadcastChannel | null>(null);
   const recoveryFenceRef = useRef(false);
   const meta = roleMeta[context.role.id];
@@ -133,27 +196,9 @@ export function RoleContextShell({
   useEffect(() => {
     if (!stale) return;
     setRoleDialogOpen(false);
+    setDemoToolDialog(null);
     setToolPanel(null);
   }, [stale]);
-
-  useEffect(() => {
-    if (!("BroadcastChannel" in window)) return undefined;
-    const channel = new BroadcastChannel("jingshu-role-context-v1");
-    broadcastRef.current = channel;
-    channel.onmessage = (event: MessageEvent<{ contextVersion?: number }>) => {
-      if (
-        typeof event.data?.contextVersion === "number" &&
-        event.data.contextVersion > context.contextVersion
-      ) {
-        recoveryFenceRef.current = false;
-        setStale(true);
-      }
-    };
-    return () => {
-      broadcastRef.current = null;
-      channel.close();
-    };
-  }, [context.contextVersion]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -161,41 +206,85 @@ export function RoleContextShell({
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  async function refreshContext() {
-    setRefreshing(true);
-    try {
-      const response = await fetch("/api/v1/demo/context", {
-        cache: "no-store",
-        credentials: "same-origin",
-      });
-      const payload: unknown = await response.json();
-      if (!response.ok) {
-        const failure = payload as {
-          error?: { code?: string; message?: string };
-        };
-        if (failure.error?.code === "ROLE_CONTEXT_STALE") {
-          recoveryFenceRef.current = false;
-          setStale(true);
-        } else if (
-          failure.error?.code === "ROLE_CONTEXT_UNAVAILABLE" ||
-          failure.error?.code === "ROLE_CONTEXT_REQUIRED"
-        ) {
-          onContextUnavailable();
-        } else {
-          setToast(failure.error?.message ?? "数据刷新失败，请稍后重试。");
+  const refreshContext = useCallback(
+    async (source: "business-time" | "manual" | "replay" = "manual") => {
+      setRefreshing(true);
+      try {
+        const response = await fetch("/api/v1/demo/context", {
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+        const payload: unknown = await response.json();
+        if (!response.ok) {
+          const failure = payload as {
+            error?: { code?: string; message?: string };
+          };
+          if (failure.error?.code === "ROLE_CONTEXT_STALE") {
+            recoveryFenceRef.current = false;
+            setStaleReason("role");
+            setStale(true);
+          } else if (
+            failure.error?.code === "ROLE_CONTEXT_UNAVAILABLE" ||
+            failure.error?.code === "ROLE_CONTEXT_REQUIRED"
+          ) {
+            onContextUnavailable();
+          } else {
+            setToast(failure.error?.message ?? "数据刷新失败，请稍后重试。");
+          }
+          return;
         }
+        onContextChange(payload as RoleContextReadyResponse);
+        if (source === "manual") setFilter("");
+        setStale(false);
+        setStaleReason("role");
+        setToast(
+          source === "business-time"
+            ? "其他标签已推进业务时间，当前视图已从服务端刷新"
+            : source === "replay"
+              ? "同一请求已安全重放，当前业务时间已从服务端确认"
+              : "角色上下文已由服务端手动确认",
+        );
+      } catch {
+        setToast("数据刷新失败，当前页面不会伪造成功。");
+      } finally {
+        setRefreshing(false);
+      }
+    },
+    [onContextChange, onContextUnavailable],
+  );
+
+  useEffect(() => {
+    if (!("BroadcastChannel" in window)) return undefined;
+    const channel = new BroadcastChannel("jingshu-role-context-v1");
+    broadcastRef.current = channel;
+    channel.onmessage = (
+      event: MessageEvent<{ contextVersion?: number; type?: string }>,
+    ) => {
+      if (event.data?.type === "sandbox-reset") {
+        recoveryFenceRef.current = false;
+        setStaleReason("reset");
+        setStale(true);
         return;
       }
-      onContextChange(payload as RoleContextReadyResponse);
-      setFilter("");
-      setStale(false);
-      setToast("角色上下文已由服务端手动确认");
-    } catch {
-      setToast("数据刷新失败，当前页面不会伪造成功。");
-    } finally {
-      setRefreshing(false);
-    }
-  }
+      if (event.data?.type === "business-time-advanced") {
+        setDemoToolDialog(null);
+        void refreshContext("business-time");
+        return;
+      }
+      if (
+        typeof event.data?.contextVersion === "number" &&
+        event.data.contextVersion > context.contextVersion
+      ) {
+        recoveryFenceRef.current = false;
+        setStaleReason("role");
+        setStale(true);
+      }
+    };
+    return () => {
+      broadcastRef.current = null;
+      channel.close();
+    };
+  }, [context.contextVersion, refreshContext]);
 
   async function recoverContext() {
     setRefreshing(true);
@@ -241,6 +330,7 @@ export function RoleContextShell({
       onContextChange(recovered);
       setFilter("");
       setStale(false);
+      setStaleReason("role");
       recoveryFenceRef.current = false;
       setToast("已恢复到服务端当前角色");
       if (recovered.contextVersion > context.contextVersion) {
@@ -266,6 +356,7 @@ export function RoleContextShell({
     onContextChange(nextContext);
     setFilter("");
     setStale(false);
+    setStaleReason("role");
     recoveryFenceRef.current = false;
     setToast(
       `已切换为${nextContext.persona.displayName} · ${nextContext.role.label}`,
@@ -277,13 +368,56 @@ export function RoleContextShell({
     });
   }
 
+  function acceptAdvancedTime(result: DemoTimeAdvancedResponse) {
+    if (result.replayed) {
+      void refreshContext("replay");
+    } else {
+      onContextChange({
+        ...context,
+        freshness: {
+          ...context.freshness,
+          observedAt: new Date().toISOString(),
+        },
+        sandbox: {
+          ...context.sandbox,
+          businessClock: {
+            ...result.clock,
+            currentTime: result.afterTime,
+          },
+        },
+      });
+      setToast(
+        `业务时间已推进到 ${formatShanghaiTime(result.afterTime)}；沙箱寿命未延长`,
+      );
+    }
+    broadcastRef.current?.postMessage({ type: "business-time-advanced" });
+  }
+
+  function acceptResetSandbox(result: SandboxResetReadyResponse) {
+    onContextChange(result.context);
+    setActivePage(roleMeta[result.context.role.id].defaultPage);
+    setFilter("");
+    setStale(false);
+    setStaleReason("role");
+    recoveryFenceRef.current = false;
+    setToolPanel(null);
+    setToast(
+      result.context.role.id === "customer"
+        ? "已创建全新标准沙箱，并回到顾客主演示起点"
+        : `同一重置请求已安全重放，保持服务端当前${result.context.role.label}上下文`,
+    );
+    broadcastRef.current?.postMessage({
+      type: "sandbox-reset",
+    });
+  }
+
   const activePageLabel =
     meta.navigation.find(([id]) => id === activePage)?.[1] ?? meta.label;
   const expirationLabel = formatShanghaiTimestamp(context.sandbox.expiresAt);
   const observedAtLabel = formatShanghaiTimestamp(context.freshness.observedAt);
-  const backgroundProps = stale
-    ? ({ "aria-hidden": true, inert: true } as const)
-    : {};
+  const modalOpen = roleDialogOpen || demoToolDialog !== null;
+  const backgroundProps =
+    stale || modalOpen ? ({ "aria-hidden": true, inert: true } as const) : {};
 
   return (
     <div
@@ -293,9 +427,7 @@ export function RoleContextShell({
         <div className="role-topbar-brand">
           <Brand />
           <span className="role-demo-chip">演示数据</span>
-          <span className="role-business-day">
-            经营日预览&nbsp; 08月08日 06:00–次日05:59
-          </span>
+          <span className="role-business-day">上海业务时钟&nbsp; 自然流逝</span>
         </div>
         <nav aria-label="共享演示工具" className="role-topbar-tools">
           <button onClick={() => setToolPanel("story")} type="button">
@@ -303,10 +435,12 @@ export function RoleContextShell({
             <span>主演示</span>
             <strong>路线预览</strong>
           </button>
-          <span className="role-business-time">
-            <Clock />
-            业务时间预览 <strong>19:30</strong>
-          </span>
+          <BusinessTimeButton
+            currentTime={context.sandbox.businessClock.currentTime}
+            observedAt={context.freshness.observedAt}
+            onOpen={() => setDemoToolDialog("time")}
+            triggerRef={timeTriggerRef}
+          />
           <button
             aria-label="切换角色"
             onClick={(event) => openRoleDialog(event.currentTarget)}
@@ -315,6 +449,15 @@ export function RoleContextShell({
           >
             <Repeat />
             <span>切换角色</span>
+          </button>
+          <button
+            aria-label="重置为全新标准沙箱"
+            onClick={() => setDemoToolDialog("reset")}
+            ref={resetTriggerRef}
+            type="button"
+          >
+            <ArrowCounterClockwise />
+            <span>重置沙箱</span>
           </button>
           <button
             aria-label="手动刷新角色上下文"
@@ -460,6 +603,7 @@ export function RoleContextShell({
           onClose={() => setRoleDialogOpen(false)}
           onStale={(reason) => {
             recoveryFenceRef.current = reason === "switch-outcome-unknown";
+            setStaleReason("role");
             setStale(true);
           }}
           onSwitch={acceptSwitchedContext}
@@ -468,10 +612,39 @@ export function RoleContextShell({
         />
       ) : null}
 
+      {demoToolDialog === "time" && !stale ? (
+        <DemoTimeDialog
+          context={context}
+          onAdvanced={acceptAdvancedTime}
+          onClose={() => setDemoToolDialog(null)}
+          onStale={() => {
+            setStaleReason("role");
+            setStale(true);
+          }}
+          onUnavailable={onContextUnavailable}
+          returnFocusRef={timeTriggerRef}
+        />
+      ) : null}
+
+      {demoToolDialog === "reset" && !stale ? (
+        <SandboxResetDialog
+          context={context}
+          onClose={() => setDemoToolDialog(null)}
+          onReset={acceptResetSandbox}
+          onStale={() => {
+            setStaleReason("role");
+            setStale(true);
+          }}
+          onUnavailable={onContextUnavailable}
+          returnFocusRef={resetTriggerRef}
+        />
+      ) : null}
+
       {stale ? (
         <StaleRoleDialog
           dirty={filter.length > 0}
           onRefresh={() => void recoverContext()}
+          reason={staleReason}
           refreshing={refreshing}
           returnFocusRef={roleTriggerRef}
         />

@@ -19,7 +19,7 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
   );
 }
 
-function useDialogKeyboard({
+export function useDialogKeyboard({
   containerRef,
   onEscape,
   returnFocusRef,
@@ -282,11 +282,13 @@ export function RoleSwitchDialog({
 export function StaleRoleDialog({
   dirty,
   onRefresh,
+  reason = "role",
   refreshing,
   returnFocusRef,
 }: {
   dirty: boolean;
   onRefresh: () => void;
+  reason?: "reset" | "role";
   refreshing: boolean;
   returnFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
@@ -312,9 +314,15 @@ export function StaleRoleDialog({
       >
         <WarningCircle weight="duotone" />
         <span className="shell-eyebrow">安全阻断</span>
-        <h2 id="stale-role-title">当前标签的角色上下文已失效</h2>
+        <h2 id="stale-role-title">
+          {reason === "reset"
+            ? "当前标签的旧沙箱已失效"
+            : "当前标签的角色上下文已失效"}
+        </h2>
         <p id="stale-role-description">
-          另一个标签可能已经切换演示角色，或上次切换响应未送达。旧角色写操作已停止，不能使用缓存继续提交。
+          {reason === "reset"
+            ? "另一个标签已经创建了全新标准沙箱。旧沙箱中的四角色对象和写操作均已停止，不能使用缓存继续提交。"
+            : "另一个标签可能已经切换演示角色，或上次切换响应未送达。旧角色写操作已停止，不能使用缓存继续提交。"}
         </p>
         <button
           aria-disabled={refreshing}
@@ -325,7 +333,11 @@ export function StaleRoleDialog({
           ref={refreshRef}
           type="button"
         >
-          {refreshing ? "正在刷新…" : "刷新到当前角色"}
+          {refreshing
+            ? "正在刷新…"
+            : reason === "reset"
+              ? "进入全新标准沙箱"
+              : "刷新到当前角色"}
         </button>
         {dirty ? (
           <small>“筛选当前队列”中的未提交输入仍保留；刷新会放弃该输入。</small>

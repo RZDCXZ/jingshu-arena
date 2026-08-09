@@ -11,7 +11,7 @@ const readyWorld = {
     scope: "浏览三店 · 只管理自己的记录",
   },
   world: {
-    schemaVersion: "3",
+    schemaVersion: "4",
     seedVersion: "2026-08-09.1",
     expiresAt: "2026-08-10T12:00:00.000Z",
     operator: { displayName: "竞枢演示经营方", city: "栖光市" },
@@ -51,9 +51,16 @@ const recoveredStaffContext = {
   },
   capabilities: ["store:perform-frontline"],
   sandbox: {
-    schemaVersion: "3",
+    schemaVersion: "4",
     seedVersion: "2026-08-09.1",
     expiresAt: "2026-08-10T12:00:00.000Z",
+    businessClock: {
+      advanceLimitMilliseconds: 86_400_000,
+      advancedMilliseconds: 0,
+      currentTime: "2026-08-09T11:30:00.000Z",
+      remainingAdvanceMilliseconds: 86_400_000,
+      timeZone: "Asia/Shanghai",
+    },
   },
   freshness: {
     mode: "manual",

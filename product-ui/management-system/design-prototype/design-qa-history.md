@@ -2,6 +2,12 @@
 
 本文件保留已经解决的问题，供回归调查使用。当前有效性、待处理问题、验证矩阵和交付结果以 [`design-qa.md`](design-qa.md) 为准。
 
+## Ticket 04 — 服务端角色上下文与共享演示壳
+
+- 检查日期：2026-08-09；范围：`WEB-G02`、`WEB-G05` 的共享角色框架、角色切换、未提交输入确认、切换响应丢失恢复与跨标签旧角色阻断。
+- 证据：`design/qa-ticket04-role-shell-comparison-1440-final.png`、`design/qa-ticket04-role-shell-comparison-1024-final.png`、`design/qa-ticket04-role-switcher-comparison-1440.png`、`design/qa-ticket04-dirty-confirmation-comparison-1440.png`、`design/qa-ticket04-stale-tab-comparison-1440.png`。
+- 结论：真实浏览器/API/Postgres 覆盖签名角色上下文、RLS、Origin/CSRF、滚动升级、并发恢复和自然到期；同视口设计复核 P0/P1/P2 清零，完整仓库门禁通过，最终结果为 passed。
+
 ## Ticket 03 — 公开入口与版本化三店沙箱
 
 - 检查日期：2026-08-09；范围：`WEB-G00`、`WEB-G01` 的公开入口、创建中、成功、失败、超时与安全重试。
