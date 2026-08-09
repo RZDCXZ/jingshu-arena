@@ -1039,6 +1039,9 @@ strong {
 }
 
 .role-topbar-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-left: 1px solid transparent;
   border-right: 1px solid transparent;
 }
@@ -1054,6 +1057,7 @@ strong {
 .role-business-time svg {
   width: 18px;
   height: 18px;
+  flex: none;
 }
 
 .role-topbar-tools strong,
@@ -1522,6 +1526,20 @@ strong {
   font-size: 11px;
 }
 
+.role-page-tools > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.role-page-tools > button svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
 .role-queue-section {
   margin-top: 11px;
 }
@@ -1544,7 +1562,8 @@ strong {
 }
 
 .role-queue-list {
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
@@ -1680,7 +1699,8 @@ strong {
 }
 
 .role-waiting-list {
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
@@ -2715,7 +2735,70 @@ strong {
   }
 }
 
+@media (max-width: 960px) {
+  .role-workbench {
+    position: relative;
+  }
+
+  .role-workbench.has-inspector {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .role-inspector {
+    width: min(360px, 100%);
+    position: absolute;
+    z-index: 24;
+    inset: 0 0 0 auto;
+    box-shadow: -18px 0 36px rgb(0 0 0 / 36%);
+  }
+}
+
 @media (max-width: 720px) {
+  .shell-dialog-backdrop {
+    padding: 12px;
+  }
+
+  .shell-dialog {
+    width: 100%;
+    max-height: calc(100vh - 24px);
+    padding: 18px;
+  }
+
+  .shell-role-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .role-shell-topbar {
+    grid-template-columns: auto minmax(0, 1fr) 205px;
+    padding-inline: 10px;
+  }
+
+  .role-topbar-brand {
+    gap: 8px;
+  }
+
+  .role-demo-chip {
+    display: none;
+  }
+
+  .role-topbar-tools {
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+
+  .role-queue-row.is-primary {
+    grid-template-columns:
+      44px minmax(112px, 1.15fr) minmax(106px, 1fr)
+      58px 100px;
+    gap: 6px;
+    padding-inline: 10px;
+  }
+
+  .role-primary-action {
+    gap: 5px;
+    font-size: 12px;
+  }
+
   .demo-time-dialog,
   .sandbox-reset-dialog {
     padding: 24px 18px;
@@ -2805,6 +2888,96 @@ strong {
 
   .role-context-facts {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .role-workbench-main {
+    padding-inline: 10px;
+  }
+
+  .role-page-title {
+    min-height: 0;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    padding: 0 0 12px;
+  }
+
+  .role-page-title > div:first-child {
+    width: 100%;
+  }
+
+  .role-page-title h1 {
+    white-space: nowrap;
+  }
+
+  .role-page-tools {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .role-page-tools label {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .role-page-tools input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .role-page-tools > button {
+    min-width: 94px;
+    flex: none;
+    padding-inline: 10px;
+  }
+
+  .role-queue-row.is-primary {
+    min-height: 150px;
+    grid-template-areas:
+      "clock person amount"
+      ". schedule schedule"
+      "action action action";
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .role-queue-row.is-primary > time {
+    grid-area: clock;
+  }
+
+  .role-queue-row.is-primary > .role-row-person {
+    grid-area: person;
+  }
+
+  .role-queue-row.is-primary > .is-schedule {
+    grid-area: schedule;
+  }
+
+  .role-queue-row.is-primary > .is-seat {
+    display: none;
+  }
+
+  .role-queue-row.is-primary > .is-amount {
+    grid-area: amount;
+    justify-items: end;
+  }
+
+  .role-queue-row.is-primary > .role-primary-action {
+    min-height: 42px;
+    grid-area: action;
+  }
+
+  .role-summary-stack button {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 12px;
+    padding-inline: 14px;
+  }
+
+  .role-summary-stack span {
+    display: none;
   }
 }
 

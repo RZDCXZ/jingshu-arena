@@ -27,6 +27,8 @@ import { RoleSwitchDialog, StaleRoleDialog } from "./role-context-dialogs";
 import { roleMeta, type RolePageId } from "./role-context-model";
 import { RoleWorkbench } from "./role-workbench";
 
+const narrowWorkbenchQuery = "(max-width: 960px)";
+
 function Brand() {
   return (
     <div className="shell-brand" aria-label="竞枢 Jingshu Arena">
@@ -192,6 +194,20 @@ export function RoleContextShell({
     setActivePage(roleMeta[context.role.id].defaultPage);
     setFilter("");
   }, [context.role.id]);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(narrowWorkbenchQuery);
+    const closeInspectorOnNarrowViewport = (matches: boolean) => {
+      if (matches) setInspectorOpen(false);
+    };
+    const handleViewportChange = (event: MediaQueryListEvent) => {
+      closeInspectorOnNarrowViewport(event.matches);
+    };
+
+    closeInspectorOnNarrowViewport(mediaQuery.matches);
+    mediaQuery.addEventListener("change", handleViewportChange);
+    return () => mediaQuery.removeEventListener("change", handleViewportChange);
+  }, []);
 
   useEffect(() => {
     if (!stale) return;

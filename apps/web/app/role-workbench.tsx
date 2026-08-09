@@ -6,6 +6,7 @@ import {
   MagnifyingGlass,
   Package,
   Pulse,
+  SidebarSimple,
   User,
   Wrench,
 } from "@phosphor-icons/react";
@@ -146,8 +147,13 @@ export function RoleWorkbench({
               />
             </label>
             {!inspectorOpen ? (
-              <button onClick={() => onInspector(true)} type="button">
-                展开当前对象
+              <button
+                aria-label="展开当前对象"
+                onClick={() => onInspector(true)}
+                type="button"
+              >
+                <SidebarSimple />
+                <span>展开详情</span>
               </button>
             ) : null}
           </div>
@@ -175,15 +181,15 @@ export function RoleWorkbench({
                   </strong>
                   <small>{currentRow.status}</small>
                 </span>
-                <span className="role-row-detail">
+                <span className="role-row-detail is-schedule">
                   <span>{currentRow.time}</span>
                   <small>{currentRow.arrival}</small>
                 </span>
-                <span className="role-row-detail">
+                <span className="role-row-detail is-seat">
                   <small>竞技区</small>
                   <strong>{currentRow.seat.replace("竞技区 ", "")}</strong>
                 </span>
-                <span className="role-row-detail">
+                <span className="role-row-detail is-amount">
                   <small>模拟金额</small>
                   <strong>¥30.00</strong>
                 </span>

@@ -454,6 +454,154 @@ test("shared shell exposes the signed persona, role, scope, lifecycle, and fresh
   await expect(roleTrigger).toBeFocused();
 });
 
+test("narrow workbench collapses the inspector without clipping the primary surface", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterStaffShell(page);
+  await expect(
+    page.getByRole("complementary", { name: "当前选中对象" }),
+  ).toBeVisible();
+
+  await page.setViewportSize({ width: 883, height: 866 });
+
+  await expect(
+    page.getByRole("complementary", { name: "当前选中对象" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "展开当前对象" }),
+  ).toBeVisible();
+
+  const layout = await page.evaluate(() => {
+    const main = document.querySelector<HTMLElement>(".role-workbench-main");
+    const primary = document.querySelector<HTMLElement>(
+      ".role-queue-row.is-primary",
+    );
+    const summary = document.querySelector<HTMLElement>(
+      ".role-summary-stack button",
+    );
+
+    return {
+      bodyClientWidth: document.body.clientWidth,
+      bodyScrollWidth: document.body.scrollWidth,
+      mainWidth: main?.getBoundingClientRect().width ?? 0,
+      primaryClientWidth: primary?.clientWidth ?? 0,
+      primaryScrollWidth: primary?.scrollWidth ?? 0,
+      primaryWidth: primary?.getBoundingClientRect().width ?? 0,
+      summaryHeight: summary?.getBoundingClientRect().height ?? 0,
+    };
+  });
+
+  expect(layout.bodyScrollWidth).toBe(layout.bodyClientWidth);
+  expect(layout.primaryScrollWidth).toBe(layout.primaryClientWidth);
+  expect(layout.mainWidth).toBeGreaterThan(layout.primaryWidth);
+  expect(layout.summaryHeight).toBeLessThan(80);
+
+  await page.setViewportSize({ width: 452, height: 413 });
+  const compactLayout = await page.evaluate(() => {
+    const title = document.querySelector<HTMLElement>(".role-page-title h1");
+    const expand = document.querySelector<HTMLElement>(
+      ".role-page-tools > button",
+    );
+    const primary = document.querySelector<HTMLElement>(
+      ".role-queue-row.is-primary",
+    );
+
+    return {
+      expandHeight: expand?.getBoundingClientRect().height ?? 0,
+      primaryClientWidth: primary?.clientWidth ?? 0,
+      primaryHeight: primary?.getBoundingClientRect().height ?? 0,
+      primaryScrollWidth: primary?.scrollWidth ?? 0,
+      titleHeight: title?.getBoundingClientRect().height ?? 0,
+    };
+  });
+
+  expect(compactLayout.primaryScrollWidth).toBe(
+    compactLayout.primaryClientWidth,
+  );
+  expect(compactLayout.primaryHeight).toBeGreaterThan(130);
+  expect(compactLayout.primaryHeight).toBeLessThan(180);
+  expect(compactLayout.expandHeight).toBeLessThan(50);
+  expect(compactLayout.titleHeight).toBeLessThan(40);
+
+  await page.setViewportSize({ width: 366, height: 866 });
+  const compactSummary = await page.evaluate(() => {
+    const summary = document.querySelector<HTMLElement>(
+      ".role-summary-stack button",
+    );
+    const summaryText = summary?.querySelector<HTMLElement>("span");
+
+    return {
+      summaryClientWidth: summary?.clientWidth ?? 0,
+      summaryHeight: summary?.getBoundingClientRect().height ?? 0,
+      summaryScrollWidth: summary?.scrollWidth ?? 0,
+      summaryTextDisplay: summaryText
+        ? getComputedStyle(summaryText).display
+        : "",
+    };
+  });
+
+  expect(compactSummary.summaryTextDisplay).toBe("none");
+  expect(compactSummary.summaryHeight).toBeLessThan(80);
+  expect(compactSummary.summaryScrollWidth).toBe(
+    compactSummary.summaryClientWidth,
+  );
+
+  await page.getByRole("button", { name: "展开当前对象" }).click();
+  await expect(
+    page.getByRole("complementary", { name: "当前选中对象" }),
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
+});
+
+test("narrow role switch dialog follows the single-column design", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 407, height: 866 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: /打开角色切换/u }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "切换演示角色" }),
+  ).toBeVisible();
+
+  const layout = await page.evaluate(() => {
+    const dialog = document.querySelector<HTMLElement>(".role-switch-dialog");
+    const grid = document.querySelector<HTMLElement>(".shell-role-grid");
+    const cards = Array.from(
+      grid?.querySelectorAll<HTMLElement>("button") ?? [],
+    );
+    const dialogRect = dialog?.getBoundingClientRect();
+
+    return {
+      bodyClientWidth: document.body.clientWidth,
+      bodyScrollWidth: document.body.scrollWidth,
+      cardHeights: cards.map((card) => card.getBoundingClientRect().height),
+      cardWidths: cards.map((card) => card.getBoundingClientRect().width),
+      cardXs: cards.map((card) => card.getBoundingClientRect().x),
+      dialogClientHeight: dialog?.clientHeight ?? 0,
+      dialogHeight: dialogRect?.height ?? 0,
+      dialogWidth: dialogRect?.width ?? 0,
+      gridColumns: grid ? getComputedStyle(grid).gridTemplateColumns : "",
+    };
+  });
+
+  expect(layout.bodyScrollWidth).toBe(layout.bodyClientWidth);
+  expect(layout.dialogWidth).toBeGreaterThan(370);
+  expect(layout.dialogWidth).toBeLessThanOrEqual(383);
+  expect(layout.dialogHeight).toBeLessThanOrEqual(842);
+  expect(layout.dialogClientHeight).toBeGreaterThan(650);
+  expect(layout.cardWidths).toHaveLength(4);
+  expect(new Set(layout.cardXs).size).toBe(1);
+  expect(layout.cardWidths.every((width) => width > 330)).toBe(true);
+  expect(layout.cardHeights.every((height) => height >= 110)).toBe(true);
+  expect(layout.cardHeights.every((height) => height < 130)).toBe(true);
+  expect(layout.gridColumns.split(" ")).toHaveLength(1);
+
+  await page.getByRole("button", { name: "关闭角色切换" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
 test("business-time tool previews impacts and commits the clock atomically", async ({
   context,
   page,
