@@ -626,7 +626,7 @@ function resolveActionModal(action) {
       confirmLabel: "保存门店资料",
       fields: [
         { label: "门店工作名称", value: action.name || "棱镜旗舰店" },
-        { label: "虚构城市", value: action.city || "澄江市（虚构）" },
+        { label: "虚构城市", value: action.city || "栖光市（虚构）" },
         {
           label: "演示介绍（最多 500 字）",
           value:

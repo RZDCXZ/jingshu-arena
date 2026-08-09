@@ -200,7 +200,7 @@ export function ChainDashboard({ navigate, onExport }) {
                   <Line
                     type="monotone"
                     dataKey="standard"
-                    name="折线标准店"
+                    name="星桥标准店"
                     stroke="#59d8ff"
                     strokeWidth={2.5}
                     dot={false}
@@ -208,7 +208,7 @@ export function ChainDashboard({ navigate, onExport }) {
                   <Line
                     type="monotone"
                     dataKey="newStore"
-                    name="启点新店"
+                    name="极点新店"
                     stroke="#b9a7ff"
                     strokeWidth={2.5}
                     dot={false}
@@ -235,7 +235,7 @@ export function ChainDashboard({ navigate, onExport }) {
               <button onClick={() => navigate("store-compare")}>
                 <StatusPill tone="warning">维护</StatusPill>
                 <span>
-                  <strong>启点新店 · 维护不可用率 6.2%</strong>
+                  <strong>极点新店 · 维护不可用率 6.2%</strong>
                   <small>1 个座位处理中</small>
                 </span>
                 <ArrowRight />
@@ -243,7 +243,7 @@ export function ChainDashboard({ navigate, onExport }) {
               <button onClick={() => navigate("hq-people")}>
                 <StatusPill tone="warning">交接</StatusPill>
                 <span>
-                  <strong>折线标准店 · 交接未确认</strong>
+                  <strong>星桥标准店 · 交接未确认</strong>
                   <small>已超过班次开始 30 分钟</small>
                 </span>
                 <ArrowRight />
@@ -290,8 +290,8 @@ export function StoreComparePage() {
           <Select label="门店" value="全部三店">
             <option>全部三店</option>
             <option>棱镜旗舰店</option>
-            <option>折线标准店</option>
-            <option>启点新店</option>
+            <option>星桥标准店</option>
+            <option>极点新店</option>
           </Select>
           <Select label="经营日范围" value="最近 7 个经营日">
             <option>当前经营日</option>
@@ -356,13 +356,13 @@ export function StoreComparePage() {
                   />
                   <Bar
                     dataKey="standard"
-                    name="折线标准店"
+                    name="星桥标准店"
                     fill="#59d8ff"
                     radius={[3, 3, 0, 0]}
                   />
                   <Bar
                     dataKey="newStore"
-                    name="启点新店"
+                    name="极点新店"
                     fill="#b9a7ff"
                     radius={[3, 3, 0, 0]}
                   />
@@ -667,7 +667,7 @@ export function HqStoreConfigPage({ onAction, readonly }) {
                 </label>
                 <label className="field">
                   <span>虚构城市</span>
-                  <input defaultValue="澄江市（虚构）" />
+                  <input defaultValue="栖光市（虚构）" />
                 </label>
                 <label className="field field-full">
                   <span>公开演示说明</span>
@@ -794,7 +794,7 @@ export function HqPeoplePage() {
       alert: "交接待提交 1",
     },
     {
-      store: "折线标准店",
+      store: "星桥标准店",
       staff: 9,
       managers: 1,
       current: 5,
@@ -802,7 +802,7 @@ export function HqPeoplePage() {
       alert: "交接未确认 1",
     },
     {
-      store: "启点新店",
+      store: "极点新店",
       staff: 6,
       managers: 1,
       current: 3,
@@ -880,12 +880,12 @@ export function HqPeoplePage() {
                 <b>92%</b>
               </div>
               <div>
-                <span>折线标准店</span>
+                <span>星桥标准店</span>
                 <progress value="86" max="100" />
                 <b>86%</b>
               </div>
               <div>
-                <span>启点新店</span>
+                <span>极点新店</span>
                 <progress value="68" max="100" />
                 <b>68%</b>
               </div>

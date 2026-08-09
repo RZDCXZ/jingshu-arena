@@ -356,10 +356,10 @@ export const stores = [
     alert: "报修待验证 1",
   },
   {
-    name: "折线标准店",
+    name: "星桥标准店",
     label: "标准店",
     seats: 64,
-    hours: "10:00–次日02:00",
+    hours: "10:00–次日 02:00",
     utilization: "62.4%",
     maintenance: "1.6%",
     revenue: "¥10,820",
@@ -367,7 +367,7 @@ export const stores = [
     alert: "交接异常 1",
   },
   {
-    name: "启点新店",
+    name: "极点新店",
     label: "新店",
     seats: 40,
     hours: "12:00–24:00",

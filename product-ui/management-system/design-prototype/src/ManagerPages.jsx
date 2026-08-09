@@ -455,7 +455,7 @@ export function StoreConfigPage({ onAction, readonly }) {
                 </label>
                 <label className="field">
                   <span>虚构城市</span>
-                  <input defaultValue="澄江市（虚构）" />
+                  <input defaultValue="栖光市（虚构）" />
                 </label>
                 <label className="field field-full">
                   <span>演示介绍</span>
@@ -470,7 +470,7 @@ export function StoreConfigPage({ onAction, readonly }) {
                     kind: "manager-store-profile",
                     label: "保存门店资料",
                     name: "棱镜旗舰店",
-                    city: "澄江市（虚构）",
+                    city: "栖光市（虚构）",
                     description:
                       "96 座、24 小时运营的主演示门店，用于展示跨角色预约、订单与维修联动。",
                   })
