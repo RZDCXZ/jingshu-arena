@@ -98,7 +98,7 @@ interface CreationRequestRow {
   payload_hash: string;
   sandbox_id: string;
   selected_role: PublicRole;
-  visitor_key_hash: string;
+  visitor_key_hash: string | null;
 }
 
 function formatBusinessHours(store: StoreRow): string {
@@ -230,7 +230,31 @@ export function createPublicSandboxDatabase(
                from sandbox_creation_requests where creation_key_hash = $1`,
             [creationKeyHash],
           );
-          const existing = existingRequest.rows[0];
+          let existing = existingRequest.rows[0];
+          if (!existing) {
+            throw new PublicSandboxOwnershipConflictError();
+          }
+          if (
+            existing.visitor_key_hash === null &&
+            existing.payload_hash === payloadHash
+          ) {
+            const claimedRequest = await client.query<CreationRequestRow>(
+              `update sandbox_creation_requests
+                  set visitor_key_hash = $2
+                where creation_key_hash = $1 and visitor_key_hash is null
+                returning visitor_key_hash, payload_hash, sandbox_id, selected_role`,
+              [creationKeyHash, visitorKeyHash],
+            );
+            existing =
+              claimedRequest.rows[0] ??
+              (
+                await client.query<CreationRequestRow>(
+                  `select visitor_key_hash, payload_hash, sandbox_id, selected_role
+                     from sandbox_creation_requests where creation_key_hash = $1`,
+                  [creationKeyHash],
+                )
+              ).rows[0];
+          }
           if (!existing || existing.visitor_key_hash !== visitorKeyHash) {
             throw new PublicSandboxOwnershipConflictError();
           }

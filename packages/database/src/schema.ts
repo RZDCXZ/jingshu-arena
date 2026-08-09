@@ -125,7 +125,7 @@ export const sandboxCreationRequests = pgTable(
   "sandbox_creation_requests",
   {
     creationKeyHash: text("creation_key_hash").primaryKey(),
-    visitorKeyHash: text("visitor_key_hash").notNull(),
+    visitorKeyHash: text("visitor_key_hash"),
     payloadHash: text("payload_hash").notNull(),
     sandboxId: uuid("sandbox_id")
       .notNull()

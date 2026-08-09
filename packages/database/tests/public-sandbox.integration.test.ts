@@ -180,6 +180,36 @@ describe("public sandbox creation", () => {
     });
   });
 
+  it("lets a legacy request claim its visitor binding during the 24-hour expand window", async () => {
+    const creationKey = "00000000-0000-4000-8000-000000000017";
+    const original = await database.create({
+      creationKey,
+      selectedRole: "customer",
+      visitorKey: "pre-expand-placeholder-000000000017",
+    });
+    const client = new Client({ connectionString: databaseUrl });
+
+    await client.connect();
+    try {
+      await client.query(
+        `update sandbox_creation_requests
+            set visitor_key_hash = null
+          where creation_key_hash = $1`,
+        [createHash("sha256").update(creationKey).digest("hex")],
+      );
+    } finally {
+      await client.end();
+    }
+
+    const upgraded = await database.create({
+      creationKey,
+      selectedRole: "customer",
+      visitorKey: "upgraded-visitor-000000000017",
+    });
+
+    expect(upgraded).toEqual({ ...original, replayed: true });
+  });
+
   it("rolls back the whole world when seed materialization fails", async () => {
     const command = {
       creationKey: "00000000-0000-4000-8000-000000000008",
