@@ -1,19 +1,22 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 import { Hono } from "hono";
-import { setCookie } from "hono/cookie";
-import type {
-  ApiErrorResponse,
-  ApiHealth,
-  PublicRole,
-  PublicSandboxReadyResponse,
+import { getCookie, setCookie } from "hono/cookie";
+import {
+  PUBLIC_ROLES,
+  type ApiErrorResponse,
+  type ApiHealth,
+  type PublicRole,
+  type PublicSandboxReadyResponse,
 } from "@jingshu/contracts";
 import type { PublicSandboxDatabase } from "@jingshu/database";
 
 const SESSION_COOKIE = "jingshu_session";
 const SESSION_MAX_AGE_SECONDS = 24 * 60 * 60;
-const publicRoles = new Set<PublicRole>(["customer", "staff", "manager", "hq"]);
-const IDEMPOTENCY_KEY_PATTERN =
+const VISITOR_COOKIE = "jingshu_visitor";
+const VISITOR_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+const publicRoles = new Set<PublicRole>(PUBLIC_ROLES);
+const UUID_V4_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 interface AppOptions {
@@ -46,6 +49,63 @@ function issueSessionToken(
   return `${payload}.${signature}`;
 }
 
+function signVisitorPayload(payload: string, secret: string): Buffer {
+  return createHmac("sha256", secret)
+    .update("jingshu-public-visitor-v1\0")
+    .update(payload)
+    .digest();
+}
+
+function issueVisitorToken(visitorKey: string, secret: string): string {
+  const payload = Buffer.from(
+    JSON.stringify({ version: 1, visitorKey }),
+  ).toString("base64url");
+  const signature = signVisitorPayload(payload, secret).toString("base64url");
+  return `${payload}.${signature}`;
+}
+
+function readVisitorKey(
+  token: string | undefined,
+  secret: string,
+): string | null {
+  if (!token || token.length > 2_048) return null;
+
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [payload, encodedSignature] = parts;
+  if (!payload || !encodedSignature) return null;
+
+  try {
+    const expectedSignature = signVisitorPayload(payload, secret);
+    const suppliedSignature = Buffer.from(encodedSignature, "base64url");
+    if (
+      suppliedSignature.length !== expectedSignature.length ||
+      !timingSafeEqual(suppliedSignature, expectedSignature)
+    ) {
+      return null;
+    }
+
+    const parsed: unknown = JSON.parse(
+      Buffer.from(payload, "base64url").toString("utf8"),
+    );
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("version" in parsed) ||
+      parsed.version !== 1 ||
+      !("visitorKey" in parsed) ||
+      typeof parsed.visitorKey !== "string" ||
+      !UUID_V4_PATTERN.test(parsed.visitorKey)
+    ) {
+      return null;
+    }
+
+    return parsed.visitorKey;
+  } catch {
+    return null;
+  }
+}
+
 function errorBody(
   code: string,
   message: string,
@@ -65,6 +125,17 @@ function isIdempotencyConflict(
   );
 }
 
+function isOwnershipConflict(
+  error: unknown,
+): error is { code: "PUBLIC_SANDBOX_OWNERSHIP_CONFLICT" } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "PUBLIC_SANDBOX_OWNERSHIP_CONFLICT"
+  );
+}
+
 export function createApp(options: AppOptions = {}) {
   const app = new Hono();
 
@@ -74,6 +145,39 @@ export function createApp(options: AppOptions = {}) {
       status: "ready",
     } satisfies ApiHealth),
   );
+
+  app.get("/api/v1/public/visitor", (context) => {
+    const requestId = randomUUID();
+    context.header("X-Request-Id", requestId);
+    context.header("Cache-Control", "no-store");
+
+    if (!options.sessionSecret) {
+      return context.json(
+        errorBody(
+          "SANDBOX_SERVICE_UNAVAILABLE",
+          "演示世界暂时无法创建，请稍后安全重试。",
+          requestId,
+        ),
+        503,
+      );
+    }
+
+    const existingVisitorKey = readVisitorKey(
+      getCookie(context, VISITOR_COOKIE),
+      options.sessionSecret,
+    );
+    if (existingVisitorKey) return context.body(null, 204);
+
+    const visitorToken = issueVisitorToken(randomUUID(), options.sessionSecret);
+    setCookie(context, VISITOR_COOKIE, visitorToken, {
+      httpOnly: true,
+      maxAge: VISITOR_MAX_AGE_SECONDS,
+      path: "/",
+      sameSite: "Lax",
+      secure: options.secureCookies ?? process.env.NODE_ENV === "production",
+    });
+    return context.body(null, 204);
+  });
 
   app.post("/api/v1/public/sandboxes", async (context) => {
     const requestId = randomUUID();
@@ -95,7 +199,7 @@ export function createApp(options: AppOptions = {}) {
     }
 
     const creationKey = context.req.header("Idempotency-Key");
-    if (!creationKey || !IDEMPOTENCY_KEY_PATTERN.test(creationKey)) {
+    if (!creationKey || !UUID_V4_PATTERN.test(creationKey)) {
       return context.json(
         errorBody(
           "INVALID_IDEMPOTENCY_KEY",
@@ -117,10 +221,26 @@ export function createApp(options: AppOptions = {}) {
       );
     }
 
+    const visitorKey = readVisitorKey(
+      getCookie(context, VISITOR_COOKIE),
+      options.sessionSecret,
+    );
+    if (!visitorKey) {
+      return context.json(
+        errorBody(
+          "PUBLIC_VISITOR_CONTEXT_REQUIRED",
+          "访客上下文已失效，请重新选择角色后安全重试。",
+          requestId,
+        ),
+        428,
+      );
+    }
+
     try {
       const result = await options.sandboxDatabase.create({
         creationKey,
         selectedRole: body.role,
+        visitorKey,
       });
       const sessionToken = issueSessionToken(
         result.sandboxId,
@@ -160,6 +280,17 @@ export function createApp(options: AppOptions = {}) {
           errorBody(
             "PUBLIC_SANDBOX_IDEMPOTENCY_CONFLICT",
             "这次重试与原创建请求不一致，请重新选择角色。",
+            requestId,
+          ),
+          409,
+        );
+      }
+
+      if (isOwnershipConflict(error)) {
+        return context.json(
+          errorBody(
+            "PUBLIC_SANDBOX_OWNERSHIP_CONFLICT",
+            "该创建请求不属于当前访客，请重新选择角色。",
             requestId,
           ),
           409,

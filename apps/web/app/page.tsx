@@ -1,7 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import {
   ArrowRight,
   Buildings,
@@ -101,14 +102,25 @@ function Brand() {
   );
 }
 
-function PublicHeader({ onExplore }: { onExplore?: () => void }) {
+function PublicHeader({
+  exploreButtonRef,
+  onExplore,
+}: {
+  exploreButtonRef?: RefObject<HTMLButtonElement | null>;
+  onExplore?: () => void;
+}) {
   return (
     <header className="public-header">
       <Brand />
       <div className="header-actions">
         <span className="demo-chip">演示数据</span>
         {onExplore ? (
-          <button className="text-button" type="button" onClick={onExplore}>
+          <button
+            className="text-button"
+            onClick={onExplore}
+            ref={exploreButtonRef}
+            type="button"
+          >
             只读了解
           </button>
         ) : null}
@@ -117,19 +129,71 @@ function PublicHeader({ onExplore }: { onExplore?: () => void }) {
   );
 }
 
-function ReadonlyOverview({ onClose }: { onClose: () => void }) {
+function ReadonlyOverview({
+  onClose,
+  returnFocusRef,
+}: {
+  onClose: () => void;
+  returnFocusRef: RefObject<HTMLButtonElement | null>;
+}) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const returnFocusTarget = returnFocusRef.current;
+    closeButtonRef.current?.focus();
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+        ),
+      );
+      const first = focusable.at(0);
+      const last = focusable.at(-1);
+      if (!first || !last) return;
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (!dialog.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    dialog?.addEventListener("keydown", handleKeyDown);
+    return () => {
+      dialog?.removeEventListener("keydown", handleKeyDown);
+      returnFocusTarget?.focus();
+    };
+  }, [onClose, returnFocusRef]);
+
   return (
     <div className="dialog-backdrop" role="presentation">
       <section
         aria-labelledby="readonly-title"
         aria-modal="true"
         className="readonly-dialog"
+        ref={dialogRef}
         role="dialog"
       >
         <button
           aria-label="关闭只读了解"
           className="icon-button"
           onClick={onClose}
+          ref={closeButtonRef}
           type="button"
         >
           <X weight="bold" />
@@ -174,10 +238,14 @@ function ReadonlyOverview({ onClose }: { onClose: () => void }) {
 
 function PublicEntry({ onCreate }: { onCreate: (role: PublicRole) => void }) {
   const [showReadonly, setShowReadonly] = useState(false);
+  const readonlyTriggerRef = useRef<HTMLButtonElement>(null);
 
   return (
     <main className="public-entry">
-      <PublicHeader onExplore={() => setShowReadonly(true)} />
+      <PublicHeader
+        exploreButtonRef={readonlyTriggerRef}
+        onExplore={() => setShowReadonly(true)}
+      />
       <section className="public-hero" aria-labelledby="product-title">
         <div className="public-hero-copy">
           <span className="eyebrow">电竞场馆预约与运营协同演示</span>
@@ -286,7 +354,10 @@ function PublicEntry({ onCreate }: { onCreate: (role: PublicRole) => void }) {
         <span>人民币 · Asia/Shanghai · 经营日 06:00 开始</span>
       </footer>
       {showReadonly ? (
-        <ReadonlyOverview onClose={() => setShowReadonly(false)} />
+        <ReadonlyOverview
+          onClose={() => setShowReadonly(false)}
+          returnFocusRef={readonlyTriggerRef}
+        />
       ) : null}
     </main>
   );
@@ -462,6 +533,28 @@ export default function PublicEntryPage() {
     );
 
     try {
+      const visitorResponse = await fetch("/api/v1/public/visitor", {
+        cache: "no-store",
+        credentials: "same-origin",
+        method: "GET",
+        signal: controller.signal,
+      });
+      if (!visitorResponse.ok) {
+        const visitorError = (await visitorResponse
+          .json()
+          .catch(() => null)) as ApiErrorResponse | null;
+        setFailure({
+          message:
+            visitorError?.error?.message ??
+            "访客上下文无法建立，请稍后安全重试。",
+          ...(visitorError?.error?.requestId
+            ? { requestId: visitorError.error.requestId }
+            : {}),
+        });
+        setStage("error");
+        return;
+      }
+
       const response = await fetch("/api/v1/public/sandboxes", {
         body: JSON.stringify({ role }),
         credentials: "same-origin",

@@ -36,6 +36,18 @@ const readyWorld = {
   },
 };
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/v1/public/visitor", async (route) => {
+    await route.fulfill({
+      headers: {
+        "set-cookie":
+          "jingshu_visitor=test.payload; Max-Age=2592000; Path=/; HttpOnly; SameSite=Lax",
+      },
+      status: 204,
+    });
+  });
+});
+
 test("public entry explains every boundary without creating a sandbox", async ({
   page,
 }) => {
@@ -74,10 +86,21 @@ test("public entry explains every boundary without creating a sandbox", async ({
   await expect(page.getByText("推荐起点", { exact: true })).toBeVisible();
   expect(creationRequests).toEqual([]);
 
-  await page.getByRole("button", { name: "只读了解" }).click();
+  const readonlyTrigger = page.getByRole("button", { name: "只读了解" });
+  await readonlyTrigger.click();
   await expect(
     page.getByRole("heading", { name: "先看清演示边界，再决定是否创建。" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "关闭只读了解" }),
+  ).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    page.getByRole("button", { name: "返回角色入口" }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(readonlyTrigger).toBeFocused();
   expect(creationRequests).toEqual([]);
 });
 

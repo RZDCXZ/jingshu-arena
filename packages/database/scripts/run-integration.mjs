@@ -102,6 +102,11 @@ async function main() {
       ];
 
   try {
+    execFileSync("pnpm", ["--filter", "@jingshu/domain", "build"], {
+      cwd: workspaceRoot,
+      stdio: "inherit",
+    });
+
     if (!databaseUrl) {
       containerName = `jingshu-postgres-${process.pid}-${randomUUID().slice(0, 8)}`;
       execFileSync(

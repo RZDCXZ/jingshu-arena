@@ -31,6 +31,7 @@ describe("public sandbox creation", () => {
     const result = await database.create({
       creationKey: "00000000-0000-4000-8000-000000000003",
       selectedRole: "customer",
+      visitorKey: "visitor-000000000003",
     });
 
     expect(result).toEqual({
@@ -78,6 +79,7 @@ describe("public sandbox creation", () => {
     const command = {
       creationKey: "00000000-0000-4000-8000-000000000004",
       selectedRole: "staff" as const,
+      visitorKey: "visitor-000000000004",
     };
 
     const first = await database.create(command);
@@ -91,10 +93,12 @@ describe("public sandbox creation", () => {
     const first = await database.create({
       creationKey: firstCreationKey,
       selectedRole: "customer",
+      visitorKey: "visitor-000000000005",
     });
     const second = await database.create({
       creationKey: "00000000-0000-4000-8000-000000000006",
       selectedRole: "customer",
+      visitorKey: "visitor-000000000006",
     });
     const client = new Client({ connectionString: databaseUrl });
 
@@ -145,20 +149,42 @@ describe("public sandbox creation", () => {
 
   it("rejects reuse of a creation key with a different role payload", async () => {
     const creationKey = "00000000-0000-4000-8000-000000000007";
-    await database.create({ creationKey, selectedRole: "staff" });
+    const visitorKey = "visitor-000000000007";
+    await database.create({ creationKey, selectedRole: "staff", visitorKey });
 
     await expect(
-      database.create({ creationKey, selectedRole: "hq" }),
+      database.create({ creationKey, selectedRole: "hq", visitorKey }),
     ).rejects.toMatchObject({
       name: "PublicSandboxIdempotencyConflictError",
       code: "PUBLIC_SANDBOX_IDEMPOTENCY_CONFLICT",
     } satisfies Partial<PublicSandboxIdempotencyConflictError>);
   });
 
+  it("does not let another visitor replay a creation key", async () => {
+    const creationKey = "00000000-0000-4000-8000-000000000015";
+    await database.create({
+      creationKey,
+      selectedRole: "customer",
+      visitorKey: "visitor-owner-000000000015",
+    });
+
+    await expect(
+      database.create({
+        creationKey,
+        selectedRole: "customer",
+        visitorKey: "visitor-intruder-000000000015",
+      }),
+    ).rejects.toMatchObject({
+      code: "PUBLIC_SANDBOX_OWNERSHIP_CONFLICT",
+      name: "PublicSandboxOwnershipConflictError",
+    });
+  });
+
   it("rolls back the whole world when seed materialization fails", async () => {
     const command = {
       creationKey: "00000000-0000-4000-8000-000000000008",
       selectedRole: "manager" as const,
+      visitorKey: "visitor-000000000008",
     };
     const client = new Client({ connectionString: databaseUrl });
 

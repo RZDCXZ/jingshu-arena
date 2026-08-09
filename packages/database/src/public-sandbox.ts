@@ -3,16 +3,17 @@ import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import type { PoolClient } from "pg";
 import type { PublicRole } from "@jingshu/contracts";
+import { buildPublicSandboxSeed } from "@jingshu/domain";
 
 const { Pool } = pg;
 
-const SCHEMA_VERSION = "2";
-const SEED_VERSION = "2026-08-09.1";
 const SANDBOX_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const publicSandboxSeed = buildPublicSandboxSeed();
 
 export interface CreatePublicSandboxInput {
   creationKey: string;
   selectedRole: PublicRole;
+  visitorKey: string;
 }
 
 export interface PublicSandboxResult {
@@ -53,65 +54,17 @@ export class PublicSandboxIdempotencyConflictError extends Error {
   }
 }
 
-const storeSeeds = [
-  {
-    code: "prism-flagship",
-    displayName: "棱镜旗舰店",
-    seatCount: 96,
-    opensAt: "00:00",
-    closesAt: "00:00",
-    closesNextDay: false,
-    isOpen24Hours: true,
-  },
-  {
-    code: "starbridge-standard",
-    displayName: "星桥标准店",
-    seatCount: 64,
-    opensAt: "10:00",
-    closesAt: "02:00",
-    closesNextDay: true,
-    isOpen24Hours: false,
-  },
-  {
-    code: "apex-new",
-    displayName: "极点新店",
-    seatCount: 40,
-    opensAt: "12:00",
-    closesAt: "00:00",
-    closesNextDay: false,
-    isOpen24Hours: false,
-  },
-] as const;
+export class PublicSandboxOwnershipConflictError extends Error {
+  readonly code = "PUBLIC_SANDBOX_OWNERSHIP_CONFLICT";
 
-const personaSeeds: ReadonlyArray<{
-  role: PublicRole;
-  displayName: string;
-  scope: string;
-  storeCode?: (typeof storeSeeds)[number]["code"];
-}> = [
-  {
-    role: "customer",
-    displayName: "林澈",
-    scope: "浏览三店 · 只管理自己的记录",
-  },
-  {
-    role: "staff",
-    displayName: "周宁",
-    scope: "棱镜旗舰店",
-    storeCode: "prism-flagship",
-  },
-  {
-    role: "manager",
-    displayName: "许知远",
-    scope: "棱镜旗舰店",
-    storeCode: "prism-flagship",
-  },
-  {
-    role: "hq",
-    displayName: "沈微",
-    scope: "固定三店",
-  },
-];
+  constructor() {
+    super("The creation key belongs to another visitor.");
+    this.name = "PublicSandboxOwnershipConflictError";
+  }
+}
+
+const storeSeeds = publicSandboxSeed.stores;
+const personaSeeds = publicSandboxSeed.personas;
 
 interface SandboxRow {
   id: string;
@@ -145,6 +98,7 @@ interface CreationRequestRow {
   payload_hash: string;
   sandbox_id: string;
   selected_role: PublicRole;
+  visitor_key_hash: string;
 }
 
 function formatBusinessHours(store: StoreRow): string {
@@ -245,6 +199,7 @@ export function createPublicSandboxDatabase(
         const operatorId = randomUUID();
         const expiresAt = new Date(Date.now() + SANDBOX_LIFETIME_MS);
         const creationKeyHash = hash(input.creationKey);
+        const visitorKeyHash = hash(input.visitorKey);
         const payloadHash = hash(
           JSON.stringify({ selectedRole: input.selectedRole }),
         );
@@ -256,21 +211,30 @@ export function createPublicSandboxDatabase(
 
         const insertedRequest = await client.query<CreationRequestRow>(
           `insert into sandbox_creation_requests (
-             creation_key_hash, payload_hash, sandbox_id, selected_role
-           ) values ($1, $2, $3, $4)
+             creation_key_hash, visitor_key_hash, payload_hash, sandbox_id, selected_role
+           ) values ($1, $2, $3, $4, $5)
            on conflict (creation_key_hash) do nothing
-           returning payload_hash, sandbox_id, selected_role`,
-          [creationKeyHash, payloadHash, sandboxId, input.selectedRole],
+           returning visitor_key_hash, payload_hash, sandbox_id, selected_role`,
+          [
+            creationKeyHash,
+            visitorKeyHash,
+            payloadHash,
+            sandboxId,
+            input.selectedRole,
+          ],
         );
 
         if (insertedRequest.rowCount === 0) {
           const existingRequest = await client.query<CreationRequestRow>(
-            `select payload_hash, sandbox_id, selected_role
+            `select visitor_key_hash, payload_hash, sandbox_id, selected_role
                from sandbox_creation_requests where creation_key_hash = $1`,
             [creationKeyHash],
           );
           const existing = existingRequest.rows[0];
-          if (!existing || existing.payload_hash !== payloadHash) {
+          if (!existing || existing.visitor_key_hash !== visitorKeyHash) {
+            throw new PublicSandboxOwnershipConflictError();
+          }
+          if (existing.payload_hash !== payloadHash) {
             throw new PublicSandboxIdempotencyConflictError();
           }
 
@@ -293,53 +257,79 @@ export function createPublicSandboxDatabase(
         await client.query(
           `insert into sandboxes (id, schema_version, seed_version, expires_at)
            values ($1, $2, $3, $4)`,
-          [sandboxId, SCHEMA_VERSION, SEED_VERSION, expiresAt],
+          [
+            sandboxId,
+            publicSandboxSeed.schemaVersion,
+            publicSandboxSeed.seedVersion,
+            expiresAt,
+          ],
         );
         await client.query(
           `insert into operators (id, sandbox_id, display_name, city)
            values ($1, $2, $3, $4)`,
-          [operatorId, sandboxId, "竞枢演示经营方", "栖光市"],
+          [
+            operatorId,
+            sandboxId,
+            publicSandboxSeed.operator.displayName,
+            publicSandboxSeed.operator.city,
+          ],
         );
 
-        const storeIds = new Map<string, string>();
-        for (const store of storeSeeds) {
-          const storeId = randomUUID();
-          storeIds.set(store.code, storeId);
-          await client.query(
-            `insert into stores (
-               id, sandbox_id, operator_id, code, display_name, seat_count,
-               opens_at, closes_at, closes_next_day, is_open_24_hours
-             ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-            [
-              storeId,
-              sandboxId,
-              operatorId,
-              store.code,
-              store.displayName,
-              store.seatCount,
-              store.opensAt,
-              store.closesAt,
-              store.closesNextDay,
-              store.isOpen24Hours,
-            ],
-          );
-        }
+        const seededStores = storeSeeds.map((store) => ({
+          ...store,
+          id: randomUUID(),
+        }));
+        const storeIds = new Map(
+          seededStores.map((store) => [store.code, store.id]),
+        );
+        await client.query(
+          `insert into stores (
+             id, sandbox_id, operator_id, code, display_name, seat_count,
+             opens_at, closes_at, closes_next_day, is_open_24_hours
+           )
+           select * from unnest(
+             $1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::text[],
+             $6::integer[], $7::time[], $8::time[], $9::boolean[], $10::boolean[]
+           )`,
+          [
+            seededStores.map((store) => store.id),
+            seededStores.map(() => sandboxId),
+            seededStores.map(() => operatorId),
+            seededStores.map((store) => store.code),
+            seededStores.map((store) => store.displayName),
+            seededStores.map((store) => store.seatCount),
+            seededStores.map((store) => store.opensAt),
+            seededStores.map((store) => store.closesAt),
+            seededStores.map((store) => store.closesNextDay),
+            seededStores.map((store) => store.isOpen24Hours),
+          ],
+        );
 
-        for (const persona of personaSeeds) {
-          await client.query(
-            `insert into demo_personas (
-               id, sandbox_id, store_id, role, display_name, scope, protected
-             ) values ($1, $2, $3, $4, $5, $6, true)`,
-            [
-              randomUUID(),
-              sandboxId,
-              persona.storeCode ? storeIds.get(persona.storeCode) : null,
-              persona.role,
-              persona.displayName,
-              persona.scope,
-            ],
-          );
-        }
+        const seededPersonas = personaSeeds.map((persona) => ({
+          ...persona,
+          id: randomUUID(),
+          storeId: persona.storeCode
+            ? (storeIds.get(persona.storeCode) ?? null)
+            : null,
+        }));
+        await client.query(
+          `insert into demo_personas (
+             id, sandbox_id, store_id, role, display_name, scope, protected
+           )
+           select * from unnest(
+             $1::uuid[], $2::uuid[], $3::uuid[], $4::text[],
+             $5::text[], $6::text[], $7::boolean[]
+           )`,
+          [
+            seededPersonas.map((persona) => persona.id),
+            seededPersonas.map(() => sandboxId),
+            seededPersonas.map((persona) => persona.storeId),
+            seededPersonas.map((persona) => persona.role),
+            seededPersonas.map((persona) => persona.displayName),
+            seededPersonas.map((persona) => persona.scope),
+            seededPersonas.map((persona) => persona.protected),
+          ],
+        );
 
         const created = await readSandboxResult(
           client,

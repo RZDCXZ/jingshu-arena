@@ -8,6 +8,7 @@ export * from "./schema.js";
 export {
   createPublicSandboxDatabase,
   PublicSandboxIdempotencyConflictError,
+  PublicSandboxOwnershipConflictError,
   type CreatePublicSandboxInput,
   type PublicSandboxDatabase,
   type PublicSandboxResult,

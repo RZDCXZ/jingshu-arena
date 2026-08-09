@@ -47,10 +47,24 @@ describe("POST /api/v1/public/sandboxes", () => {
       },
     });
 
+    const visitor = await app.request("/api/v1/public/visitor");
+    expect(visitor.status).toBe(204);
+    const visitorCookie = visitor.headers.get("set-cookie");
+    expect(visitorCookie).toMatch(
+      /^jingshu_visitor=[^.]+\.[^;]+; Max-Age=2592000; Path=\/; HttpOnly; SameSite=Lax$/u,
+    );
+    const cookieHeader = visitorCookie?.split(";", 1)[0] ?? "";
+    const existingVisitor = await app.request("/api/v1/public/visitor", {
+      headers: { Cookie: cookieHeader },
+    });
+    expect(existingVisitor.status).toBe(204);
+    expect(existingVisitor.headers.get("set-cookie")).toBeNull();
+
     const selected = await app.request("/api/v1/public/sandboxes", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Cookie: cookieHeader,
         "Idempotency-Key": creationKey,
       },
       body: JSON.stringify({ role: "customer" }),
@@ -82,10 +96,38 @@ describe("POST /api/v1/public/sandboxes", () => {
       /^jingshu_session=[^.]+\.[^;]+; Max-Age=86400; Path=\/; HttpOnly; SameSite=Lax$/u,
     );
 
+    const missingVisitor = await app.request("/api/v1/public/sandboxes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "00000000-0000-4000-8000-000000000014",
+      },
+      body: JSON.stringify({ role: "customer" }),
+    });
+    expect(missingVisitor.status).toBe(428);
+    await expect(missingVisitor.json()).resolves.toMatchObject({
+      error: { code: "PUBLIC_VISITOR_CONTEXT_REQUIRED" },
+    });
+
+    const tamperedVisitor = await app.request("/api/v1/public/sandboxes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${cookieHeader}-tampered`,
+        "Idempotency-Key": "00000000-0000-4000-8000-000000000016",
+      },
+      body: JSON.stringify({ role: "customer" }),
+    });
+    expect(tamperedVisitor.status).toBe(428);
+    await expect(tamperedVisitor.json()).resolves.toMatchObject({
+      error: { code: "PUBLIC_VISITOR_CONTEXT_REQUIRED" },
+    });
+
     const replay = await app.request("/api/v1/public/sandboxes", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Cookie: cookieHeader,
         "Idempotency-Key": creationKey,
       },
       body: JSON.stringify({ role: "customer" }),
@@ -101,6 +143,7 @@ describe("POST /api/v1/public/sandboxes", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Cookie: cookieHeader,
         "Idempotency-Key": creationKey,
       },
       body: JSON.stringify({ role: "staff" }),
@@ -112,6 +155,25 @@ describe("POST /api/v1/public/sandboxes", () => {
         code: "PUBLIC_SANDBOX_IDEMPOTENCY_CONFLICT",
         message: "这次重试与原创建请求不一致，请重新选择角色。",
       },
+    });
+
+    const otherVisitor = await app.request("/api/v1/public/visitor");
+    const otherCookie = otherVisitor.headers
+      .get("set-cookie")
+      ?.split(";", 1)[0];
+    const crossVisitorReplay = await app.request("/api/v1/public/sandboxes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: otherCookie ?? "",
+        "Idempotency-Key": creationKey,
+      },
+      body: JSON.stringify({ role: "customer" }),
+    });
+
+    expect(crossVisitorReplay.status).toBe(409);
+    await expect(crossVisitorReplay.json()).resolves.toMatchObject({
+      error: { code: "PUBLIC_SANDBOX_OWNERSHIP_CONFLICT" },
     });
   });
 });
