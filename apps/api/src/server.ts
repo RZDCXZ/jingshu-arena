@@ -6,6 +6,7 @@ import { createApp } from "./app.js";
 const port = Number.parseInt(process.env.PORT ?? "3001", 10);
 const databaseUrl = process.env.DATABASE_URL;
 const sessionSecret = process.env.SESSION_SECRET;
+const publicOrigin = process.env.PUBLIC_ORIGIN ?? "http://127.0.0.1:3000";
 
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is required to start the Jingshu API.");
@@ -16,6 +17,7 @@ if (!sessionSecret || sessionSecret.length < 32) {
 
 const database = createPublicSandboxDatabase(databaseUrl);
 const app = createApp({
+  allowedOrigins: [publicOrigin],
   sandboxDatabase: database,
   sessionSecret,
 });

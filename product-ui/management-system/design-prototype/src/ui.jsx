@@ -8,6 +8,7 @@ import {
   Warning,
   X,
 } from "@phosphor-icons/react";
+import { useEffect, useRef } from "react";
 
 export function Brand({ compact = false, onClick }) {
   const content = (
@@ -307,6 +308,47 @@ export function Modal({
   footer,
   size = "medium",
 }) {
+  const dialogRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const returnTarget = document.activeElement;
+    const dialog = dialogRef.current;
+    const focusableSelector =
+      "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
+    dialog?.querySelector(focusableSelector)?.focus();
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current?.();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const focusable = [...dialog.querySelectorAll(focusableSelector)];
+      const first = focusable.at(0);
+      const last = focusable.at(-1);
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    dialog?.addEventListener("keydown", handleKeyDown);
+    return () => {
+      dialog?.removeEventListener("keydown", handleKeyDown);
+      if (returnTarget instanceof HTMLElement) returnTarget.focus();
+    };
+  }, []);
+
   return (
     <div
       className="overlay"
@@ -320,6 +362,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"
+        ref={dialogRef}
       >
         <header className="modal-header">
           <div>

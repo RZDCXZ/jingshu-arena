@@ -97,15 +97,27 @@ async function main() {
     ? requestedTestFiles
     : [
         "packages/database/tests/migrations.integration.test.ts",
+        "packages/database/tests/migration-upgrade.integration.test.ts",
         "packages/database/tests/public-sandbox.integration.test.ts",
         "apps/api/src/public-sandbox.integration.test.ts",
+        "apps/api/src/role-context.integration.test.ts",
       ];
 
   try {
-    execFileSync("pnpm", ["--filter", "@jingshu/domain", "build"], {
-      cwd: workspaceRoot,
-      stdio: "inherit",
-    });
+    execFileSync(
+      "pnpm",
+      [
+        "--filter",
+        "@jingshu/contracts",
+        "--filter",
+        "@jingshu/domain",
+        "build",
+      ],
+      {
+        cwd: workspaceRoot,
+        stdio: "inherit",
+      },
+    );
 
     if (!databaseUrl) {
       containerName = `jingshu-postgres-${process.pid}-${randomUUID().slice(0, 8)}`;

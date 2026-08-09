@@ -222,17 +222,59 @@ export function RoleSwitchModal({
   onSwitch,
   unsaved = false,
 }) {
+  const [pendingRole, setPendingRole] = useState(null);
+  const [returnRole, setReturnRole] = useState(null);
   const roles = [
     ["customer", "顾客", "林澈", "可浏览三店，只管理自己的记录", DeviceMobile],
     ["staff", "店员", "周宁", "棱镜旗舰店", IdentificationCard],
     ["manager", "店长", "许知远", "棱镜旗舰店", Storefront],
     ["hq", "总部运营", "沈微", "全部三店", Buildings],
   ];
+  const pending = roles.find(([id]) => id === pendingRole);
+
+  function closeOrReturn() {
+    if (pendingRole) {
+      setReturnRole(pendingRole);
+      setPendingRole(null);
+      return;
+    }
+    onClose();
+  }
+
+  if (pending) {
+    const [id, label, persona, scope, Icon] = pending;
+    return (
+      <Modal
+        title="放弃未提交输入并切换？"
+        eyebrow="未提交表单保护"
+        onClose={closeOrReturn}
+        footer={
+          <>
+            <Button autoFocus onClick={closeOrReturn}>
+              返回继续编辑
+            </Button>
+            <Button tone="primary" onClick={() => onSwitch(id)}>
+              放弃输入并切换到{label}
+            </Button>
+          </>
+        }
+      >
+        <p className="modal-intro">
+          继续切换会放弃“筛选当前队列”中的输入，但不会撤销已经提交的业务数据。
+        </p>
+        <InlineNotice tone="warning" title={`${label} · ${persona} · 虚构人物`}>
+          <Icon weight="duotone" aria-hidden="true" />
+          目标范围：{scope}
+        </InlineNotice>
+      </Modal>
+    );
+  }
+
   return (
     <Modal
       title="切换演示角色"
       eyebrow="共享演示壳"
-      onClose={onClose}
+      onClose={closeOrReturn}
       size="large"
     >
       <p className="modal-intro">
@@ -248,7 +290,15 @@ export function RoleSwitchModal({
           <button
             key={id}
             className={currentRole === id ? "is-current" : ""}
-            onClick={() => onSwitch(id)}
+            autoFocus={returnRole === id}
+            disabled={currentRole === id}
+            onClick={() => {
+              if (unsaved) {
+                setPendingRole(id);
+                return;
+              }
+              onSwitch(id);
+            }}
           >
             <Icon weight="duotone" />
             <span>
@@ -729,7 +779,11 @@ function resolveActionModal(action) {
         },
         { label: "适用时段", value: "18:00–23:00" },
         { label: "半小时价格", value: "7.50", type: "number" },
-        { label: "生效时间", value: "2026-08-09T06:00", type: "datetime-local" },
+        {
+          label: "生效时间",
+          value: "2026-08-09T06:00",
+          type: "datetime-local",
+        },
       ],
     };
   }
@@ -860,7 +914,11 @@ function resolveActionModal(action) {
           value: "已核准迟到",
           options: ["已核准迟到", "按时到岗", "批准缺勤", "撤销异常"],
         },
-        { label: "更正生效时间", value: "2026-08-08T16:12", type: "datetime-local" },
+        {
+          label: "更正生效时间",
+          value: "2026-08-08T16:12",
+          type: "datetime-local",
+        },
         {
           label: "更正原因（必填，最多 200 字）",
           value: "已核对当班记录，确认员工实际到岗时间与原始签到一致。",
@@ -881,13 +939,22 @@ function resolveActionModal(action) {
       confirmLabel: "知道了",
       dismissOnly: true,
       fields: [
-        { label: "员工", value: action.employee || "背景员工 07", readOnly: true },
+        {
+          label: "员工",
+          value: action.employee || "背景员工 07",
+          readOnly: true,
+        },
         { label: "计划班次", value: "2026-08-08 18:00–02:00", readOnly: true },
         { label: "签到窗口", value: "17:30–18:30", readOnly: true },
-        { label: "异常判定", value: "19:00 仍无模拟签到，记录为缺勤", readOnly: true },
+        {
+          label: "异常判定",
+          value: "19:00 仍无模拟签到，记录为缺勤",
+          readOnly: true,
+        },
         {
           label: "后续处理",
-          value: "如需修正，请从考勤异常列表追加更正记录；原始缺勤事实不会删除。",
+          value:
+            "如需修正，请从考勤异常列表追加更正记录；原始缺勤事实不会删除。",
           multiline: true,
           full: true,
           readOnly: true,
@@ -906,7 +973,11 @@ function resolveActionModal(action) {
       confirmLabel: "知道了",
       dismissOnly: true,
       fields: [
-        { label: "交班人", value: action.employee || "周宁 · 虚构人物", readOnly: true },
+        {
+          label: "交班人",
+          value: action.employee || "周宁 · 虚构人物",
+          readOnly: true,
+        },
         { label: "班次", value: "2026-08-08 18:00–02:00", readOnly: true },
         { label: "未完成预约", value: "5", readOnly: true },
         { label: "商品订单 / 报修", value: "4 / 3", readOnly: true },

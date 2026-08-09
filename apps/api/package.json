@@ -10,6 +10,10 @@
     "@jingshu/domain": "workspace:*",
     "hono": "4.13.1"
   },
+  "devDependencies": {
+    "@types/pg": "8.21.0",
+    "pg": "8.23.0"
+  },
   "scripts": {
     "build": "tsc --project tsconfig.json --noEmit false",
     "dev": "tsx watch src/server.ts",

@@ -13,9 +13,12 @@ if (!databaseUrl) {
 }
 
 const database = createPublicSandboxDatabase(databaseUrl);
+const publicOrigin = "https://arena.example";
 const app = createApp({
+  allowedOrigins: [publicOrigin],
   sandboxDatabase: database,
   sessionSecret: "ticket-03-integration-session-secret-32-bytes",
+  secureCookies: true,
 });
 
 beforeAll(async () => {
@@ -34,6 +37,7 @@ describe("POST /api/v1/public/sandboxes", () => {
       headers: {
         "Content-Type": "application/json",
         "Idempotency-Key": creationKey,
+        Origin: publicOrigin,
       },
       body: JSON.stringify({}),
     });
@@ -51,7 +55,7 @@ describe("POST /api/v1/public/sandboxes", () => {
     expect(visitor.status).toBe(204);
     const visitorCookie = visitor.headers.get("set-cookie");
     expect(visitorCookie).toMatch(
-      /^jingshu_visitor=[^.]+\.[^;]+; Max-Age=2592000; Path=\/; HttpOnly; SameSite=Lax$/u,
+      /^jingshu_visitor=[^.]+\.[^;]+; Max-Age=2592000; Path=\/; HttpOnly; Secure; SameSite=Lax$/u,
     );
     const cookieHeader = visitorCookie?.split(";", 1)[0] ?? "";
     const existingVisitor = await app.request("/api/v1/public/visitor", {
@@ -66,6 +70,7 @@ describe("POST /api/v1/public/sandboxes", () => {
         "Content-Type": "application/json",
         Cookie: cookieHeader,
         "Idempotency-Key": creationKey,
+        Origin: publicOrigin,
       },
       body: JSON.stringify({ role: "customer" }),
     });
@@ -81,7 +86,7 @@ describe("POST /api/v1/public/sandboxes", () => {
         scope: "浏览三店 · 只管理自己的记录",
       },
       world: {
-        schemaVersion: "2",
+        schemaVersion: "3",
         seedVersion: "2026-08-09.1",
         operator: { displayName: "竞枢演示经营方", city: "栖光市" },
         stores: [
@@ -92,15 +97,66 @@ describe("POST /api/v1/public/sandboxes", () => {
       },
     });
     expect(JSON.stringify(body)).not.toContain("sandboxId");
-    expect(selected.headers.get("set-cookie")).toMatch(
-      /^jingshu_session=[^.]+\.[^;]+; Max-Age=86400; Path=\/; HttpOnly; SameSite=Lax$/u,
+    const sessionCookie = selected.headers.get("set-cookie");
+    expect(sessionCookie).toMatch(
+      /^jingshu_session=[^.]+\.[^;]+; Max-Age=86400; Path=\/; HttpOnly; Secure; SameSite=Lax$/u,
     );
+
+    const roleContext = await app.request(
+      "/api/v1/demo/context?role=hq&storeId=forged&sandboxId=forged",
+      {
+        headers: {
+          Cookie: sessionCookie?.split(";", 1)[0] ?? "",
+          "X-Demo-Role": "hq",
+          "X-Demo-Sandbox": "forged",
+          "X-Demo-Store": "forged",
+        },
+      },
+    );
+
+    expect(roleContext.status).toBe(200);
+    await expect(roleContext.json()).resolves.toMatchObject({
+      status: "ready",
+      csrfToken: expect.stringMatching(/^[A-Za-z0-9_-]{32,}$/u),
+      contextVersion: 1,
+      role: {
+        id: "customer",
+        label: "顾客",
+      },
+      persona: {
+        displayName: "林澈",
+        protected: true,
+      },
+      storeScope: {
+        kind: "customer",
+        label: "浏览三店 · 只管理自己的记录",
+        stores: [
+          { code: "prism-flagship", displayName: "棱镜旗舰店" },
+          {
+            code: "starbridge-standard",
+            displayName: "星桥标准店",
+          },
+          { code: "apex-new", displayName: "极点新店" },
+        ],
+      },
+      capabilities: ["customer:manage-own-records"],
+      sandbox: {
+        schemaVersion: "3",
+        seedVersion: "2026-08-09.1",
+        expiresAt: expect.any(String),
+      },
+      freshness: {
+        mode: "manual",
+        observedAt: expect.any(String),
+      },
+    });
 
     const missingVisitor = await app.request("/api/v1/public/sandboxes", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Idempotency-Key": "00000000-0000-4000-8000-000000000014",
+        Origin: publicOrigin,
       },
       body: JSON.stringify({ role: "customer" }),
     });
@@ -115,6 +171,7 @@ describe("POST /api/v1/public/sandboxes", () => {
         "Content-Type": "application/json",
         Cookie: `${cookieHeader}-tampered`,
         "Idempotency-Key": "00000000-0000-4000-8000-000000000016",
+        Origin: publicOrigin,
       },
       body: JSON.stringify({ role: "customer" }),
     });
@@ -129,6 +186,7 @@ describe("POST /api/v1/public/sandboxes", () => {
         "Content-Type": "application/json",
         Cookie: cookieHeader,
         "Idempotency-Key": creationKey,
+        Origin: publicOrigin,
       },
       body: JSON.stringify({ role: "customer" }),
     });
@@ -145,6 +203,7 @@ describe("POST /api/v1/public/sandboxes", () => {
         "Content-Type": "application/json",
         Cookie: cookieHeader,
         "Idempotency-Key": creationKey,
+        Origin: publicOrigin,
       },
       body: JSON.stringify({ role: "staff" }),
     });
@@ -167,6 +226,7 @@ describe("POST /api/v1/public/sandboxes", () => {
         "Content-Type": "application/json",
         Cookie: otherCookie ?? "",
         "Idempotency-Key": creationKey,
+        Origin: publicOrigin,
       },
       body: JSON.stringify({ role: "customer" }),
     });
@@ -174,6 +234,26 @@ describe("POST /api/v1/public/sandboxes", () => {
     expect(crossVisitorReplay.status).toBe(409);
     await expect(crossVisitorReplay.json()).resolves.toMatchObject({
       error: { code: "PUBLIC_SANDBOX_OWNERSHIP_CONFLICT" },
+    });
+  });
+
+  it("rejects sandbox creation from an untrusted origin", async () => {
+    const visitor = await app.request("/api/v1/public/visitor");
+    const cookie = visitor.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
+    const response = await app.request("/api/v1/public/sandboxes", {
+      body: JSON.stringify({ role: "staff" }),
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookie,
+        "Idempotency-Key": "00000000-0000-4000-8000-000000000017",
+        Origin: "https://attacker.example",
+      },
+      method: "POST",
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "INVALID_REQUEST_ORIGIN" },
     });
   });
 });

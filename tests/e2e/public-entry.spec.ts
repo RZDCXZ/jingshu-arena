@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+const webOrigin = process.env.JINGSHU_E2E_WEB_ORIGIN ?? "http://127.0.0.1:3000";
+
 const readyWorld = {
   status: "ready",
   replayed: false,
@@ -9,7 +11,7 @@ const readyWorld = {
     scope: "浏览三店 · 只管理自己的记录",
   },
   world: {
-    schemaVersion: "2",
+    schemaVersion: "3",
     seedVersion: "2026-08-09.1",
     expiresAt: "2026-08-10T12:00:00.000Z",
     operator: { displayName: "竞枢演示经营方", city: "栖光市" },
@@ -36,7 +38,42 @@ const readyWorld = {
   },
 };
 
+const recoveredStaffContext = {
+  status: "ready",
+  csrfToken: "csrf-context-version-2-token-value",
+  contextVersion: 2,
+  role: { id: "staff", label: "店员" },
+  persona: { displayName: "周宁", protected: true },
+  storeScope: {
+    kind: "store",
+    label: "棱镜旗舰店",
+    stores: [{ code: "prism-flagship", displayName: "棱镜旗舰店" }],
+  },
+  capabilities: ["store:perform-frontline"],
+  sandbox: {
+    schemaVersion: "3",
+    seedVersion: "2026-08-09.1",
+    expiresAt: "2026-08-10T12:00:00.000Z",
+  },
+  freshness: {
+    mode: "manual",
+    observedAt: "2026-08-09T11:30:00.000Z",
+  },
+};
+
 test.beforeEach(async ({ page }) => {
+  await page.route("**/api/v1/demo/context", async (route) => {
+    await route.fulfill({
+      json: {
+        error: {
+          code: "ROLE_CONTEXT_REQUIRED",
+          message: "演示角色上下文已失效，请返回公开入口重新选择。",
+          requestId: "00000000-0000-4000-8000-000000000300",
+        },
+      },
+      status: 401,
+    });
+  });
   await page.route("**/api/v1/public/visitor", async (route) => {
     await route.fulfill({
       headers: {
@@ -104,15 +141,112 @@ test("public entry explains every boundary without creating a sandbox", async ({
   expect(creationRequests).toEqual([]);
 });
 
+test("a transient context-check failure blocks sandbox creation until retry", async ({
+  page,
+}) => {
+  let contextEnded = false;
+  const creationRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().includes("/api/v1/public/sandboxes")
+    ) {
+      creationRequests.push(request.url());
+    }
+  });
+  await page.unroute("**/api/v1/demo/context");
+  await page.route("**/api/v1/demo/context", async (route) => {
+    if (!contextEnded) {
+      await route.fulfill({
+        json: {
+          error: {
+            code: "ROLE_CONTEXT_SERVICE_UNAVAILABLE",
+            message: "角色上下文暂时无法读取，请稍后安全重试。",
+            requestId: "00000000-0000-4000-8000-000000000305",
+          },
+        },
+        status: 503,
+      });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        error: {
+          code: "ROLE_CONTEXT_REQUIRED",
+          message: "演示角色上下文已失效，请返回公开入口重新选择。",
+          requestId: "00000000-0000-4000-8000-000000000306",
+        },
+      },
+      status: 401,
+    });
+  });
+
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "暂时无法确认已有角色上下文" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /进入顾客演示/u })).toHaveCount(
+    0,
+  );
+  expect(creationRequests).toEqual([]);
+
+  contextEnded = true;
+  await page.getByRole("button", { name: "重试确认" }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "从一次预约，看见四个角色如何共同经营。",
+    }),
+  ).toBeVisible();
+  expect(creationRequests).toEqual([]);
+});
+
+test("a stale session on reload canonicalizes the server-current role", async ({
+  page,
+}) => {
+  let canonicalRefreshes = 0;
+  await page.unroute("**/api/v1/demo/context");
+  await page.route("**/api/v1/demo/context", async (route) => {
+    await route.fulfill({
+      json: {
+        error: {
+          code: "ROLE_CONTEXT_STALE",
+          message: "当前标签的旧角色上下文已失效，请刷新到当前角色。",
+          requestId: "00000000-0000-4000-8000-000000000307",
+        },
+      },
+      status: 409,
+    });
+  });
+  await page.route("**/api/v1/demo/context/refresh", async (route) => {
+    canonicalRefreshes += 1;
+    expect(route.request().method()).toBe("POST");
+    expect(route.request().postDataJSON()).toMatchObject({ mode: "canonical" });
+    await route.fulfill({ json: recoveredStaffContext, status: 200 });
+  });
+
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", {
+      name: "周宁 店员 棱镜旗舰店，打开角色切换",
+    }),
+  ).toBeVisible();
+  expect(canonicalRefreshes).toBeGreaterThan(0);
+});
+
 test("role selection shows creation progress and the versioned three-store world", async ({
   page,
 }) => {
+  let releaseCreation: (() => void) | undefined;
+  const creationReleased = new Promise<void>((resolve) => {
+    releaseCreation = resolve;
+  });
   await page.route("**/api/v1/public/sandboxes", async (route) => {
     const request = route.request();
     expect(request.method()).toBe("POST");
+    expect(request.headers().origin).toBe(webOrigin);
     expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
     expect(request.postDataJSON()).toEqual({ role: "customer" });
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    await creationReleased;
     await route.fulfill({ json: readyWorld, status: 201 });
   });
 
@@ -122,6 +256,7 @@ test("role selection shows creation progress and the versioned three-store world
   await expect(
     page.getByRole("heading", { name: "正在准备顾客视图" }),
   ).toBeVisible();
+  releaseCreation?.();
   await expect(
     page.getByRole("heading", { name: "沙箱已准备完成" }),
   ).toBeVisible();

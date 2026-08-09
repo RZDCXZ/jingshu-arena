@@ -1,4 +1,4 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "2";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "3";
 export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-09.1";
 
 type PublicSandboxRole = "customer" | "staff" | "manager" | "hq";

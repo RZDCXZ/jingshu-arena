@@ -43,6 +43,13 @@
       "when": 1786240800005,
       "tag": "0005_creation_request_visitor",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786240800006,
+      "tag": "0006_role_context",
+      "breakpoints": true
     }
   ]
 }

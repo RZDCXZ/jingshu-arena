@@ -39,7 +39,7 @@ describe("public sandbox creation", () => {
       sandboxId: expect.stringMatching(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
       ),
-      schemaVersion: "2",
+      schemaVersion: "3",
       seedVersion: "2026-08-09.1",
       expiresAt: expect.any(Date),
       selectedRole: "customer",
@@ -72,6 +72,51 @@ describe("public sandbox creation", () => {
           businessHours: "12:00–24:00",
         },
       ],
+      roleContext: {
+        sandboxId: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+        ),
+        schemaVersion: "3",
+        seedVersion: "2026-08-09.1",
+        expiresAt: expect.any(Date),
+        contextVersion: 1,
+        role: "customer",
+        persona: {
+          id: expect.stringMatching(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+          ),
+          displayName: "林澈",
+          protected: true,
+          scope: "浏览三店 · 只管理自己的记录",
+          storeId: null,
+        },
+        storeScope: {
+          kind: "customer",
+          stores: [
+            {
+              id: expect.stringMatching(
+                /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+              ),
+              code: "prism-flagship",
+              displayName: "棱镜旗舰店",
+            },
+            {
+              id: expect.stringMatching(
+                /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+              ),
+              code: "starbridge-standard",
+              displayName: "星桥标准店",
+            },
+            {
+              id: expect.stringMatching(
+                /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+              ),
+              code: "apex-new",
+              displayName: "极点新店",
+            },
+          ],
+        },
+      },
     });
   });
 
@@ -106,6 +151,34 @@ describe("public sandbox creation", () => {
     try {
       await client.query("begin");
       await client.query("set local role jingshu_runtime");
+
+      const storesWithoutSandboxContext = await client.query<{ count: string }>(
+        "select count(*)::text as count from stores",
+      );
+      const auditsWithoutSandboxContext = await client.query<{ count: string }>(
+        "select count(*)::text as count from audit_events",
+      );
+      await client.query("savepoint missing_sandbox_context_write");
+      await expect(
+        client.query(
+          `insert into audit_events (
+             id, sandbox_id, persona_id, role, action, object_type,
+             result, request_id
+           ) values ($1, $2, $3, 'customer', 'role_context.switch',
+             'role_context', 'denied', $4)`,
+          [
+            "00000000-0000-4000-8000-000000000201",
+            first.sandboxId,
+            first.roleContext.persona.id,
+            "00000000-0000-4000-8000-000000000202",
+          ],
+        ),
+      ).rejects.toThrow(/row-level security/iu);
+      await client.query("rollback to savepoint missing_sandbox_context_write");
+
+      expect(storesWithoutSandboxContext.rows[0]?.count).toBe("0");
+      expect(auditsWithoutSandboxContext.rows[0]?.count).toBe("0");
+
       await client.query("select set_config('app.sandbox_id', $1, true)", [
         first.sandboxId,
       ]);
@@ -197,6 +270,12 @@ describe("public sandbox creation", () => {
           where creation_key_hash = $1`,
         [createHash("sha256").update(creationKey).digest("hex")],
       );
+      await client.query(
+        `update sandboxes
+            set role_context_role = null
+          where id = $1`,
+        [original.sandboxId],
+      );
     } finally {
       await client.end();
     }
@@ -208,6 +287,18 @@ describe("public sandbox creation", () => {
     });
 
     expect(upgraded).toEqual({ ...original, replayed: true });
+
+    const claimed = new Client({ connectionString: databaseUrl });
+    await claimed.connect();
+    try {
+      const role = await claimed.query<{ role_context_role: string | null }>(
+        "select role_context_role from sandboxes where id = $1",
+        [original.sandboxId],
+      );
+      expect(role.rows).toEqual([{ role_context_role: "customer" }]);
+    } finally {
+      await claimed.end();
+    }
   });
 
   it("rolls back the whole world when seed materialization fails", async () => {

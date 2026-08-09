@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   ArrowsLeftRight,
@@ -113,10 +113,16 @@ export function App() {
   const [actionModal, setActionModal] = useState(null);
   const [exportModal, setExportModal] = useState(null);
   const [liveOpsTab, setLiveOpsTab] = useState("reservations");
+  const [queueFilter, setQueueFilter] = useState("");
+  const blockingReturnFocusRef = useRef(null);
 
   const meta = roleMeta[role];
   const readonly = dataMode === "readonly";
+  const blocking = dataMode === "stale" || dataMode === "expired";
   const [freshnessLabel, freshnessTone] = freshnessMeta[dataMode];
+  const blockedBackgroundProps = blocking
+    ? { "aria-hidden": true, inert: true }
+    : {};
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -149,6 +155,7 @@ export function App() {
 
   function switchRole(nextRole) {
     setOverlay(null);
+    setQueueFilter("");
     if (nextRole === "customer") {
       setCustomerHandoff(true);
       return;
@@ -298,6 +305,8 @@ export function App() {
             reservationStatus={reservationStatus}
             onReservationAction={handleReservationAction}
             navigate={navigate}
+            queueFilter={queueFilter}
+            onQueueFilter={setQueueFilter}
             readonly={readonly}
           />
         );
@@ -418,6 +427,7 @@ export function App() {
     repairStates,
     readonly,
     handoverSubmitted,
+    queueFilter,
   ]);
 
   if (initializingRole) return <SandboxInit role={initializingRole} />;
@@ -448,7 +458,7 @@ export function App() {
     <div
       className={`app-shell role-${role} ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${readonly ? "is-readonly" : ""}`}
     >
-      <header className="app-topbar">
+      <header className="app-topbar" {...blockedBackgroundProps}>
         <div className="topbar-brand">
           <Brand onClick={() => setPublicView(true)} />
           <span className="demo-chip">演示数据</span>
@@ -495,7 +505,10 @@ export function App() {
             className="freshness-button"
             aria-label={freshnessLabel}
             data-tooltip={freshnessLabel}
-            onClick={() => setOverlay("data")}
+            onClick={(event) => {
+              blockingReturnFocusRef.current = event.currentTarget;
+              setOverlay("data");
+            }}
           >
             <span className={`freshness-dot tone-${freshnessTone}`} />
             <span>{freshnessLabel}</span>
@@ -516,13 +529,19 @@ export function App() {
       </header>
 
       {dataMode === "polling" && (
-        <div className="system-banner banner-info">
+        <div
+          className="system-banner banner-info"
+          {...blockedBackgroundProps}
+        >
           <Pulse />
           实时连接不可用，当前使用轮询更新；业务数据仍以服务端为准。
         </div>
       )}
       {dataMode === "manual" && (
-        <div className="system-banner banner-warning">
+        <div
+          className="system-banner banner-warning"
+          {...blockedBackgroundProps}
+        >
           <WarningCircle />
           自动更新暂不可用。
           <button
@@ -536,20 +555,26 @@ export function App() {
         </div>
       )}
       {dataMode === "readonly" && (
-        <div className="system-banner banner-warning">
+        <div
+          className="system-banner banner-warning"
+          {...blockedBackgroundProps}
+        >
           <WarningCircle />
           当前为只读标准快照，所有写操作均已禁用。
           <button onClick={() => setDataMode("live")}>重试创建可写沙箱</button>
         </div>
       )}
 
-      <div className="app-body">
+      <div className="app-body" {...blockedBackgroundProps}>
         <aside id="primary-sidebar" className="sidebar">
           <div className="sidebar-context">
             <span className="sidebar-avatar">
               <User weight="fill" />
             </span>
-            <span className="sidebar-context-copy" aria-hidden={sidebarCollapsed}>
+            <span
+              className="sidebar-context-copy"
+              aria-hidden={sidebarCollapsed}
+            >
               <strong>{meta.store}</strong>
               <small>{meta.label}</small>
             </span>
@@ -571,7 +596,13 @@ export function App() {
             })}
           </nav>
           <div className="sidebar-footer">
-            <button className="sandbox-life" onClick={() => setOverlay("data")}>
+            <button
+              className="sandbox-life"
+              onClick={(event) => {
+                blockingReturnFocusRef.current = event.currentTarget;
+                setOverlay("data");
+              }}
+            >
               <Clock />
               <span>
                 <small>沙箱剩余</small>
@@ -592,6 +623,7 @@ export function App() {
 
       <button
         className="global-statusbar"
+        {...blockedBackgroundProps}
         onClick={() =>
           role === "hq"
             ? setPage("store-compare")
@@ -613,6 +645,7 @@ export function App() {
           currentRole={role}
           onClose={() => setOverlay(null)}
           onSwitch={switchRole}
+          unsaved={queueFilter.length > 0}
         />
       )}
       {overlay === "checklist" && (
@@ -675,9 +708,10 @@ export function App() {
       {dataMode === "stale" && (
         <BlockingState
           title="当前标签的角色上下文已失效"
-          body="另一个标签已经切换演示角色。为避免旧角色继续写入，请刷新到当前角色。"
+          body="另一个标签已经切换演示角色。旧角色写操作已停止并记录审计，不能使用缓存继续提交。"
           action="刷新到当前角色"
           onAction={() => setDataMode("live")}
+          returnFocusRef={blockingReturnFocusRef}
         />
       )}
       {dataMode === "expired" && (
@@ -689,9 +723,10 @@ export function App() {
             setDataMode("live");
             setPublicView(true);
           }}
+          returnFocusRef={blockingReturnFocusRef}
         />
       )}
-      {toast && (
+      {toast && !blocking && (
         <Toast tone={toast.tone} onClose={() => setToast(null)}>
           {toast.text}
         </Toast>
@@ -768,17 +803,53 @@ function ManagerLiveOps({
   );
 }
 
-function BlockingState({ title, body, action, onAction }) {
+function BlockingState({ title, body, action, onAction, returnFocusRef }) {
+  const dialogRef = useRef(null);
+  const actionRef = useRef(null);
+
+  useEffect(() => {
+    const returnTarget = returnFocusRef?.current ?? document.activeElement;
+    const dialog = dialogRef.current;
+    actionRef.current?.focus();
+
+    function keepFocusInside(event) {
+      if (event.key === "Tab" || event.key === "Escape") {
+        event.preventDefault();
+        actionRef.current?.focus();
+      }
+    }
+
+    dialog?.addEventListener("keydown", keepFocusInside);
+    return () => {
+      dialog?.removeEventListener("keydown", keepFocusInside);
+      window.setTimeout(() => returnTarget?.focus(), 0);
+    };
+  }, []);
+
   return (
-    <div className="blocking-state" role="alertdialog" aria-modal="true">
+    <div
+      aria-describedby="blocking-state-description"
+      aria-labelledby="blocking-state-title"
+      aria-modal="true"
+      className="blocking-state"
+      ref={dialogRef}
+      role="alertdialog"
+    >
       <div>
         <WarningCircle weight="duotone" />
         <span className="eyebrow">安全阻断</span>
-        <h2>{title}</h2>
-        <p>{body}</p>
-        <Button tone="primary" icon={Repeat} onClick={onAction}>
-          {action}
-        </Button>
+        <h2 id="blocking-state-title">{title}</h2>
+        <p id="blocking-state-description">{body}</p>
+        <button
+          autoFocus
+          className="button button-primary"
+          onClick={onAction}
+          ref={actionRef}
+          type="button"
+        >
+          <Repeat weight="bold" />
+          <span>{action}</span>
+        </button>
         <small>
           未提交的表单内容仍保留在当前标签，刷新前请确认是否需要暂存。
         </small>

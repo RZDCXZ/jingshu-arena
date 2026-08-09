@@ -5,18 +5,14 @@ import { useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import {
   ArrowRight,
-  Buildings,
   Check,
   ClockClockwise,
   Database,
-  DeviceMobile,
   Hourglass,
-  IdentificationCard,
   Info,
   LockKey,
   Monitor,
   ShieldCheck,
-  Storefront,
   Warning,
   X,
 } from "@phosphor-icons/react";
@@ -24,64 +20,60 @@ import type {
   ApiErrorResponse,
   PublicRole,
   PublicSandboxReadyResponse,
+  RoleContextReadyResponse,
 } from "@jingshu/contracts";
 
 import jingshuMark from "../../../product-ui/management-system/design-prototype/public/assets/jingshu-mark.png";
+import { publicRoleCards } from "./role-context-model";
+import { RoleContextShell } from "./role-context-shell";
 
 const REQUEST_TIMEOUT_MS = 8_000;
+const roles = publicRoleCards;
 
-const roles = [
-  {
-    description: "从两小时立即预约开始，体验模拟支付、商品订单与座位报修。",
-    icon: DeviceMobile,
-    id: "customer",
-    label: "顾客",
-    persona: "林澈",
-    recommended: true,
-    scope: "浏览三店 · 只管理自己的记录",
-  },
-  {
-    description: "办理到店、推进商品履约、处理报修与备件、完成交接。",
-    icon: IdentificationCard,
-    id: "staff",
-    label: "店员",
-    persona: "周宁",
-    recommended: false,
-    scope: "棱镜旗舰店",
-  },
-  {
-    description: "验证维修、查看单店经营、管理库存、员工排班与配置。",
-    icon: Storefront,
-    id: "manager",
-    label: "店长",
-    persona: "许知远",
-    recommended: false,
-    scope: "棱镜旗舰店",
-  },
-  {
-    description: "横向比较经营结果、维护连锁配置并导出当前筛选数据。",
-    icon: Buildings,
-    id: "hq",
-    label: "总部运营",
-    persona: "沈微",
-    recommended: false,
-    scope: "固定三店",
-  },
-] as const satisfies ReadonlyArray<{
-  id: PublicRole;
-  label: string;
-  persona: string;
-  scope: string;
-  description: string;
-  recommended?: boolean;
-  icon: typeof DeviceMobile;
-}>;
-
-type CreationStage = "entry" | "creating" | "ready" | "error" | "timeout";
+type CreationStage =
+  | "checking"
+  | "context-error"
+  | "entry"
+  | "creating"
+  | "ready"
+  | "shell"
+  | "error"
+  | "timeout";
 
 interface FailureState {
   message: string;
   requestId?: string;
+}
+
+function isEndedRoleContext(error: ApiErrorResponse | null) {
+  return (
+    error?.error?.code === "ROLE_CONTEXT_REQUIRED" ||
+    error?.error?.code === "ROLE_CONTEXT_UNAVAILABLE"
+  );
+}
+
+async function requestExistingRoleContext(signal?: AbortSignal) {
+  let response = await fetch("/api/v1/demo/context", {
+    cache: "no-store",
+    credentials: "same-origin",
+    ...(signal ? { signal } : {}),
+  });
+  let payload: unknown = await response.json().catch(() => null);
+  const apiError = payload as ApiErrorResponse | null;
+
+  if (!response.ok && apiError?.error?.code === "ROLE_CONTEXT_STALE") {
+    response = await fetch("/api/v1/demo/context/refresh", {
+      body: JSON.stringify({ mode: "canonical" }),
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+      ...(signal ? { signal } : {}),
+    });
+    payload = await response.json().catch(() => null);
+  }
+
+  return { payload, response };
 }
 
 function Brand() {
@@ -400,9 +392,11 @@ function CreationProgress({ role }: { role: PublicRole }) {
 function ReadyWorld({
   result,
   onBack,
+  onEnter,
 }: {
   result: PublicSandboxReadyResponse;
   onBack: () => void;
+  onEnter: () => void;
 }) {
   const meta = roles.find((item) => item.id === result.role) ?? roles[0];
   return (
@@ -447,13 +441,39 @@ function ReadyWorld({
             当前公开地址不包含沙箱标识、会话凭证或可写能力。
           </span>
         </div>
-        <button
-          className="button secondary-button"
-          onClick={onBack}
-          type="button"
-        >
-          返回公开入口
-        </button>
+        <div className="state-actions">
+          <button
+            className="button primary-button"
+            onClick={onEnter}
+            type="button"
+          >
+            进入{meta.label}视图
+            <ArrowRight weight="bold" />
+          </button>
+          <button
+            className="button secondary-button"
+            onClick={onBack}
+            type="button"
+          >
+            返回公开入口
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function ExistingContextCheck() {
+  return (
+    <main className="state-page">
+      <PublicHeader />
+      <section className="state-card" role="status" aria-live="polite">
+        <div className="state-icon is-loading">
+          <Hourglass weight="duotone" />
+        </div>
+        <span className="eyebrow">正在检查当前浏览器会话</span>
+        <h1>正在确认已有角色上下文</h1>
+        <p>没有已有沙箱时会直接返回公开角色入口，不会创建任何数据。</p>
       </section>
     </main>
   );
@@ -514,14 +534,133 @@ function FailureView({
   );
 }
 
+function ContextCheckFailureView({
+  failure,
+  onRetry,
+}: {
+  failure: FailureState;
+  onRetry: () => void;
+}) {
+  return (
+    <main className="state-page">
+      <PublicHeader />
+      <section className="state-card failure-card" role="alert">
+        <div className="state-icon is-warning">
+          <Warning weight="duotone" />
+        </div>
+        <span className="eyebrow">现有会话保护</span>
+        <h1>暂时无法确认已有角色上下文</h1>
+        <p>{failure.message}</p>
+        <div className="failure-proof">
+          <strong>确认完成前不会创建新的可写沙箱</strong>
+          <span>
+            这可避免瞬时网络或数据库故障覆盖仍然有效的演示会话；请安全重试当前检查。
+          </span>
+          {failure.requestId ? (
+            <code>请求关联 ID {failure.requestId}</code>
+          ) : null}
+        </div>
+        <div className="state-actions">
+          <button
+            className="button primary-button"
+            onClick={onRetry}
+            type="button"
+          >
+            重试确认
+            <ArrowRight weight="bold" />
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 export default function PublicEntryPage() {
-  const [stage, setStage] = useState<CreationStage>("entry");
+  const [stage, setStage] = useState<CreationStage>("checking");
   const [selectedRole, setSelectedRole] = useState<PublicRole>("customer");
   const [creationKey, setCreationKey] = useState("");
   const [result, setResult] = useState<PublicSandboxReadyResponse | null>(null);
+  const [roleContext, setRoleContext] =
+    useState<RoleContextReadyResponse | null>(null);
   const [failure, setFailure] = useState<FailureState>({
     message: "演示世界暂时无法创建，请稍后安全重试。",
   });
+
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+
+    void requestExistingRoleContext(controller.signal)
+      .then(({ payload, response }) => {
+        if (!active) return;
+        if (!response.ok) {
+          const apiError = payload as ApiErrorResponse | null;
+          if (response.status === 401 && isEndedRoleContext(apiError)) {
+            setStage("entry");
+            return;
+          }
+          setFailure({
+            message:
+              apiError?.error?.message ??
+              "角色上下文暂时无法确认，请稍后安全重试。",
+            ...(apiError?.error?.requestId
+              ? { requestId: apiError.error.requestId }
+              : {}),
+          });
+          setStage("context-error");
+          return;
+        }
+        const context = payload as RoleContextReadyResponse;
+        if (context.status !== "ready") {
+          throw new Error("The role-context response was incomplete.");
+        }
+        setRoleContext(context);
+        setStage("shell");
+      })
+      .catch(() => {
+        if (!active) return;
+        setFailure({ message: "角色上下文暂时无法确认，请稍后安全重试。" });
+        setStage("context-error");
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, []);
+
+  async function enterRoleContext() {
+    setStage("checking");
+    try {
+      const { payload, response } = await requestExistingRoleContext();
+      if (!response.ok) {
+        const apiError = payload as ApiErrorResponse;
+        if (response.status === 401 && isEndedRoleContext(apiError)) {
+          returnToEntry();
+          return;
+        }
+        setFailure({
+          message:
+            apiError.error?.message ??
+            "角色上下文暂时无法确认，请稍后安全重试。",
+          ...(apiError.error?.requestId
+            ? { requestId: apiError.error.requestId }
+            : {}),
+        });
+        setStage("context-error");
+        return;
+      }
+      const context = payload as RoleContextReadyResponse;
+      if (context.status !== "ready") {
+        throw new Error("The role-context response was incomplete.");
+      }
+      setRoleContext(context);
+      setStage("shell");
+    } catch {
+      setFailure({ message: "角色上下文暂时无法确认，请稍后安全重试。" });
+      setStage("context-error");
+    }
+  }
 
   async function createSandbox(role: PublicRole, key: string) {
     setStage("creating");
@@ -612,12 +751,35 @@ export default function PublicEntryPage() {
   function returnToEntry() {
     setStage("entry");
     setResult(null);
+    setRoleContext(null);
     setCreationKey("");
   }
 
+  if (stage === "checking") return <ExistingContextCheck />;
+  if (stage === "context-error")
+    return (
+      <ContextCheckFailureView
+        failure={failure}
+        onRetry={() => void enterRoleContext()}
+      />
+    );
   if (stage === "creating") return <CreationProgress role={selectedRole} />;
   if (stage === "ready" && result)
-    return <ReadyWorld result={result} onBack={returnToEntry} />;
+    return (
+      <ReadyWorld
+        result={result}
+        onBack={returnToEntry}
+        onEnter={() => void enterRoleContext()}
+      />
+    );
+  if (stage === "shell" && roleContext)
+    return (
+      <RoleContextShell
+        context={roleContext}
+        onContextChange={setRoleContext}
+        onContextUnavailable={returnToEntry}
+      />
+    );
   if (stage === "error" || stage === "timeout")
     return (
       <FailureView

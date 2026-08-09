@@ -3,6 +3,7 @@ import {
   boolean,
   check,
   integer,
+  jsonb,
   pgPolicy,
   pgTable,
   text,
@@ -33,11 +34,21 @@ export const sandboxes = pgTable(
       .defaultNow()
       .notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    roleContextRole: text("role_context_role"),
+    roleContextVersion: integer("role_context_version").default(1).notNull(),
   },
   (table) => [
     check(
       "sandboxes_expiry_after_creation",
       sql`${table.expiresAt} > ${table.createdAt}`,
+    ),
+    check(
+      "sandboxes_positive_role_context_version",
+      sql`${table.roleContextVersion} > 0`,
+    ),
+    check(
+      "sandboxes_public_role_context_role",
+      sql`${table.roleContextRole} IN ('customer', 'staff', 'manager', 'hq')`,
     ),
     pgPolicy("sandboxes_isolate_by_sandbox", {
       using: sql`${table.id} = ${sandboxSetting}`,
@@ -115,6 +126,45 @@ export const demoPersonas = pgTable(
       sql`${table.role} IN ('customer', 'staff', 'manager', 'hq')`,
     ),
     pgPolicy("demo_personas_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id").references(() => stores.id, {
+      onDelete: "restrict",
+    }),
+    personaId: uuid("persona_id").references(() => demoPersonas.id, {
+      onDelete: "restrict",
+    }),
+    role: text("role").notNull(),
+    action: text("action").notNull(),
+    objectType: text("object_type").notNull(),
+    objectId: uuid("object_id"),
+    result: text("result").notNull(),
+    reason: text("reason"),
+    requestId: uuid("request_id").notNull(),
+    beforeData: jsonb("before_data"),
+    afterData: jsonb("after_data"),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "audit_events_public_role",
+      sql`${table.role} IN ('customer', 'staff', 'manager', 'hq')`,
+    ),
+    check("audit_events_result", sql`${table.result} IN ('allowed', 'denied')`),
+    pgPolicy("audit_events_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),

@@ -2,6 +2,12 @@
 
 本文件保留已经解决的问题，供回归调查使用。当前有效性、待处理问题、验证矩阵和交付结果以 [`design-qa.md`](design-qa.md) 为准。
 
+## Ticket 03 — 公开入口与版本化三店沙箱
+
+- 检查日期：2026-08-09；范围：`WEB-G00`、`WEB-G01` 的公开入口、创建中、成功、失败、超时与安全重试。
+- 证据：`design/qa-ticket03-public-entry-comparison-1440.png`、`design/qa-ticket03-public-entry-focus-1440.png`、`design/qa-ticket03-public-entry-comparison-1024.png`、`design/qa-ticket03-public-entry-comparison-360.png`。
+- 结论：正式原型与生产实现完成 `1440 × 1024`、`1024 × 768`、`360 × 800` 同视口复核；真实 API/Postgres、幂等恢复、键盘焦点、构建与 Sites 包装测试通过，P0/P1/P2 清零，最终结果为 passed。
+
 ## Ticket 02 — 统一跨端设计基线与合成命名
 
 - 检查日期：2026-08-09；已验证契约版本：`product-ui/management-system/prod.md` 1.1。

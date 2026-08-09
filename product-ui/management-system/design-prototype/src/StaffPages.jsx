@@ -10,6 +10,7 @@ import {
   Cube,
   Handshake,
   Headphones,
+  MagnifyingGlass,
   Package,
   Receipt,
   SidebarSimple,
@@ -52,6 +53,8 @@ export function StaffWorkbench({
   reservationStatus,
   onReservationAction,
   navigate,
+  queueFilter,
+  onQueueFilter,
   readonly,
 }) {
   const hero = { ...reservations[0], status: reservationStatus };
@@ -62,6 +65,14 @@ export function StaffWorkbench({
     selected === hero.id
       ? hero
       : reservations.find((item) => item.id === selected) || hero;
+  const normalizedFilter = queueFilter.trim().toLocaleLowerCase("zh-CN");
+  const matchesFilter = (item) =>
+    !normalizedFilter ||
+    [item.customer, item.seat, item.status]
+      .join(" ")
+      .toLocaleLowerCase("zh-CN")
+      .includes(normalizedFilter);
+  const visibleUpcoming = reservations.slice(1, 4).filter(matchesFilter);
 
   return (
     <div
@@ -77,6 +88,16 @@ export function StaffWorkbench({
             <p>经营日 08月08日 06:00–次日05:59</p>
           </div>
           <div className="workbench-title-actions">
+            <label className="workbench-queue-search">
+              <MagnifyingGlass aria-hidden="true" />
+              <input
+                aria-label="筛选当前队列"
+                onChange={(event) => onQueueFilter(event.target.value)}
+                placeholder="筛选当前队列"
+                type="search"
+                value={queueFilter}
+              />
+            </label>
             <span className="freshness">
               <span />
               实时更新 · 刚刚
@@ -109,54 +130,58 @@ export function StaffWorkbench({
           <div className="queue-label">
             <h2 id="now-heading">现在</h2>
           </div>
-          <div
-            className={`hero-task ${selected === hero.id ? "is-selected" : ""}`}
-            role="button"
-            tabIndex="0"
-            onClick={() => setSelected(hero.id)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                setSelected(hero.id);
-              }
-            }}
-          >
-            <span className="hero-accent" aria-hidden="true" />
-            <time>19:30</time>
-            <span className="person-cell">
-              <User weight="fill" />
-              <span>
-                <strong>{hero.customer} · 虚构人物</strong>
-                <StatusPill>{hero.status}</StatusPill>
+          {matchesFilter(hero) ? (
+            <div
+              className={`hero-task ${selected === hero.id ? "is-selected" : ""}`}
+              role="button"
+              tabIndex="0"
+              onClick={() => setSelected(hero.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setSelected(hero.id);
+                }
+              }}
+            >
+              <span className="hero-accent" aria-hidden="true" />
+              <time>19:30</time>
+              <span className="person-cell">
+                <User weight="fill" />
+                <span>
+                  <strong>{hero.customer} · 虚构人物</strong>
+                  <StatusPill>{hero.status}</StatusPill>
+                </span>
               </span>
-            </span>
-            <span>
-              <CalendarBlank />
-              {hero.time}
-              <small>到店窗口 {hero.arrival}</small>
-            </span>
-            <span>
-              <small>竞技区</small>
-              <strong>A-18</strong>
-            </span>
-            <span>
-              <small>模拟金额</small>
-              <strong>{hero.amount}</strong>
-            </span>
-            {actionLabel !== "查看详情" && (
-              <Button
-                tone="primary"
-                icon={SignIn}
-                disabled={readonly}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onReservationAction();
-                }}
-              >
-                {actionLabel}
-              </Button>
-            )}
-          </div>
+              <span>
+                <CalendarBlank />
+                {hero.time}
+                <small>到店窗口 {hero.arrival}</small>
+              </span>
+              <span>
+                <small>竞技区</small>
+                <strong>A-18</strong>
+              </span>
+              <span>
+                <small>模拟金额</small>
+                <strong>{hero.amount}</strong>
+              </span>
+              {actionLabel !== "查看详情" && (
+                <Button
+                  tone="primary"
+                  icon={SignIn}
+                  disabled={readonly}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onReservationAction();
+                  }}
+                >
+                  {actionLabel}
+                </Button>
+              )}
+            </div>
+          ) : (
+            <p className="queue-empty">“现在”没有匹配结果。</p>
+          )}
         </section>
 
         <section className="queue-group" aria-labelledby="next-heading">
@@ -165,7 +190,7 @@ export function StaffWorkbench({
             <span>{statusCounts.arrival}</span>
           </div>
           <div className="queue-surface">
-            {reservations.slice(1, 4).map((item, index) => (
+            {visibleUpcoming.map((item, index) => (
               <button
                 key={item.id}
                 className={`queue-row queue-row-upcoming ${selected === item.id ? "is-selected" : ""}`}
@@ -190,6 +215,9 @@ export function StaffWorkbench({
                 <span className="row-note">到店窗口</span>
               </button>
             ))}
+            {visibleUpcoming.length === 0 && (
+              <p className="queue-empty">接下来 30 分钟没有匹配结果。</p>
+            )}
           </div>
         </section>
 
@@ -420,11 +448,7 @@ export function ReservationsPage({
             <h1>预约</h1>
             <p>当前经营日 · 08月08日 06:00–次日05:59</p>
           </div>
-          <Button
-            tone="secondary"
-            icon={CalendarBlank}
-            onClick={onDateRange}
-          >
+          <Button tone="secondary" icon={CalendarBlank} onClick={onDateRange}>
             经营日范围
           </Button>
         </div>
@@ -488,15 +512,15 @@ export function ReservationsPage({
             </p>
             {selected.id === reservations[0].id &&
               queueActionFor(selected.status) !== "查看详情" && (
-              <Button
-                tone="primary"
-                icon={selected.status === "已确认" ? SignIn : Pulse}
-                disabled={readonly}
-                onClick={onReservationAction}
-              >
-                {queueActionFor(selected.status)}
-              </Button>
-            )}
+                <Button
+                  tone="primary"
+                  icon={selected.status === "已确认" ? SignIn : Pulse}
+                  disabled={readonly}
+                  onClick={onReservationAction}
+                >
+                  {queueActionFor(selected.status)}
+                </Button>
+              )}
           </div>
           <section className="inspector-section">
             <h3>预约信息</h3>

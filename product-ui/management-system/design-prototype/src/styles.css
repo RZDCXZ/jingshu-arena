@@ -1876,6 +1876,46 @@ button.metric-card:hover {
   align-items: center;
   gap: 10px;
 }
+.workbench-queue-search {
+  min-width: 190px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--muted);
+}
+.workbench-queue-search:focus-within {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 2px rgb(68 194 232 / 12%);
+}
+.workbench-queue-search svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+.workbench-queue-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+.queue-empty {
+  min-height: 64px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 11px;
+}
 .inspector-restore {
   min-height: 32px;
   display: inline-flex;
@@ -2814,6 +2854,10 @@ progress::-webkit-progress-value {
 .role-switch-grid button.is-current {
   border-color: #3c657d;
   background: var(--surface-raised);
+}
+.role-switch-grid button:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 .role-switch-grid button > svg:first-child {
   width: 32px;
