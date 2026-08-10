@@ -1281,6 +1281,112 @@ export interface StaffAttendanceCommandResponse {
   readonly status: StaffAttendanceStatus;
 }
 
+export type HandoverExceptionKind =
+  "confirmation-overdue" | "late-submission" | "submission-overdue";
+
+export interface StaffHandoverSnapshot {
+  readonly capturedAt: string;
+  readonly lowStockAlerts: ReadonlyArray<{
+    readonly availableQuantity: number;
+    readonly displayName: string;
+    readonly inventoryItemId: string;
+    readonly lowStockThreshold: number;
+    readonly onHandQuantity: number;
+    readonly reservedQuantity: number;
+  }>;
+  readonly orders: ReadonlyArray<{
+    readonly lineSummary: string;
+    readonly orderId: string;
+    readonly seatCode: string;
+    readonly status:
+      | "pending-simulated-payment"
+      | "preparing"
+      | "ready-for-pickup"
+      | "simulated-paid";
+  }>;
+  readonly repairs: ReadonlyArray<{
+    readonly description: string;
+    readonly priority: "high" | "normal" | "urgent";
+    readonly repairId: string;
+    readonly seatCode: string;
+    readonly status: "assigned" | "new" | "processing" | "verification";
+  }>;
+  readonly reservations: ReadonlyArray<{
+    readonly customerDisplayName: string;
+    readonly endsAt: string;
+    readonly reservationId: string;
+    readonly seatCode: string;
+    readonly startsAt: string;
+    readonly status:
+      "arrived" | "confirmed" | "in-use" | "pending-confirmation";
+  }>;
+}
+
+export interface StaffHandover {
+  readonly confirmed: {
+    readonly businessOccurredAt: string;
+    readonly by: {
+      readonly displayName: string;
+      readonly employeeCode: string;
+    };
+    readonly recordedAt: string;
+  } | null;
+  readonly handoverId: string;
+  readonly note: string;
+  readonly shiftId: string;
+  readonly snapshot: StaffHandoverSnapshot;
+  readonly submittedAt: {
+    readonly businessOccurredAt: string;
+    readonly recordedAt: string;
+  };
+  readonly submittedBy: {
+    readonly displayName: string;
+    readonly employeeCode: string;
+  };
+}
+
+export interface StaffHandoversResponse {
+  readonly currentTime: string;
+  readonly employee: StaffShiftAttendanceResponse["employee"];
+  readonly incoming: ReadonlyArray<StaffHandover>;
+  readonly outgoing: {
+    readonly canSubmit: boolean;
+    readonly handover: StaffHandover | null;
+    readonly shiftId: string;
+    readonly snapshotPreview: StaffHandoverSnapshot;
+    readonly window: { readonly endsAt: string; readonly startsAt: string };
+  } | null;
+  readonly status: "ready";
+  readonly store: StaffShiftAttendanceResponse["store"];
+}
+
+export interface SubmitHandoverRequest {
+  readonly note: string;
+  readonly shiftId: string;
+}
+
+export interface HandoverCommandResponse extends StaffHandover {
+  readonly replayed: boolean;
+}
+
+export interface ManagerHandoverExceptionsResponse {
+  readonly currentTime: string;
+  readonly exceptions: ReadonlyArray<{
+    readonly businessOccurredAt: string;
+    readonly employee: {
+      readonly displayName: string;
+      readonly employeeCode: string;
+    };
+    readonly handover: StaffHandover | null;
+    readonly kind: HandoverExceptionKind;
+    readonly recordedAt: string;
+    readonly shiftId: string;
+    readonly window: { readonly endsAt: string; readonly startsAt: string };
+  }>;
+  readonly status: "ready";
+  readonly store: StaffShiftAttendanceResponse["store"];
+}
+
 export const DEMO_TIME_DUE_HANDLER_KINDS = [
   "pending-reservation-expiration",
   "pending-order-expiration",

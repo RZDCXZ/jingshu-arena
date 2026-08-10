@@ -12,6 +12,7 @@ import { registerCustomerMembershipRoutes } from "./customer-membership-routes.j
 import { registerCustomerOrderRoutes } from "./customer-order-routes.js";
 import { registerStaffReservationRoutes } from "./staff-reservation-routes.js";
 import { registerStaffShiftRoutes } from "./staff-shift-routes.js";
+import { registerStaffHandoverRoutes } from "./staff-handover-routes.js";
 import { registerStaffOrderRoutes } from "./staff-order-routes.js";
 import { registerManagerInventoryRoutes } from "./manager-inventory-routes.js";
 import { registerRepairIntakeRoutes } from "./repair-intake-routes.js";
@@ -65,6 +66,7 @@ export function createApp(options: AppOptions = {}) {
   registerCustomerOrderRoutes(app, services);
   registerStaffReservationRoutes(app, services);
   registerStaffShiftRoutes(app, services);
+  registerStaffHandoverRoutes(app, services);
   registerStaffOrderRoutes(app, services);
   registerManagerInventoryRoutes(app, services);
   registerRepairIntakeRoutes(app, services);

@@ -480,5 +480,41 @@ describe("role-context expand migration", () => {
         store_id: rollingStoreId,
       },
     ]);
+
+    await client.query("set role ticket04_migration_owner");
+    try {
+      await applyMigration("0020_staff_handover.sql");
+    } finally {
+      await client.query("reset role");
+    }
+    const handoverMetadata = await client.query<{ value: string }>(
+      "select value from jingshu_schema_metadata where key = 'schema_version'",
+    );
+    expect(handoverMetadata.rows).toEqual([{ value: "17" }]);
+    const handoverStructures = await client.query<{
+      confirmation_force_rls: boolean;
+      confirmation_table: string | null;
+      exception_table: string | null;
+      handover_force_rls: boolean;
+      handover_table: string | null;
+    }>(
+      `select
+         to_regclass('public.handovers')::text as handover_table,
+         to_regclass('public.handover_confirmations')::text as confirmation_table,
+         to_regclass('public.handover_exceptions')::text as exception_table,
+         (select relforcerowsecurity from pg_class
+           where oid = 'public.handovers'::regclass) as handover_force_rls,
+         (select relforcerowsecurity from pg_class
+           where oid = 'public.handover_confirmations'::regclass) as confirmation_force_rls`,
+    );
+    expect(handoverStructures.rows).toEqual([
+      {
+        confirmation_force_rls: true,
+        confirmation_table: "handover_confirmations",
+        exception_table: "handover_exceptions",
+        handover_force_rls: true,
+        handover_table: "handovers",
+      },
+    ]);
   });
 });

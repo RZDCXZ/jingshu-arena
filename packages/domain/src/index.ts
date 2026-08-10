@@ -1,5 +1,5 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "16";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.9";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "17";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.10";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -20,6 +20,42 @@ export function isSafePlainTextReason(value: string, maxLength = 200) {
 export function normalizeRepairDescription(value: string) {
   const normalized = value.normalize("NFC").replace(/\s+/gu, " ").trim();
   return isSafePlainTextReason(normalized, 500) ? normalized : null;
+}
+
+export const HANDOVER_EXCEPTION_GRACE_MS = 30 * 60 * 1_000;
+
+export type HandoverExceptionKind =
+  "confirmation-overdue" | "late-submission" | "submission-overdue";
+
+export function normalizeHandoverNote(value: string): string | null {
+  const normalized = value.normalize("NFC").replace(/\s+/gu, " ").trim();
+  if (normalized.length === 0) return "";
+  if (/(现金盘点|真实支付|支付对账)/u.test(normalized)) return null;
+  return isSafePlainTextReason(normalized, 500) ? normalized : null;
+}
+
+export function classifyHandoverExceptions(input: {
+  readonly confirmedAt: Date | null;
+  readonly currentTime: Date;
+  readonly shiftEndsAt: Date;
+  readonly submittedAt: Date | null;
+}): ReadonlyArray<HandoverExceptionKind> {
+  const deadline = input.shiftEndsAt.getTime() + HANDOVER_EXCEPTION_GRACE_MS;
+  if (input.submittedAt === null) {
+    return input.currentTime.getTime() >= deadline
+      ? ["submission-overdue"]
+      : [];
+  }
+
+  const exceptions: HandoverExceptionKind[] = [];
+  if (input.submittedAt.getTime() > input.shiftEndsAt.getTime()) {
+    exceptions.push("late-submission");
+  }
+  const confirmationReference = input.confirmedAt ?? input.currentTime;
+  if (confirmationReference.getTime() >= deadline) {
+    exceptions.push("confirmation-overdue");
+  }
+  return exceptions;
 }
 
 const HALF_HOUR_MS = 30 * 60 * 1_000;

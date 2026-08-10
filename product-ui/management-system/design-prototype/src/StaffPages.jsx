@@ -1558,8 +1558,17 @@ export function InventoryPage({
   );
 }
 
-export function ShiftPage({ onHandover, handoverSubmitted, readonly }) {
+export function ShiftPage({
+  onHandover,
+  onHandoverConfirm,
+  handoverConfirmed,
+  handoverSubmitted,
+  readonly,
+}) {
   const [tab, setTab] = useState("shift");
+  const [handoverNote, setHandoverNote] = useState(
+    "A-18 耳机报修待分派；晚高峰到店窗口较集中，请优先关注。",
+  );
   const initialAttendanceState =
     new URLSearchParams(window.location.search).get("attendanceState") ||
     "checked-in";
@@ -1781,11 +1790,14 @@ export function ShiftPage({ onHandover, handoverSubmitted, readonly }) {
           </div>
         ) : (
           <div className="split-layout handover-layout">
-            <Surface>
+            <Surface className="handover-prototype-card">
               <SectionHeading title="本班次交接快照" icon={Handshake} />
               <p className="surface-intro">
                 提交时保存未完成业务快照，提交后不可编辑，也不会随实时业务变化。
               </p>
+              <InlineNotice tone="warning" title="仅填写经营事项">
+                不包含现金盘点或真实支付对账；请勿填写真实个人信息。
+              </InlineNotice>
               <div className="snapshot-grid">
                 <div>
                   <span>未完成预约</span>
@@ -1804,15 +1816,44 @@ export function ShiftPage({ onHandover, handoverSubmitted, readonly }) {
                   <strong>3</strong>
                 </div>
               </div>
+              <div className="handover-prototype-details">
+                <div>
+                  <span>未完成预约</span>
+                  <strong>A-18 · 林澈 · 已确认</strong>
+                  <small>19:45–21:45 · 到店窗口仍开放</small>
+                </div>
+                <div>
+                  <span>商品订单</span>
+                  <strong>B-03 · 能量饮料 × 2</strong>
+                  <small>制作中 · 不展示真实支付信息</small>
+                </div>
+                <div>
+                  <span>报修</span>
+                  <strong>A-18 · 耳机右声道无声</strong>
+                  <small>高优先级 · 待分派</small>
+                </div>
+                <div>
+                  <span>低库存告警</span>
+                  <strong>无品牌替换耳机 · 可用 2</strong>
+                  <small>告警阈值 3</small>
+                </div>
+              </div>
               <label className="field">
                 <span>
-                  补充说明 <small>最多 500 字</small>
+                  补充说明 <small>{handoverNote.length}/500</small>
                 </span>
                 <textarea
-                  defaultValue="A-18 耳机报修待分派；晚高峰到店窗口较集中，请优先关注。"
                   disabled={handoverSubmitted}
+                  maxLength={500}
+                  onChange={(event) => setHandoverNote(event.target.value)}
+                  value={handoverNote}
                 />
               </label>
+              {handoverSubmitted && (
+                <InlineNotice tone="success" title="快照与补充说明已冻结">
+                  后续业务变化不会回写；交班人无需等待确认，现在即可手动签退。
+                </InlineNotice>
+              )}
               <Button
                 tone="primary"
                 icon={Handshake}
@@ -1821,15 +1862,36 @@ export function ShiftPage({ onHandover, handoverSubmitted, readonly }) {
               >
                 {handoverSubmitted ? "交接已提交" : "提交不可编辑交接"}
               </Button>
+              {handoverSubmitted && (
+                <div className="handover-prototype-evidence">
+                  <span>
+                    <small>快照冻结</small>
+                    <strong>08月08日 21:43</strong>
+                  </span>
+                  <span>
+                    <small>周宁提交 · 业务时间</small>
+                    <strong>08月08日 21:43</strong>
+                    <em>真实服务器记录 21:43:02</em>
+                  </span>
+                </div>
+              )}
             </Surface>
-            <Surface>
+            <Surface className="handover-prototype-card">
               <SectionHeading title="接班确认" icon={User} />
               <InlineNotice
-                tone={handoverSubmitted ? "warning" : "info"}
-                title={handoverSubmitted ? "等待接班人确认" : "交接尚未提交"}
+                tone={handoverConfirmed ? "success" : handoverSubmitted ? "warning" : "info"}
+                title={
+                  handoverConfirmed
+                    ? "接班确认已记录"
+                    : handoverSubmitted
+                      ? "等待另一名同店员工确认"
+                      : "交接尚未提交"
+                }
               >
-                {handoverSubmitted
-                  ? "赵一航将在 21:30 进入确认窗口。"
+                {handoverConfirmed
+                  ? "赵一航已承接；原始提交和确认事实保持只读。"
+                  : handoverSubmitted
+                    ? "赵一航已签到，可以查看冻结快照并确认承接。"
                   : "提交后接班人可查看冻结快照并确认承接。"}
               </InlineNotice>
               <dl className="detail-list">
@@ -1842,10 +1904,29 @@ export function ShiftPage({ onHandover, handoverSubmitted, readonly }) {
                   <dd>22:00–次日06:00</dd>
                 </div>
                 <div>
-                  <dt>最晚确认</dt>
-                  <dd>班次开始后 30 分钟</dd>
+                  <dt>异常门槛</dt>
+                  <dd>交班班次结束后 30 分钟</dd>
                 </div>
               </dl>
+              {handoverSubmitted && !handoverConfirmed && (
+                <Button
+                  tone="primary"
+                  icon={User}
+                  disabled={readonly}
+                  onClick={onHandoverConfirm}
+                >
+                  以赵一航确认承接
+                </Button>
+              )}
+              {handoverConfirmed && (
+                <div className="handover-prototype-evidence">
+                  <span>
+                    <small>接班确认 · 赵一航</small>
+                    <strong>业务时间 08月08日 21:49</strong>
+                    <em>真实服务器记录 21:49:01</em>
+                  </span>
+                </div>
+              )}
             </Surface>
           </div>
         )}

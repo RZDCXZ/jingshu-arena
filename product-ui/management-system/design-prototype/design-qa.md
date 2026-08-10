@@ -2,8 +2,18 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-10
-- 已验证契约版本：`product-ui/management-system/prod.md` 1.9
-- 验证范围：[`17 — 店员班次、模拟考勤与手动签退`](../../../.scratch/jingshu-basic-rc/issues/17-staff-shift-attendance.md)；保留 ticket 16 维修闭环和更早结论
+- 已验证契约版本：`product-ui/management-system/prod.md` 1.10
+- 验证范围：[`18 — 不可编辑交接与异常`](../../../.scratch/jingshu-basic-rc/issues/18-handover-exceptions.md)；保留 ticket 17 考勤和更早结论
+
+## Ticket 18 `WEB-S10/WEB-M09` 对照目标与结论
+
+- 应用内浏览器在精确 `1440 × 1024 CSS px` 与 `1024 × 768 CSS px` 打开正式原型和真实 Web → Hono → 临时 PostgreSQL 生产页。`design/reference/ticket-18-web-s10-prototype-*`、`ticket-18-web-m09-prototype-*` 与 `ticket-18-web-s10-production-*` 保留两档原始截图；`ticket-18-web-s10-visual-comparison.png` 和 `ticket-18-web-m09-visual-comparison.png` 分别把选定视觉源与正式交接状态放入同一比较输入。
+- `WEB-S10` 按“经营事项安全边界 → 四类快照摘要/明细 → 500 字说明 → 冻结状态 → 提交/确认双时间证据 → 同店待确认”排序。真实沙箱完成模拟签到、提交不可编辑快照、立即手动签退；DOM 复核提交后说明禁用、快照与双时间仍可读，接班确认不阻塞签退。
+- `WEB-M09` 把逾期未提交、迟交和长期未确认分别列为同店只读异常，并与迟到/缺勤考勤异常并列但不混合评分；选中迟交后显示冻结的预约、订单、报修、库存摘要、补充说明、人物和双时间，不提供交接编辑或审批动作。
+- 第 1 轮 P1 已关闭：生产交班已提交状态最初仍使用实时 `snapshotPreview` 渲染摘要和明细，虽然服务端冻结事实正确，后续业务变化仍可能造成页面误读；现已提交状态只渲染 `handover.snapshot`，预览仅用于提交前。
+- 第 1 轮 P2 已关闭：正式店长异常页的分段计数和顶部动作最初仍沿用两项考勤异常与“追加更正”；计数已覆盖两项考勤加三项交接异常，动作明确改为“追加考勤更正”，避免暗示交接事实可修改。
+- 四张正式原型截图和两张生产截图均保持选定海军蓝高密度壳层、青色信息反馈、青柠唯一主动作、琥珀/红色异常层级、正式品牌资产与 Phosphor 图标。`1024px` 两页实测 `bodyScrollWidth = bodyClientWidth = 1024px`，没有页面横向溢出；两档下主操作和只读证据可通过页面内部滚动完整到达。
+- 交互与自动化覆盖冻结快照不随预约/订单/报修/库存变化、数据库禁止更新/删除、提交后立即签退、同店他人确认、三类异常物化、跨店掩码拒绝和审计，以及 API 严格正文、CSRF、幂等与总部拒绝。当前没有仍需处理的 P0、P1 或 P2 差异。
 
 ## Ticket 17 `WEB-S01/WEB-S09` 对照目标与结论
 

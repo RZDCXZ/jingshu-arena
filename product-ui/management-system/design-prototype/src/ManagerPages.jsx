@@ -624,6 +624,35 @@ export function StoreConfigPage({ onAction, readonly }) {
 
 export function PeopleSchedulePage({ onAction, readonly }) {
   const [tab, setTab] = useState("employees");
+  const handoverExceptions = [
+    {
+      id: "submission-overdue",
+      label: "逾期未提交",
+      tone: "danger",
+      employee: "背景员工 07",
+      summary: "02:30 仍未提交 · 班次 18:00–02:00",
+      snapshot: false,
+    },
+    {
+      id: "late-submission",
+      label: "迟交",
+      tone: "warning",
+      employee: "周宁 · 虚构人物",
+      summary: "02:32 提交 · 晚于计划结束 32 分钟",
+      snapshot: true,
+    },
+    {
+      id: "confirmation-overdue",
+      label: "长期未确认",
+      tone: "warning",
+      employee: "苏雨",
+      summary: "02:30 仍未确认 · 与考勤分别解释",
+      snapshot: true,
+    },
+  ];
+  const [selectedHandoverException, setSelectedHandoverException] = useState(
+    handoverExceptions[1],
+  );
   const employeeColumns = [
     {
       key: "name",
@@ -676,7 +705,7 @@ export function PeopleSchedulePage({ onAction, readonly }) {
       ? "新建员工"
       : tab === "schedule"
         ? "新建班次"
-        : "追加更正";
+        : "追加考勤更正";
 
   return (
     <div className="view-shell">
@@ -702,7 +731,7 @@ export function PeopleSchedulePage({ onAction, readonly }) {
           items={[
             ["employees", "员工", 16],
             ["schedule", "排班"],
-            ["attendance", "考勤与交接异常", 2],
+            ["attendance", "考勤与交接异常", 5],
           ]}
         />
         {tab === "employees" && (
@@ -809,28 +838,81 @@ export function PeopleSchedulePage({ onAction, readonly }) {
                 </button>
               </div>
             </Surface>
-            <Surface>
-              <SectionHeading title="交接异常" icon={UsersThree} count={1} />
-              <div className="issue-list">
-                <button
-                  onClick={() =>
-                    onAction({
-                      kind: "handover-snapshot",
-                      label: "查看交接快照",
-                      employee: "周宁 · 虚构人物",
-                    })
-                  }
-                >
-                  <StatusPill tone="warning">待提交</StatusPill>
-                  <span>
-                    <strong>周宁 · 当前班次</strong>
-                    <small>班次 18:00–02:00 · 截止次日 02:30</small>
-                  </span>
-                  <ArrowRight />
-                </button>
+            <Surface className="manager-handover-prototype">
+              <SectionHeading title="交接异常" icon={UsersThree} count={3} />
+              <p className="surface-intro">
+                仅本店只读；交接异常独立于考勤，不生成综合评分。
+              </p>
+              <div className="issue-list manager-handover-prototype-list">
+                {handoverExceptions.map((exception) => (
+                  <button
+                    className={
+                      selectedHandoverException.id === exception.id
+                        ? "is-selected"
+                        : ""
+                    }
+                    key={exception.id}
+                    onClick={() => setSelectedHandoverException(exception)}
+                  >
+                    <StatusPill tone={exception.tone}>
+                      {exception.label}
+                    </StatusPill>
+                    <span>
+                      <strong>{exception.employee}</strong>
+                      <small>{exception.summary}</small>
+                    </span>
+                    <ArrowRight />
+                  </button>
+                ))}
               </div>
-              <InlineNotice title="更正只追加" tone="info">
-                考勤更正不会覆盖或删除原始签到事实。
+              <div className="manager-handover-prototype-detail">
+                <span className="eyebrow">只读原始证据</span>
+                <h3>
+                  {selectedHandoverException.employee} · {" "}
+                  {selectedHandoverException.label}
+                </h3>
+                {selectedHandoverException.snapshot ? (
+                  <>
+                    <div className="snapshot-grid">
+                      <div>
+                        <span>未完成预约</span>
+                        <strong>5</strong>
+                      </div>
+                      <div>
+                        <span>商品订单</span>
+                        <strong>4</strong>
+                      </div>
+                      <div>
+                        <span>报修</span>
+                        <strong>3</strong>
+                      </div>
+                      <div>
+                        <span>库存告警</span>
+                        <strong>3</strong>
+                      </div>
+                    </div>
+                    <dl className="detail-list">
+                      <div>
+                        <dt>交班提交</dt>
+                        <dd>业务时间 02:32 · 周宁</dd>
+                      </div>
+                      <div>
+                        <dt>真实服务器记录</dt>
+                        <dd>02:32:02 · 原始事实不可编辑</dd>
+                      </div>
+                    </dl>
+                    <InlineNotice tone="info" title="冻结补充说明">
+                      A-18 报修待分派；晚高峰到店窗口集中。
+                    </InlineNotice>
+                  </>
+                ) : (
+                  <InlineNotice tone="warning" title="逾期时尚未形成快照">
+                    若随后迟交，将以独立的迟交异常保留冻结快照。
+                  </InlineNotice>
+                )}
+              </div>
+              <InlineNotice title="事实只追加" tone="info">
+                交接提交与确认保持只读；本页不提供更正或审批动作。
               </InlineNotice>
             </Surface>
           </div>

@@ -3,6 +3,8 @@ import type { Page, Route } from "@playwright/test";
 
 import type {
   CustomerReservationStatus,
+  HandoverCommandResponse,
+  ManagerHandoverExceptionsResponse,
   PublicRole,
   PublicSandboxReadyResponse,
   RepairDetailResponse,
@@ -13,6 +15,9 @@ import type {
   StaffReservationDetailResponse,
   StaffReservationSummary,
   StaffShiftAttendanceResponse,
+  StaffHandover,
+  StaffHandoverSnapshot,
+  StaffHandoversResponse,
 } from "@jingshu/contracts";
 
 type MutableStaffReservationSummary = Omit<
@@ -168,6 +173,85 @@ test.beforeEach(async ({ context }) => {
   let attendanceCheckInAt: string | null = null;
   let attendanceCheckOutAt: string | null = null;
   const attendanceFacts: StaffShiftAttendanceResponse["shifts"]["future"] = [];
+  const handoverId = "00000000-0000-4000-8000-000000000981";
+  const incomingHandoverId = "00000000-0000-4000-8000-000000000982";
+  let handoverSubmitted = false;
+  let incomingConfirmed = false;
+  let submittedNote = "";
+  const handoverSnapshot: StaffHandoverSnapshot = {
+    capturedAt: "2026-08-09T11:30:00.000Z",
+    lowStockAlerts: [
+      {
+        availableQuantity: 2,
+        displayName: "无品牌替换耳机",
+        inventoryItemId: "00000000-0000-4000-8000-000000000985",
+        lowStockThreshold: 3,
+        onHandQuantity: 2,
+        reservedQuantity: 0,
+      },
+    ],
+    orders: [
+      {
+        lineSummary: "能量饮料 × 2",
+        orderId: "00000000-0000-4000-8000-000000000984",
+        seatCode: "B-03",
+        status: "preparing",
+      },
+    ],
+    repairs: [
+      {
+        description: "耳机右声道无声",
+        priority: "high",
+        repairId: "00000000-0000-4000-8000-000000000983",
+        seatCode: "A-18",
+        status: "assigned",
+      },
+    ],
+    reservations: [
+      {
+        customerDisplayName: "林澈",
+        endsAt: "2026-08-09T14:00:00.000Z",
+        reservationId: "00000000-0000-4000-8000-000000000901",
+        seatCode: "A-18",
+        startsAt: "2026-08-09T12:00:00.000Z",
+        status: "confirmed",
+      },
+    ],
+  };
+  const buildHandover = ({
+    confirmed,
+    id,
+    note,
+    submitter,
+  }: {
+    confirmed: boolean;
+    id: string;
+    note: string;
+    submitter: string;
+  }): StaffHandover => ({
+    confirmed: confirmed
+      ? {
+          businessOccurredAt: businessTime,
+          by: { displayName: "周宁", employeeCode: "PRISM-S001" },
+          recordedAt: businessTime,
+        }
+      : null,
+    handoverId: id,
+    note,
+    shiftId:
+      id === handoverId
+        ? attendanceShiftId
+        : "00000000-0000-4000-8000-000000000986",
+    snapshot: handoverSnapshot,
+    submittedAt: {
+      businessOccurredAt: "2026-08-09T11:25:00.000Z",
+      recordedAt: "2026-08-09T11:25:02.000Z",
+    },
+    submittedBy: {
+      displayName: submitter,
+      employeeCode: submitter === "周宁" ? "PRISM-S001" : "PRISM-S002",
+    },
+  });
   const staffRows: MutableStaffReservationSummary[] = [
     {
       anomaly: null,
@@ -676,6 +760,160 @@ test.beforeEach(async ({ context }) => {
       status: 200,
     });
   });
+  await context.route("**/api/v1/staff/handovers**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === "POST") {
+      expect(currentRole).toBe("staff");
+      expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+      expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+      if (pathname.endsWith("/confirmation")) {
+        expect(pathname).toContain(incomingHandoverId);
+        expect(request.postDataJSON()).toEqual({});
+        incomingConfirmed = true;
+        await route.fulfill({
+          json: {
+            ...buildHandover({
+              confirmed: true,
+              id: incomingHandoverId,
+              note: "晚高峰到店窗口集中。",
+              submitter: "赵一航",
+            }),
+            replayed: false,
+          } satisfies HandoverCommandResponse,
+          status: 200,
+        });
+        return;
+      }
+      const body = request.postDataJSON() as {
+        note: string;
+        shiftId: string;
+      };
+      expect(body.shiftId).toBe(attendanceShiftId);
+      submittedNote = body.note;
+      handoverSubmitted = true;
+      await route.fulfill({
+        json: {
+          ...buildHandover({
+            confirmed: false,
+            id: handoverId,
+            note: submittedNote,
+            submitter: "周宁",
+          }),
+          replayed: false,
+        } satisfies HandoverCommandResponse,
+        status: 200,
+      });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        currentTime: businessTime,
+        employee: {
+          displayName: "周宁",
+          employeeCode: "PRISM-S001",
+          role: "staff",
+        },
+        incoming: incomingConfirmed
+          ? []
+          : [
+              buildHandover({
+                confirmed: false,
+                id: incomingHandoverId,
+                note: "晚高峰到店窗口集中。",
+                submitter: "赵一航",
+              }),
+            ],
+        outgoing: {
+          canSubmit: attendanceStatus === "checked-in",
+          handover: handoverSubmitted
+            ? buildHandover({
+                confirmed: false,
+                id: handoverId,
+                note: submittedNote,
+                submitter: "周宁",
+              })
+            : null,
+          shiftId: attendanceShiftId,
+          snapshotPreview: handoverSnapshot,
+          window: {
+            endsAt: "2026-08-09T20:00:00.000Z",
+            startsAt: "2026-08-09T12:00:00.000Z",
+          },
+        },
+        status: "ready",
+        store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+      } satisfies StaffHandoversResponse,
+      status: 200,
+    });
+  });
+  await context.route(
+    "**/api/v1/manager/handover-exceptions",
+    async (route) => {
+      expect(currentRole).toBe("manager");
+      const frozen = buildHandover({
+        confirmed: false,
+        id: handoverId,
+        note: "A-18 报修待分派。",
+        submitter: "周宁",
+      });
+      await route.fulfill({
+        json: {
+          currentTime: businessTime,
+          exceptions: [
+            {
+              businessOccurredAt: "2026-08-09T20:30:00.000Z",
+              employee: {
+                displayName: "周宁",
+                employeeCode: "PRISM-S001",
+              },
+              handover: null,
+              kind: "submission-overdue",
+              recordedAt: "2026-08-09T20:30:01.000Z",
+              shiftId: attendanceShiftId,
+              window: {
+                endsAt: "2026-08-09T20:00:00.000Z",
+                startsAt: "2026-08-09T12:00:00.000Z",
+              },
+            },
+            {
+              businessOccurredAt: "2026-08-09T20:32:00.000Z",
+              employee: {
+                displayName: "周宁",
+                employeeCode: "PRISM-S001",
+              },
+              handover: frozen,
+              kind: "late-submission",
+              recordedAt: "2026-08-09T20:32:02.000Z",
+              shiftId: attendanceShiftId,
+              window: {
+                endsAt: "2026-08-09T20:00:00.000Z",
+                startsAt: "2026-08-09T12:00:00.000Z",
+              },
+            },
+            {
+              businessOccurredAt: "2026-08-09T20:30:00.000Z",
+              employee: {
+                displayName: "周宁",
+                employeeCode: "PRISM-S001",
+              },
+              handover: frozen,
+              kind: "confirmation-overdue",
+              recordedAt: "2026-08-09T20:30:01.000Z",
+              shiftId: attendanceShiftId,
+              window: {
+                endsAt: "2026-08-09T20:00:00.000Z",
+                startsAt: "2026-08-09T12:00:00.000Z",
+              },
+            },
+          ],
+          status: "ready",
+          store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+        } satisfies ManagerHandoverExceptionsResponse,
+        status: 200,
+      });
+    },
+  );
   await context.route("**/api/v1/staff/shifts**", async (route) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
@@ -1540,7 +1778,7 @@ test("staff sees own shift summary, explicit simulation boundary and manual atte
   await enterStaffShell(page);
   await expect(page.getByText("本人班次", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "班次与交接" }).click();
-  await expect(page.getByRole("heading", { name: "班次与考勤" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "班次与交接" })).toBeVisible();
   await expect(page.getByText("模拟考勤，不连接真实设备")).toBeVisible();
   await expect(page.getByText(/不读取定位、人脸或门禁/u)).toBeVisible();
   await expect(page.getByText("周宁 · PRISM-S001")).toBeVisible();
@@ -1586,6 +1824,85 @@ test("staff receives explicit safe-replay feedback for a duplicate attendance su
   await expect(
     page.getByText("同一考勤请求已安全重放，原始事实没有重复写入。"),
   ).toBeVisible();
+});
+
+test("staff freezes a handover snapshot, signs out immediately, and confirms another employee handover", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "班次与交接" }).click();
+  await page.getByRole("button", { name: "模拟签到" }).click();
+  await expect(page.getByRole("button", { name: "手动签退" })).toBeVisible();
+
+  await page.getByRole("button", { name: "交接班" }).click();
+  await expect(page.getByText("只交接经营事项，不收集敏感数据")).toBeVisible();
+  await expect(
+    page.getByText("未完成预约", { exact: true }).first(),
+  ).toBeVisible();
+  await expect(page.getByText("林澈", { exact: false }).first()).toBeVisible();
+  const note = page.getByRole("textbox", { name: /补充说明/u });
+  await note.fill("A-18 报修待分派；晚高峰到店窗口集中。");
+  await page.getByRole("button", { name: "提交不可编辑交接" }).click();
+  await expect(page.getByText("快照与说明已冻结")).toBeVisible();
+  await expect(note).toBeDisabled();
+  await expect(
+    page.getByText("现在即可手动签退", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("真实服务器记录", { exact: false }).first(),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "本人班次" }).click();
+  await page.getByRole("button", { name: "手动签退" }).click();
+  await expect(page.getByText("当前没有可执行动作")).toBeVisible();
+
+  await page.getByRole("button", { name: "交接班" }).click();
+  await page.getByRole("button", { name: "确认承接" }).click();
+  await expect(page.getByText("当前没有待本人确认的同店交接。")).toBeVisible();
+  await expect(
+    page.getByText("接班确认已记录，业务时间与真实服务器时间均可追溯。"),
+  ).toBeVisible();
+});
+
+test("manager reads three store-scoped handover exception kinds without edit controls", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "店长 许知远 · 虚构人物 棱镜旗舰店",
+    })
+    .click();
+  await expect(
+    page.getByRole("button", {
+      name: "许知远 店长 棱镜旗舰店，打开角色切换",
+    }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "员工与排班" }).click();
+  await expect(
+    page.getByRole("heading", { name: "交接异常与冻结快照" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^逾期未提交/u }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /^迟交/u })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^长期未确认/u }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: /^迟交/u }).click();
+  await expect(page.getByText("A-18 报修待分派。")).toBeVisible();
+  await expect(page.getByText("业务发生", { exact: true })).toBeVisible();
+  await expect(page.getByText("真实服务器记录", { exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox")).toHaveCount(0);
+
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.body.clientWidth,
+    scrollWidth: document.body.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBe(layout.clientWidth);
 });
 
 test("staff reads inventory while manager stocktakes, receives and compensates with dedicated dialogs", async ({

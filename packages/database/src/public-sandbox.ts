@@ -23,10 +23,14 @@ import {
   deriveSeatAvailability,
   evaluateReservationCoupon,
   isSafePlainTextReason,
+  HANDOVER_EXCEPTION_GRACE_MS,
+  classifyHandoverExceptions,
+  type HandoverExceptionKind,
   type AttendanceAction,
   type AttendanceStatus,
   decideAttendanceAction,
   normalizeRepairDescription,
+  normalizeHandoverNote,
   memberTierForGrowth,
   priceCustomerOrder,
   type CustomerOrderStatus,
@@ -45,6 +49,7 @@ import {
 
 import {
   AttendanceConflictError,
+  HandoverConflictError,
   CustomerOrderConflictError,
   CustomerReservationCreateConflictError,
   CustomerReservationIdempotencyConflictError,
@@ -1340,6 +1345,115 @@ export interface DatabaseAttendanceCommand {
   readonly status: AttendanceStatus;
 }
 
+export interface DatabaseHandoverSnapshot {
+  readonly capturedAt: Date;
+  readonly lowStockAlerts: ReadonlyArray<{
+    readonly availableQuantity: number;
+    readonly displayName: string;
+    readonly inventoryItemId: string;
+    readonly lowStockThreshold: number;
+    readonly onHandQuantity: number;
+    readonly reservedQuantity: number;
+  }>;
+  readonly orders: ReadonlyArray<{
+    readonly lineSummary: string;
+    readonly orderId: string;
+    readonly seatCode: string;
+    readonly status:
+      | "pending-simulated-payment"
+      | "preparing"
+      | "ready-for-pickup"
+      | "simulated-paid";
+  }>;
+  readonly repairs: ReadonlyArray<{
+    readonly description: string;
+    readonly priority: DatabaseRepairCreated["priority"];
+    readonly repairId: string;
+    readonly seatCode: string;
+    readonly status: "assigned" | "new" | "processing" | "verification";
+  }>;
+  readonly reservations: ReadonlyArray<{
+    readonly customerDisplayName: string;
+    readonly endsAt: Date;
+    readonly reservationId: string;
+    readonly seatCode: string;
+    readonly startsAt: Date;
+    readonly status:
+      "arrived" | "confirmed" | "in-use" | "pending-confirmation";
+  }>;
+}
+
+export interface DatabaseHandover {
+  readonly confirmed: {
+    readonly businessOccurredAt: Date;
+    readonly by: {
+      readonly displayName: string;
+      readonly employeeCode: string;
+    };
+    readonly recordedAt: Date;
+  } | null;
+  readonly handoverId: string;
+  readonly note: string;
+  readonly shiftId: string;
+  readonly snapshot: DatabaseHandoverSnapshot;
+  readonly submittedAt: {
+    readonly businessOccurredAt: Date;
+    readonly recordedAt: Date;
+  };
+  readonly submittedBy: {
+    readonly displayName: string;
+    readonly employeeCode: string;
+  };
+}
+
+export interface DatabaseOwnHandovers {
+  readonly currentTime: Date;
+  readonly employee: DatabaseOwnShiftAttendance["employee"];
+  readonly incoming: ReadonlyArray<DatabaseHandover>;
+  readonly outgoing: {
+    readonly canSubmit: boolean;
+    readonly handover: DatabaseHandover | null;
+    readonly shiftId: string;
+    readonly snapshotPreview: DatabaseHandoverSnapshot;
+    readonly window: { readonly endsAt: Date; readonly startsAt: Date };
+  } | null;
+  readonly store: DatabaseOwnShiftAttendance["store"];
+}
+
+export interface SubmitOwnHandoverInput extends ReadOwnShiftAttendanceInput {
+  readonly idempotencyKey: string;
+  readonly note: string;
+  readonly requestId: string;
+  readonly shiftId: string;
+}
+
+export interface ConfirmHandoverInput extends ReadOwnShiftAttendanceInput {
+  readonly handoverId: string;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+}
+
+export interface DatabaseHandoverCommand extends DatabaseHandover {
+  readonly replayed: boolean;
+}
+
+export interface DatabaseManagerHandoverExceptions {
+  readonly currentTime: Date;
+  readonly exceptions: ReadonlyArray<{
+    readonly businessOccurredAt: Date;
+    readonly employee: {
+      readonly displayName: string;
+      readonly employeeCode: string;
+    };
+    readonly handover: DatabaseHandover | null;
+    readonly kind: HandoverExceptionKind;
+    readonly recordedAt: Date;
+    readonly shiftId: string;
+    readonly window: { readonly endsAt: Date; readonly startsAt: Date };
+  }>;
+  readonly store: DatabaseOwnShiftAttendance["store"];
+}
+
 export interface ReadCurrentRoleContextInput {
   sandboxId: string;
   claimRole?: PublicRole;
@@ -1409,6 +1523,12 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   executeOwnAttendanceCommand(
     input: ExecuteOwnAttendanceCommandInput,
   ): Promise<DatabaseAttendanceCommand>;
+  submitOwnHandover(
+    input: SubmitOwnHandoverInput,
+  ): Promise<DatabaseHandoverCommand>;
+  confirmHandover(
+    input: ConfirmHandoverInput,
+  ): Promise<DatabaseHandoverCommand>;
   executeStaffOrderCommand(
     input: ExecuteStaffOrderCommandInput,
   ): Promise<DatabaseStaffOrderCommand>;
@@ -1487,6 +1607,12 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readOwnShiftAttendance(
     input: ReadOwnShiftAttendanceInput,
   ): Promise<DatabaseOwnShiftAttendance>;
+  readOwnHandovers(
+    input: ReadOwnShiftAttendanceInput,
+  ): Promise<DatabaseOwnHandovers>;
+  readManagerHandoverExceptions(
+    input: ReadOwnShiftAttendanceInput,
+  ): Promise<DatabaseManagerHandoverExceptions>;
   readStaffRepairIntake(
     input: ReadStaffRepairIntakeInput,
   ): Promise<DatabaseStaffRepairIntake>;
@@ -1699,6 +1825,51 @@ interface StoredAttendanceCommand {
   outcome: DatabaseAttendanceCommand["outcome"];
   shiftId: string;
   status: AttendanceStatus;
+}
+
+interface StoredHandoverSnapshot {
+  capturedAt: string;
+  lowStockAlerts: DatabaseHandoverSnapshot["lowStockAlerts"];
+  orders: DatabaseHandoverSnapshot["orders"];
+  repairs: DatabaseHandoverSnapshot["repairs"];
+  reservations: ReadonlyArray<
+    Omit<
+      DatabaseHandoverSnapshot["reservations"][number],
+      "endsAt" | "startsAt"
+    > & {
+      endsAt: string;
+      startsAt: string;
+    }
+  >;
+}
+
+interface StoredHandover {
+  confirmed: {
+    businessOccurredAt: string;
+    by: { displayName: string; employeeCode: string };
+    recordedAt: string;
+  } | null;
+  handoverId: string;
+  note: string;
+  shiftId: string;
+  snapshot: StoredHandoverSnapshot;
+  submittedAt: { businessOccurredAt: string; recordedAt: string };
+  submittedBy: { displayName: string; employeeCode: string };
+}
+
+interface HandoverRow {
+  confirmation_business_at: Date | null;
+  confirmation_recorded_at: Date | null;
+  confirmer_display_name: string | null;
+  confirmer_employee_code: string | null;
+  handover_id: string;
+  note: string;
+  shift_id: string;
+  snapshot: StoredHandoverSnapshot;
+  submitted_business_at: Date;
+  submitted_recorded_at: Date;
+  submitter_display_name: string;
+  submitter_employee_code: string;
 }
 
 interface OperatorRow {
@@ -3811,8 +3982,7 @@ async function processDueAttendanceAbsences(
       where shift.sandbox_id = $1 and shift.status = 'scheduled'
         and shift.ends_at <= $2 and attendance.id is null
         and ($3::uuid is null or shift.employee_id = $3)
-      order by shift.ends_at, shift.id
-      for update of shift skip locked`,
+      order by shift.ends_at, shift.id`,
     [input.sandboxId, input.targetBusinessTime, input.employeeId ?? null],
   );
 
@@ -3891,6 +4061,417 @@ async function processDueAttendanceAbsences(
     processed += 1;
   }
   return processed;
+}
+
+function storedHandoverSnapshot(
+  snapshot: DatabaseHandoverSnapshot,
+): StoredHandoverSnapshot {
+  return {
+    ...snapshot,
+    capturedAt: snapshot.capturedAt.toISOString(),
+    reservations: snapshot.reservations.map((reservation) => ({
+      ...reservation,
+      endsAt: reservation.endsAt.toISOString(),
+      startsAt: reservation.startsAt.toISOString(),
+    })),
+  };
+}
+
+function handoverSnapshotFromStored(
+  snapshot: StoredHandoverSnapshot,
+): DatabaseHandoverSnapshot {
+  return {
+    ...snapshot,
+    capturedAt: new Date(snapshot.capturedAt),
+    reservations: snapshot.reservations.map((reservation) => ({
+      ...reservation,
+      endsAt: new Date(reservation.endsAt),
+      startsAt: new Date(reservation.startsAt),
+    })),
+  };
+}
+
+function storedHandoverFromDatabase(
+  handover: DatabaseHandover,
+): StoredHandover {
+  return {
+    ...handover,
+    confirmed: handover.confirmed
+      ? {
+          ...handover.confirmed,
+          businessOccurredAt:
+            handover.confirmed.businessOccurredAt.toISOString(),
+          recordedAt: handover.confirmed.recordedAt.toISOString(),
+        }
+      : null,
+    snapshot: storedHandoverSnapshot(handover.snapshot),
+    submittedAt: {
+      businessOccurredAt: handover.submittedAt.businessOccurredAt.toISOString(),
+      recordedAt: handover.submittedAt.recordedAt.toISOString(),
+    },
+  };
+}
+
+function handoverFromStored(handover: StoredHandover): DatabaseHandover {
+  return {
+    ...handover,
+    confirmed: handover.confirmed
+      ? {
+          ...handover.confirmed,
+          businessOccurredAt: new Date(handover.confirmed.businessOccurredAt),
+          recordedAt: new Date(handover.confirmed.recordedAt),
+        }
+      : null,
+    snapshot: handoverSnapshotFromStored(handover.snapshot),
+    submittedAt: {
+      businessOccurredAt: new Date(handover.submittedAt.businessOccurredAt),
+      recordedAt: new Date(handover.submittedAt.recordedAt),
+    },
+  };
+}
+
+function handoverFromRow(row: HandoverRow): DatabaseHandover {
+  return {
+    confirmed:
+      row.confirmation_business_at &&
+      row.confirmation_recorded_at &&
+      row.confirmer_display_name &&
+      row.confirmer_employee_code
+        ? {
+            businessOccurredAt: row.confirmation_business_at,
+            by: {
+              displayName: row.confirmer_display_name,
+              employeeCode: row.confirmer_employee_code,
+            },
+            recordedAt: row.confirmation_recorded_at,
+          }
+        : null,
+    handoverId: row.handover_id,
+    note: row.note,
+    shiftId: row.shift_id,
+    snapshot: handoverSnapshotFromStored(row.snapshot),
+    submittedAt: {
+      businessOccurredAt: row.submitted_business_at,
+      recordedAt: row.submitted_recorded_at,
+    },
+    submittedBy: {
+      displayName: row.submitter_display_name,
+      employeeCode: row.submitter_employee_code,
+    },
+  };
+}
+
+const handoverSelect = `select handover.id as handover_id,
+       handover.store_id, handover.shift_id, handover.submitted_by_employee_id,
+       handover.note, handover.snapshot,
+       handover.submitted_business_at, handover.submitted_recorded_at,
+       submitter.display_name as submitter_display_name,
+       submitter.employee_code as submitter_employee_code,
+       confirmation.business_occurred_at as confirmation_business_at,
+       confirmation.recorded_at as confirmation_recorded_at,
+       confirmer.display_name as confirmer_display_name,
+       confirmer.employee_code as confirmer_employee_code
+  from handovers handover
+  join employees submitter on submitter.id = handover.submitted_by_employee_id
+  left join handover_confirmations confirmation
+    on confirmation.sandbox_id = handover.sandbox_id
+   and confirmation.handover_id = handover.id
+  left join employees confirmer
+    on confirmer.id = confirmation.confirmed_by_employee_id`;
+
+async function readHandoverSnapshot(
+  client: PoolClient,
+  input: {
+    readonly capturedAt: Date;
+    readonly sandboxId: string;
+    readonly storeId: string;
+  },
+): Promise<DatabaseHandoverSnapshot> {
+  const reservations = await client.query<{
+    customer_display_name: string;
+    ends_at: Date;
+    reservation_id: string;
+    seat_code: string;
+    starts_at: Date;
+    status: DatabaseHandoverSnapshot["reservations"][number]["status"];
+  }>(
+    `select reservation.id as reservation_id, customer.display_name as customer_display_name,
+            seat.code as seat_code, reservation.starts_at, reservation.ends_at,
+            reservation.status
+       from reservations reservation
+       join demo_personas customer on customer.id = reservation.customer_persona_id
+       join seats seat on seat.id = reservation.seat_id
+      where reservation.sandbox_id = $1 and reservation.store_id = $2
+        and reservation.status in ('pending-confirmation', 'confirmed', 'arrived', 'in-use')
+      order by reservation.starts_at, reservation.id`,
+    [input.sandboxId, input.storeId],
+  );
+  const orders = await client.query<{
+    line_summary: string;
+    order_id: string;
+    seat_code: string;
+    status: DatabaseHandoverSnapshot["orders"][number]["status"];
+  }>(
+    `select orders.id as order_id, orders.status, seat.code as seat_code,
+            concat(
+              coalesce(orders.order_snapshot->'lines'->0->>'productName', '柜台商品'),
+              case when jsonb_array_length(orders.order_snapshot->'lines') > 1
+                then concat(' 等 ', jsonb_array_length(orders.order_snapshot->'lines'), ' 项')
+                else '' end
+            ) as line_summary
+       from customer_orders orders
+       join reservations reservation on reservation.id = orders.reservation_id
+       join seats seat on seat.id = reservation.seat_id
+      where orders.sandbox_id = $1 and orders.store_id = $2
+        and orders.status in ('pending-simulated-payment', 'simulated-paid', 'preparing', 'ready-for-pickup')
+      order by orders.created_business_at, orders.id`,
+    [input.sandboxId, input.storeId],
+  );
+  const repairs = await client.query<{
+    description: string;
+    priority: DatabaseRepairCreated["priority"];
+    repair_id: string;
+    seat_code: string;
+    status: DatabaseHandoverSnapshot["repairs"][number]["status"];
+  }>(
+    `select repair.id as repair_id, repair.description, repair.priority,
+            repair.status, seat.code as seat_code
+       from repairs repair
+       join seats seat on seat.id = repair.seat_id
+      where repair.sandbox_id = $1 and repair.store_id = $2
+        and repair.status <> 'closed'
+      order by repair.created_business_at, repair.id`,
+    [input.sandboxId, input.storeId],
+  );
+  const lowStockAlerts = await client.query<{
+    available_quantity: number;
+    display_name: string;
+    inventory_item_id: string;
+    low_stock_threshold: number;
+    on_hand_quantity: number;
+    reserved_quantity: number;
+  }>(
+    `select id as inventory_item_id, display_name, on_hand_quantity,
+            reserved_quantity, on_hand_quantity - reserved_quantity as available_quantity,
+            low_stock_threshold
+       from inventory_items
+      where sandbox_id = $1 and store_id = $2
+        and on_hand_quantity - reserved_quantity <= low_stock_threshold
+      order by display_name, id`,
+    [input.sandboxId, input.storeId],
+  );
+
+  return {
+    capturedAt: input.capturedAt,
+    lowStockAlerts: lowStockAlerts.rows.map((row) => ({
+      availableQuantity: row.available_quantity,
+      displayName: row.display_name,
+      inventoryItemId: row.inventory_item_id,
+      lowStockThreshold: row.low_stock_threshold,
+      onHandQuantity: row.on_hand_quantity,
+      reservedQuantity: row.reserved_quantity,
+    })),
+    orders: orders.rows.map((row) => ({
+      lineSummary: row.line_summary,
+      orderId: row.order_id,
+      seatCode: row.seat_code,
+      status: row.status,
+    })),
+    repairs: repairs.rows.map((row) => ({
+      description: row.description,
+      priority: row.priority,
+      repairId: row.repair_id,
+      seatCode: row.seat_code,
+      status: row.status,
+    })),
+    reservations: reservations.rows.map((row) => ({
+      customerDisplayName: row.customer_display_name,
+      endsAt: row.ends_at,
+      reservationId: row.reservation_id,
+      seatCode: row.seat_code,
+      startsAt: row.starts_at,
+      status: row.status,
+    })),
+  };
+}
+
+interface DueHandoverExceptionRow {
+  confirmed_at: Date | null;
+  employee_id: string;
+  existing_kinds: HandoverExceptionKind[];
+  handover_id: string | null;
+  persona_id: string | null;
+  role: FrontlineRole;
+  shift_id: string;
+  starts_at: Date;
+  ends_at: Date;
+  store_id: string;
+  submitted_at: Date | null;
+}
+
+async function readDueHandoverExceptionRows(
+  client: PoolClient,
+  input: {
+    readonly sandboxId: string;
+    readonly targetBusinessTime: Date;
+  },
+) {
+  return client.query<DueHandoverExceptionRow>(
+    `select shift.id as shift_id, shift.store_id, shift.employee_id,
+            shift.starts_at, shift.ends_at, employee.persona_id, employee.role,
+            handover.id as handover_id,
+            handover.submitted_business_at as submitted_at,
+            confirmation.business_occurred_at as confirmed_at,
+            coalesce(array_agg(exception.kind) filter (where exception.kind is not null), '{}') as existing_kinds
+       from shifts shift
+       join employees employee on employee.id = shift.employee_id
+       join attendance_records attendance
+         on attendance.sandbox_id = shift.sandbox_id
+        and attendance.shift_id = shift.id
+        and attendance.status in ('checked-in', 'checked-out')
+       left join handovers handover
+         on handover.sandbox_id = shift.sandbox_id
+        and handover.shift_id = shift.id
+       left join handover_confirmations confirmation
+         on confirmation.sandbox_id = handover.sandbox_id
+        and confirmation.handover_id = handover.id
+       left join handover_exceptions exception
+         on exception.sandbox_id = shift.sandbox_id
+        and exception.shift_id = shift.id
+      where shift.sandbox_id = $1 and shift.status = 'scheduled'
+        and shift.ends_at + interval '30 minutes' <= $2
+      group by shift.id, shift.store_id, shift.employee_id, shift.starts_at,
+               shift.ends_at, employee.persona_id, employee.role,
+               handover.id, handover.submitted_business_at,
+               confirmation.business_occurred_at
+      order by shift.ends_at, shift.id`,
+    [input.sandboxId, input.targetBusinessTime],
+  );
+}
+
+function pendingHandoverExceptionKinds(
+  row: DueHandoverExceptionRow,
+  currentTime: Date,
+) {
+  const existing = new Set(row.existing_kinds);
+  return classifyHandoverExceptions({
+    confirmedAt: row.confirmed_at,
+    currentTime,
+    shiftEndsAt: row.ends_at,
+    submittedAt: row.submitted_at,
+  }).filter((kind) => !existing.has(kind));
+}
+
+async function processDueHandoverExceptions(
+  client: PoolClient,
+  input: {
+    readonly recordedAt: Date;
+    readonly sandboxId: string;
+    readonly targetBusinessTime: Date;
+  },
+): Promise<number> {
+  const due = await readDueHandoverExceptionRows(client, input);
+  let processed = 0;
+  for (const row of due.rows) {
+    for (const kind of pendingHandoverExceptionKinds(
+      row,
+      input.targetBusinessTime,
+    )) {
+      const occurredAt =
+        kind === "late-submission" && row.submitted_at
+          ? row.submitted_at
+          : new Date(row.ends_at.getTime() + HANDOVER_EXCEPTION_GRACE_MS);
+      const inserted = await client.query<{ id: string }>(
+        `insert into handover_exceptions (
+           id, sandbox_id, store_id, shift_id, handover_id, kind,
+           business_occurred_at, recorded_at
+         ) values ($1, $2, $3, $4, $5, $6, $7, $8)
+         on conflict (sandbox_id, shift_id, kind) do nothing
+         returning id`,
+        [
+          randomUUID(),
+          input.sandboxId,
+          row.store_id,
+          row.shift_id,
+          row.handover_id,
+          kind,
+          occurredAt,
+          input.recordedAt,
+        ],
+      );
+      if (!inserted.rows[0]) continue;
+      await client.query(
+        `insert into audit_events (
+           id, sandbox_id, store_id, persona_id, role, action, object_type,
+           object_id, result, reason, request_id, before_data, after_data,
+           business_occurred_at, recorded_at
+         ) values ($1, $2, $3, $4, $5, 'handover.exception', 'handover',
+           $6, 'allowed', $7, $8, null, $9::jsonb, $10, $11)`,
+        [
+          randomUUID(),
+          input.sandboxId,
+          row.store_id,
+          row.persona_id,
+          row.role,
+          row.handover_id ?? row.shift_id,
+          kind,
+          randomUUID(),
+          JSON.stringify({ kind, shiftId: row.shift_id }),
+          occurredAt,
+          input.recordedAt,
+        ],
+      );
+      processed += 1;
+    }
+  }
+  return processed;
+}
+
+function handoverDueHandlers(): DemoTimeDueHandlerRegistry {
+  return {
+    "handover-exception": {
+      nextDueAt: async (context) => {
+        const result = await context.client.query<{ due_at: Date | null }>(
+          `select min(shift.ends_at + interval '30 minutes') as due_at
+             from shifts shift
+             join attendance_records attendance
+               on attendance.sandbox_id = shift.sandbox_id
+              and attendance.shift_id = shift.id
+              and attendance.status in ('checked-in', 'checked-out')
+             left join handovers handover
+               on handover.sandbox_id = shift.sandbox_id
+              and handover.shift_id = shift.id
+             left join handover_confirmations confirmation
+               on confirmation.sandbox_id = handover.sandbox_id
+              and confirmation.handover_id = handover.id
+            where shift.sandbox_id = $1 and shift.status = 'scheduled'
+              and shift.ends_at + interval '30 minutes' > $2
+              and (handover.id is null or confirmation.id is null)`,
+          [context.sandboxId, context.currentBusinessTime],
+        );
+        return result.rows[0]?.due_at ?? null;
+      },
+      previewDue: async (context) => {
+        const rows = await readDueHandoverExceptionRows(context.client, {
+          sandboxId: context.sandboxId,
+          targetBusinessTime: context.targetBusinessTime,
+        });
+        return rows.rows.reduce(
+          (count, row) =>
+            count +
+            pendingHandoverExceptionKinds(row, context.targetBusinessTime)
+              .length,
+          0,
+        );
+      },
+      processDue: (context) =>
+        processDueHandoverExceptions(context.client, {
+          recordedAt: context.recordedAt,
+          sandboxId: context.sandboxId,
+          targetBusinessTime: context.targetBusinessTime,
+        }),
+    },
+  };
 }
 
 function attendanceDueHandlers(): DemoTimeDueHandlerRegistry {
@@ -5999,6 +6580,7 @@ export function createPublicSandboxDatabase(
       dueHandlers: {
         ...reservationDueHandlers(),
         ...attendanceDueHandlers(),
+        ...handoverDueHandlers(),
         ...options.dueHandlers,
       },
       sandboxLifetimeMilliseconds: SANDBOX_LIFETIME_MS,
@@ -8965,6 +9547,601 @@ export function createPublicSandboxDatabase(
             JSON.stringify(storedResult),
           ],
         );
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readOwnHandovers(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertEmployeeContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await processDueHandoverExceptions(client, {
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const shifts = await client.query<
+          ShiftAttendanceRow & { handover_id: string | null }
+        >(
+          `select shift.id as shift_id, shift.starts_at, shift.ends_at,
+                  attendance.id as attendance_id,
+                  attendance.status as attendance_status,
+                  attendance.check_in_outcome,
+                  attendance.check_in_business_at,
+                  attendance.check_in_recorded_at,
+                  attendance.check_out_business_at,
+                  attendance.check_out_recorded_at,
+                  attendance.absence_business_at,
+                  attendance.absence_recorded_at,
+                  handover.id as handover_id
+             from shifts shift
+             left join attendance_records attendance
+               on attendance.sandbox_id = shift.sandbox_id
+              and attendance.shift_id = shift.id
+             left join handovers handover
+               on handover.sandbox_id = shift.sandbox_id
+              and handover.shift_id = shift.id
+            where shift.sandbox_id = $1 and shift.employee_id = $2
+              and shift.status = 'scheduled'
+            order by shift.starts_at, shift.id`,
+          [input.sandboxId, context.employee.id],
+        );
+        const currentShift =
+          shifts.rows.find(
+            (shift) => shift.attendance_status === "checked-in",
+          ) ??
+          shifts.rows.find(
+            (shift) =>
+              shift.starts_at.getTime() <= currentTime.getTime() &&
+              shift.ends_at.getTime() > currentTime.getTime(),
+          ) ??
+          shifts.rows.find(
+            (shift) =>
+              shift.starts_at.getTime() - 30 * 60_000 <=
+                currentTime.getTime() &&
+              shift.ends_at.getTime() > currentTime.getTime(),
+          ) ??
+          null;
+        const ownHandovers = await client.query<HandoverRow>(
+          `${handoverSelect}
+            where handover.sandbox_id = $1
+              and handover.submitted_by_employee_id = $2
+            order by handover.submitted_business_at desc, handover.id desc`,
+          [input.sandboxId, context.employee.id],
+        );
+        const currentHandover = currentShift
+          ? ownHandovers.rows.find(
+              (handover) => handover.shift_id === currentShift.shift_id,
+            )
+          : ownHandovers.rows[0];
+        const outgoingShift =
+          currentShift ??
+          (currentHandover
+            ? (shifts.rows.find(
+                (shift) => shift.shift_id === currentHandover.shift_id,
+              ) ?? null)
+            : null);
+        const outgoingHandover = currentHandover
+          ? handoverFromRow(currentHandover)
+          : null;
+        const snapshotPreview = outgoingShift
+          ? (outgoingHandover?.snapshot ??
+            (await readHandoverSnapshot(client, {
+              capturedAt: currentTime,
+              sandboxId: input.sandboxId,
+              storeId: context.employee.store_id,
+            })))
+          : null;
+        const incomingRows = await client.query<HandoverRow>(
+          `${handoverSelect}
+            where handover.sandbox_id = $1 and handover.store_id = $2
+              and handover.submitted_by_employee_id <> $3
+              and confirmation.id is null
+            order by handover.submitted_business_at, handover.id`,
+          [input.sandboxId, context.employee.store_id, context.employee.id],
+        );
+        const result: DatabaseOwnHandovers = {
+          currentTime,
+          employee: {
+            displayName: context.employee.display_name,
+            employeeCode: context.employee.employee_code,
+            role: context.employee.role,
+          },
+          incoming: incomingRows.rows.map(handoverFromRow),
+          outgoing:
+            outgoingShift && snapshotPreview
+              ? {
+                  canSubmit:
+                    outgoingShift.attendance_status === "checked-in" &&
+                    outgoingHandover === null,
+                  handover: outgoingHandover,
+                  shiftId: outgoingShift.shift_id,
+                  snapshotPreview,
+                  window: {
+                    endsAt: outgoingShift.ends_at,
+                    startsAt: outgoingShift.starts_at,
+                  },
+                }
+              : null,
+          store: {
+            code: context.employee.store_code,
+            displayName: context.employee.store_display_name,
+          },
+        };
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async submitOwnHandover(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertEmployeeContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const note = normalizeHandoverNote(input.note);
+        if (note === null) throw new HandoverConflictError("note-invalid");
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${input.sandboxId}:${context.employee.id}:handover-state`],
+        );
+        await processDueHandoverExceptions(client, {
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({ note, shiftId: input.shiftId }),
+        );
+        const previous = await client.query<{
+          payload_hash: string;
+          result_data: StoredHandover;
+        }>(
+          `select payload_hash, result_data
+             from handover_command_requests
+            where sandbox_id = $1 and employee_id = $2
+              and command_type = 'submit' and idempotency_key_hash = $3`,
+          [input.sandboxId, context.employee.id, idempotencyKeyHash],
+        );
+        const previousRow = previous.rows[0];
+        if (previousRow) {
+          if (previousRow.payload_hash !== payloadHash) {
+            throw new HandoverConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return {
+            ...handoverFromStored(previousRow.result_data),
+            replayed: true,
+          };
+        }
+        const shift = await client.query<
+          LockedShiftRow & { attendance_status: AttendanceStatus | null }
+        >(
+          `select shift.id as shift_id, shift.store_id, shift.employee_id,
+                  shift.starts_at, shift.ends_at,
+                  attendance.status as attendance_status
+             from shifts shift
+             left join attendance_records attendance
+               on attendance.sandbox_id = shift.sandbox_id
+              and attendance.shift_id = shift.id
+            where shift.sandbox_id = $1 and shift.id = $2
+              and shift.status = 'scheduled'
+            for update of shift`,
+          [input.sandboxId, input.shiftId],
+        );
+        const shiftRow = shift.rows[0];
+        if (
+          !shiftRow ||
+          shiftRow.employee_id !== context.employee.id ||
+          shiftRow.store_id !== context.employee.store_id ||
+          shiftRow.attendance_status !== "checked-in"
+        ) {
+          throw new HandoverConflictError("shift-not-eligible");
+        }
+        const existing = await client.query<{ id: string }>(
+          `select id from handovers where sandbox_id = $1 and shift_id = $2`,
+          [input.sandboxId, input.shiftId],
+        );
+        if (existing.rows[0]) {
+          throw new HandoverConflictError("already-submitted");
+        }
+        const snapshot = await readHandoverSnapshot(client, {
+          capturedAt: currentTime,
+          sandboxId: input.sandboxId,
+          storeId: context.employee.store_id,
+        });
+        const handoverId = randomUUID();
+        await client.query(
+          `insert into handovers (
+             id, sandbox_id, store_id, shift_id, submitted_by_employee_id,
+             note, snapshot, submitted_business_at, submitted_recorded_at
+           ) values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)`,
+          [
+            handoverId,
+            input.sandboxId,
+            context.employee.store_id,
+            input.shiftId,
+            context.employee.id,
+            note,
+            JSON.stringify(storedHandoverSnapshot(snapshot)),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const exceptionKinds = classifyHandoverExceptions({
+          confirmedAt: null,
+          currentTime,
+          shiftEndsAt: shiftRow.ends_at,
+          submittedAt: currentTime,
+        });
+        for (const kind of exceptionKinds) {
+          const occurredAt =
+            kind === "late-submission"
+              ? currentTime
+              : new Date(
+                  shiftRow.ends_at.getTime() + HANDOVER_EXCEPTION_GRACE_MS,
+                );
+          await client.query(
+            `insert into handover_exceptions (
+               id, sandbox_id, store_id, shift_id, handover_id, kind,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, $5, $6, $7, $8)
+             on conflict (sandbox_id, shift_id, kind) do nothing`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              context.employee.store_id,
+              input.shiftId,
+              handoverId,
+              kind,
+              occurredAt,
+              wallTime,
+            ],
+          );
+        }
+        const handover: DatabaseHandover = {
+          confirmed: null,
+          handoverId,
+          note,
+          shiftId: input.shiftId,
+          snapshot,
+          submittedAt: {
+            businessOccurredAt: currentTime,
+            recordedAt: wallTime,
+          },
+          submittedBy: {
+            displayName: context.employee.display_name,
+            employeeCode: context.employee.employee_code,
+          },
+        };
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, 'handover.submit', 'handover',
+             $6, 'allowed', $7, null, $8::jsonb, $9, $10)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            context.employee.store_id,
+            input.personaId,
+            input.role,
+            handoverId,
+            input.requestId,
+            JSON.stringify({
+              noteLength: note.length,
+              shiftId: input.shiftId,
+              snapshotCounts: {
+                lowStockAlerts: snapshot.lowStockAlerts.length,
+                orders: snapshot.orders.length,
+                repairs: snapshot.repairs.length,
+                reservations: snapshot.reservations.length,
+              },
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const stored = storedHandoverFromDatabase(handover);
+        await client.query(
+          `insert into handover_command_requests (
+             sandbox_id, employee_id, command_type, idempotency_key_hash,
+             payload_hash, result_data
+           ) values ($1, $2, 'submit', $3, $4, $5::jsonb)`,
+          [
+            input.sandboxId,
+            context.employee.id,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return { ...handover, replayed: false };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async confirmHandover(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertEmployeeContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${input.sandboxId}:handover:${input.handoverId}`],
+        );
+        await processDueHandoverExceptions(client, {
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({ handoverId: input.handoverId }),
+        );
+        const previous = await client.query<{
+          payload_hash: string;
+          result_data: StoredHandover;
+        }>(
+          `select payload_hash, result_data
+             from handover_command_requests
+            where sandbox_id = $1 and employee_id = $2
+              and command_type = 'confirm' and idempotency_key_hash = $3`,
+          [input.sandboxId, context.employee.id, idempotencyKeyHash],
+        );
+        const previousRow = previous.rows[0];
+        if (previousRow) {
+          if (previousRow.payload_hash !== payloadHash) {
+            throw new HandoverConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return {
+            ...handoverFromStored(previousRow.result_data),
+            replayed: true,
+          };
+        }
+        const handoverRows = await client.query<
+          HandoverRow & {
+            store_id: string;
+            submitted_by_employee_id: string;
+          }
+        >(
+          `${handoverSelect}
+            where handover.sandbox_id = $1 and handover.id = $2`,
+          [input.sandboxId, input.handoverId],
+        );
+        const handoverRow = handoverRows.rows[0];
+        if (
+          !handoverRow ||
+          handoverRow.store_id !== context.employee.store_id
+        ) {
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, $5, 'handover.confirm', 'handover',
+               $6, 'denied', $7, $8, null, null, $9, $10)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              context.employee.store_id,
+              input.personaId,
+              input.role,
+              input.handoverId,
+              handoverRow ? "cross-store" : "handover-not-found",
+              input.requestId,
+              currentTime,
+              wallTime,
+            ],
+          );
+          await client.query("commit");
+          throw new HandoverConflictError("handover-not-found");
+        }
+        if (handoverRow.confirmation_business_at) {
+          throw new HandoverConflictError("already-confirmed");
+        }
+        const eligibility = await client.query<{ shift_id: string }>(
+          `select attendance.shift_id
+             from attendance_records attendance
+            where attendance.sandbox_id = $1 and attendance.employee_id = $2
+              and attendance.status = 'checked-in'
+            order by attendance.check_in_business_at desc limit 1`,
+          [input.sandboxId, context.employee.id],
+        );
+        if (
+          handoverRow.submitted_by_employee_id === context.employee.id ||
+          !eligibility.rows[0]
+        ) {
+          throw new HandoverConflictError("confirmation-not-eligible");
+        }
+        await client.query(
+          `insert into handover_confirmations (
+             id, sandbox_id, store_id, handover_id, confirmed_by_employee_id,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            context.employee.store_id,
+            input.handoverId,
+            context.employee.id,
+            currentTime,
+            wallTime,
+          ],
+        );
+        const handover: DatabaseHandover = {
+          ...handoverFromRow(handoverRow),
+          confirmed: {
+            businessOccurredAt: currentTime,
+            by: {
+              displayName: context.employee.display_name,
+              employeeCode: context.employee.employee_code,
+            },
+            recordedAt: wallTime,
+          },
+        };
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, 'handover.confirm', 'handover',
+             $6, 'allowed', $7, $8::jsonb, $9::jsonb, $10, $11)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            context.employee.store_id,
+            input.personaId,
+            input.role,
+            input.handoverId,
+            input.requestId,
+            JSON.stringify({ confirmed: false }),
+            JSON.stringify({
+              confirmed: true,
+              confirmedByEmployeeCode: context.employee.employee_code,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const stored = storedHandoverFromDatabase(handover);
+        await client.query(
+          `insert into handover_command_requests (
+             sandbox_id, employee_id, command_type, idempotency_key_hash,
+             payload_hash, result_data
+           ) values ($1, $2, 'confirm', $3, $4, $5::jsonb)`,
+          [
+            input.sandboxId,
+            context.employee.id,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return { ...handover, replayed: false };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readManagerHandoverExceptions(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertEmployeeContext(client, input, wallTime);
+        if (context.employee.role !== "manager") {
+          throw new RoleContextStaleError();
+        }
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await processDueHandoverExceptions(client, {
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const rows = await client.query<{
+          business_occurred_at: Date;
+          display_name: string;
+          employee_code: string;
+          ends_at: Date;
+          handover_id: string | null;
+          kind: HandoverExceptionKind;
+          recorded_at: Date;
+          shift_id: string;
+          starts_at: Date;
+        }>(
+          `select exception.kind, exception.business_occurred_at,
+                  exception.recorded_at, exception.shift_id,
+                  exception.handover_id, shift.starts_at, shift.ends_at,
+                  employee.display_name, employee.employee_code
+             from handover_exceptions exception
+             join shifts shift on shift.id = exception.shift_id
+             join employees employee on employee.id = shift.employee_id
+            where exception.sandbox_id = $1 and exception.store_id = $2
+            order by exception.business_occurred_at desc, exception.id desc`,
+          [input.sandboxId, context.employee.store_id],
+        );
+        const handoverIds = [
+          ...new Set(
+            rows.rows.flatMap((row) =>
+              row.handover_id ? [row.handover_id] : [],
+            ),
+          ),
+        ];
+        const handovers =
+          handoverIds.length === 0
+            ? { rows: [] as HandoverRow[] }
+            : await client.query<HandoverRow>(
+                `${handoverSelect}
+                  where handover.sandbox_id = $1
+                    and handover.id = any($2::uuid[])`,
+                [input.sandboxId, handoverIds],
+              );
+        const handoversById = new Map(
+          handovers.rows.map((row) => [row.handover_id, handoverFromRow(row)]),
+        );
+        const result: DatabaseManagerHandoverExceptions = {
+          currentTime,
+          exceptions: rows.rows.map((row) => ({
+            businessOccurredAt: row.business_occurred_at,
+            employee: {
+              displayName: row.display_name,
+              employeeCode: row.employee_code,
+            },
+            handover: row.handover_id
+              ? (handoversById.get(row.handover_id) ?? null)
+              : null,
+            kind: row.kind,
+            recordedAt: row.recorded_at,
+            shiftId: row.shift_id,
+            window: { endsAt: row.ends_at, startsAt: row.starts_at },
+          })),
+          store: {
+            code: context.employee.store_code,
+            displayName: context.employee.store_display_name,
+          },
+        };
         await client.query("commit");
         return result;
       } catch (error) {

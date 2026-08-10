@@ -31,6 +31,7 @@ import { StaffOrderFulfillment } from "./staff-order-fulfillment";
 import { StoreInventory } from "./store-inventory";
 import { StaffRepairQueue } from "./staff-repair-queue";
 import { StaffShiftAttendance } from "./staff-shift-attendance";
+import { ManagerHandoverExceptions } from "./staff-handover";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -630,6 +631,11 @@ export function RoleContextShell({
               onToast={setToast}
               refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
               role={context.role.id}
+            />
+          ) : context.role.id === "manager" &&
+            activePage === "people-schedule" ? (
+            <ManagerHandoverExceptions
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
             />
           ) : (context.role.id === "staff" && activePage === "inventory") ||
             (context.role.id === "manager" &&

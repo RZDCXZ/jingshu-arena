@@ -105,7 +105,16 @@ export function App() {
   const [repairStates, setRepairStates] = useState({});
   const [repairSpareStates, setRepairSpareStates] = useState({});
   const [repairVerificationEvidence, setRepairVerificationEvidence] = useState({});
-  const [handoverSubmitted, setHandoverSubmitted] = useState(false);
+  const initialHandoverState = new URLSearchParams(window.location.search).get(
+    "handoverState",
+  );
+  const [handoverSubmitted, setHandoverSubmitted] = useState(
+    initialHandoverState === "submitted" ||
+      initialHandoverState === "confirmed",
+  );
+  const [handoverConfirmed, setHandoverConfirmed] = useState(
+    initialHandoverState === "confirmed",
+  );
   const [demoStep, setDemoStep] = useState(3);
   const [businessTime, setBusinessTime] = useState(
     new URLSearchParams(window.location.search).get("businessTime") || "19:30",
@@ -407,7 +416,15 @@ export function App() {
         return (
           <ShiftPage
             readonly={readonly}
+            handoverConfirmed={handoverConfirmed}
             handoverSubmitted={handoverSubmitted}
+            onHandoverConfirm={() => {
+              setHandoverConfirmed(true);
+              setToast({
+                tone: "success",
+                text: "接班确认已记录 · 双时间可追溯",
+              });
+            }}
             onHandover={() => {
               setHandoverSubmitted(true);
               setToast({ tone: "success", text: "不可编辑交接快照已提交" });
@@ -497,6 +514,7 @@ export function App() {
     orderStates,
     repairStates,
     readonly,
+    handoverConfirmed,
     handoverSubmitted,
     queueFilter,
   ]);

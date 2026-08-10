@@ -638,6 +638,179 @@ export const attendanceCommandRequests = pgTable(
   ],
 ).enableRLS();
 
+export const handovers = pgTable(
+  "handovers",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    shiftId: uuid("shift_id").notNull(),
+    submittedByEmployeeId: uuid("submitted_by_employee_id").notNull(),
+    note: text("note").default("").notNull(),
+    snapshot: jsonb("snapshot").notNull(),
+    submittedBusinessAt: timestamp("submitted_business_at", {
+      withTimezone: true,
+    }).notNull(),
+    submittedRecordedAt: timestamp("submitted_recorded_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("handovers_sandbox_shift_unique").on(table.sandboxId, table.shiftId),
+    unique("handovers_sandbox_store_id_unique").on(
+      table.sandboxId,
+      table.storeId,
+      table.id,
+    ),
+    check("handovers_note_length", sql`char_length(${table.note}) <= 500`),
+    foreignKey({
+      columns: [
+        table.sandboxId,
+        table.storeId,
+        table.submittedByEmployeeId,
+        table.shiftId,
+      ],
+      foreignColumns: [
+        shifts.sandboxId,
+        shifts.storeId,
+        shifts.employeeId,
+        shifts.id,
+      ],
+      name: "handovers_submitter_shift_scope_fk",
+    }).onDelete("restrict"),
+    pgPolicy("handovers_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const handoverConfirmations = pgTable(
+  "handover_confirmations",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    handoverId: uuid("handover_id").notNull(),
+    confirmedByEmployeeId: uuid("confirmed_by_employee_id").notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("handover_confirmations_handover_unique").on(
+      table.sandboxId,
+      table.handoverId,
+    ),
+    foreignKey({
+      columns: [table.sandboxId, table.storeId, table.handoverId],
+      foreignColumns: [handovers.sandboxId, handovers.storeId, handovers.id],
+      name: "handover_confirmations_handover_scope_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.sandboxId, table.storeId, table.confirmedByEmployeeId],
+      foreignColumns: [employees.sandboxId, employees.storeId, employees.id],
+      name: "handover_confirmations_employee_scope_fk",
+    }).onDelete("restrict"),
+    pgPolicy("handover_confirmations_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const handoverExceptions = pgTable(
+  "handover_exceptions",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    shiftId: uuid("shift_id")
+      .notNull()
+      .references(() => shifts.id, { onDelete: "restrict" }),
+    handoverId: uuid("handover_id").references(() => handovers.id, {
+      onDelete: "restrict",
+    }),
+    kind: text("kind").notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("handover_exceptions_shift_kind_unique").on(
+      table.sandboxId,
+      table.shiftId,
+      table.kind,
+    ),
+    check(
+      "handover_exceptions_kind",
+      sql`${table.kind} IN ('submission-overdue', 'late-submission', 'confirmation-overdue')`,
+    ),
+    pgPolicy("handover_exceptions_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const handoverCommandRequests = pgTable(
+  "handover_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    commandType: text("command_type").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.employeeId,
+        table.commandType,
+        table.idempotencyKeyHash,
+      ],
+      name: "handover_command_requests_pk",
+    }),
+    check(
+      "handover_command_requests_type",
+      sql`${table.commandType} IN ('submit', 'confirm')`,
+    ),
+    pgPolicy("handover_command_requests_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
 export const memberProfiles = pgTable(
   "member_profiles",
   {

@@ -2350,6 +2350,116 @@ button.metric-card:hover {
   margin-top: 14px;
 }
 
+.handover-prototype-card {
+  min-width: 0;
+}
+
+.handover-prototype-details {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.handover-prototype-details > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #091720;
+}
+
+.handover-prototype-details span,
+.handover-prototype-details small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.handover-prototype-details strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.handover-prototype-evidence {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.handover-prototype-evidence > span {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid #315b58;
+  border-radius: var(--radius-sm);
+  background: #10211f;
+}
+
+.handover-prototype-evidence small,
+.handover-prototype-evidence em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.handover-prototype-evidence strong {
+  color: #bdebdc;
+  font-size: 10px;
+}
+
+.manager-handover-prototype-list button.is-selected {
+  border-color: var(--cyan);
+  background: #102a34;
+  box-shadow: inset 2px 0 var(--cyan);
+}
+
+.manager-handover-prototype-detail {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #294650;
+  border-radius: var(--radius-sm);
+  background: #091720;
+}
+
+.manager-handover-prototype-detail h3 {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+.manager-handover-prototype-detail .snapshot-grid {
+  gap: 6px;
+}
+
+.manager-handover-prototype-detail .snapshot-grid > div {
+  padding: 8px;
+}
+
+.manager-handover-prototype-detail .snapshot-grid span {
+  font-size: 8px;
+}
+
+.manager-handover-prototype-detail .snapshot-grid strong {
+  font-size: 16px;
+}
+
+.manager-handover-prototype-detail .detail-list {
+  margin-top: 10px;
+}
+
+@media (max-width: 960px) {
+  .handover-prototype-details {
+    grid-template-columns: 1fr;
+  }
+
+  .manager-handover-prototype .snapshot-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 .field {
   display: grid;
   gap: 7px;

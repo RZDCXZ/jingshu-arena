@@ -234,6 +234,26 @@ export class AttendanceConflictError extends Error {
   }
 }
 
+export type HandoverConflictReason =
+  | "already-confirmed"
+  | "already-submitted"
+  | "confirmation-not-eligible"
+  | "handover-not-found"
+  | "idempotency-conflict"
+  | "note-invalid"
+  | "shift-not-eligible";
+
+export class HandoverConflictError extends Error {
+  readonly code = "HANDOVER_CONFLICT";
+  readonly reason: HandoverConflictReason;
+
+  constructor(reason: HandoverConflictReason) {
+    super(`Handover command was rejected: ${reason}.`);
+    this.name = "HandoverConflictError";
+    this.reason = reason;
+  }
+}
+
 export type ManagerInventoryConflictReason =
   | "cross-store"
   | "idempotency-conflict"
