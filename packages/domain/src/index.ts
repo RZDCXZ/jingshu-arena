@@ -387,7 +387,101 @@ export function reservationGrowthAward(
 }
 
 export type CustomerOrderStatus =
-  "cancelled" | "expired" | "pending-simulated-payment" | "simulated-paid";
+  | "cancelled"
+  | "completed"
+  | "expired"
+  | "pending-simulated-payment"
+  | "preparing"
+  | "ready-for-pickup"
+  | "simulated-paid";
+
+export type StaffOrderFulfillmentResult =
+  | {
+      readonly couponEffect: "none" | "restore";
+      readonly growthPoints: number;
+      readonly inventoryEffect: "release" | "retain" | "sale" | "waste";
+      readonly nextStatus: CustomerOrderStatus;
+      readonly simulatedRefundCents: number;
+      readonly status: "applied";
+    }
+  | {
+      readonly reason: "illegal-transition";
+      readonly status: "invalid";
+    };
+
+export function decideStaffOrderFulfillment(input: {
+  readonly action: "cancel" | "complete" | "mark-ready" | "start-preparing";
+  readonly finalSimulatedAmountCents: number;
+  readonly status: CustomerOrderStatus;
+}): StaffOrderFulfillmentResult {
+  if (
+    !Number.isInteger(input.finalSimulatedAmountCents) ||
+    input.finalSimulatedAmountCents < 0
+  ) {
+    throw new RangeError(
+      "Order fulfillment uses a non-negative integer simulated amount.",
+    );
+  }
+  if (input.action === "start-preparing" && input.status === "simulated-paid") {
+    return {
+      couponEffect: "none",
+      growthPoints: 0,
+      inventoryEffect: "retain",
+      nextStatus: "preparing",
+      simulatedRefundCents: 0,
+      status: "applied",
+    };
+  }
+  if (input.action === "mark-ready" && input.status === "preparing") {
+    return {
+      couponEffect: "none",
+      growthPoints: 0,
+      inventoryEffect: "retain",
+      nextStatus: "ready-for-pickup",
+      simulatedRefundCents: 0,
+      status: "applied",
+    };
+  }
+  if (input.action === "complete" && input.status === "ready-for-pickup") {
+    return {
+      couponEffect: "none",
+      growthPoints: Math.floor(input.finalSimulatedAmountCents / 100),
+      inventoryEffect: "sale",
+      nextStatus: "completed",
+      simulatedRefundCents: 0,
+      status: "applied",
+    };
+  }
+  if (
+    input.action === "cancel" &&
+    (input.status === "pending-simulated-payment" ||
+      input.status === "simulated-paid")
+  ) {
+    return {
+      couponEffect: "restore",
+      growthPoints: 0,
+      inventoryEffect: "release",
+      nextStatus: "cancelled",
+      simulatedRefundCents:
+        input.status === "simulated-paid" ? input.finalSimulatedAmountCents : 0,
+      status: "applied",
+    };
+  }
+  if (
+    input.action === "cancel" &&
+    (input.status === "preparing" || input.status === "ready-for-pickup")
+  ) {
+    return {
+      couponEffect: "none",
+      growthPoints: 0,
+      inventoryEffect: "waste",
+      nextStatus: "cancelled",
+      simulatedRefundCents: input.finalSimulatedAmountCents,
+      status: "applied",
+    };
+  }
+  return { reason: "illegal-transition", status: "invalid" };
+}
 
 export interface CustomerOrderPricingLineInput {
   readonly availableQuantity: number;
@@ -500,6 +594,14 @@ export function decideCustomerOrderLifecycle(input: {
     input.status === "simulated-paid"
   ) {
     return { reason: "paid-order-independent", status: "unchanged" };
+  }
+  if (input.action === "cancel" && input.status === "simulated-paid") {
+    return {
+      couponEffect: "release",
+      inventoryEffect: "release",
+      nextStatus: "cancelled",
+      status: "applied",
+    };
   }
   if (input.status !== "pending-simulated-payment") {
     return { reason: "illegal-transition", status: "invalid" };

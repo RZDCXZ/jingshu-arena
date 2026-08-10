@@ -27,6 +27,7 @@ import { RoleSwitchDialog, StaleRoleDialog } from "./role-context-dialogs";
 import { roleMeta, type RolePageId } from "./role-context-model";
 import { RoleWorkbench, type StaffReservationPreset } from "./role-workbench";
 import { CustomerSeatBrowser } from "./customer-seat-browser";
+import { StaffOrderFulfillment } from "./staff-order-fulfillment";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -601,6 +602,17 @@ export function RoleContextShell({
         <section className="role-workspace">
           {context.role.id === "customer" && activePage === "customer-home" ? (
             <CustomerSeatBrowser csrfToken={context.csrfToken} />
+          ) : context.role.id === "staff" && activePage === "orders" ? (
+            <StaffOrderFulfillment
+              csrfToken={context.csrfToken}
+              filter={filter}
+              inspectorOpen={inspectorOpen}
+              onFilter={setFilter}
+              onFilterDirty={setReservationFiltersDirty}
+              onInspector={setInspectorOpen}
+              onToast={setToast}
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+            />
           ) : (context.role.id === "staff" &&
               (activePage === "workbench" || activePage === "reservations")) ||
             (context.role.id === "manager" && activePage === "live-ops") ? (

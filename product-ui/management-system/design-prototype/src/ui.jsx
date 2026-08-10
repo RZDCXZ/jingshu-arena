@@ -307,6 +307,7 @@ export function Modal({
   onClose,
   footer,
   size = "medium",
+  initialFocusSelector,
 }) {
   const dialogRef = useRef(null);
   const onCloseRef = useRef(onClose);
@@ -320,7 +321,10 @@ export function Modal({
     const dialog = dialogRef.current;
     const focusableSelector =
       "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
-    dialog?.querySelector(focusableSelector)?.focus();
+    (initialFocusSelector
+      ? dialog?.querySelector(initialFocusSelector)
+      : dialog?.querySelector(focusableSelector)
+    )?.focus();
 
     function handleKeyDown(event) {
       if (event.key === "Escape") {
@@ -347,7 +351,7 @@ export function Modal({
       dialog?.removeEventListener("keydown", handleKeyDown);
       if (returnTarget instanceof HTMLElement) returnTarget.focus();
     };
-  }, []);
+  }, [initialFocusSelector]);
 
   return (
     <div

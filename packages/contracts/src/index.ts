@@ -333,6 +333,9 @@ export interface CustomerPendingOrderResponse {
 export const CUSTOMER_ORDER_STATUSES = [
   "pending-simulated-payment",
   "simulated-paid",
+  "preparing",
+  "ready-for-pickup",
+  "completed",
   "cancelled",
   "expired",
 ] as const;
@@ -366,6 +369,12 @@ export interface CustomerOrderDetailResponse {
     readonly occurredAt: string;
     readonly simulated: true;
   } | null;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly occurredAt: string;
+    readonly reason: string;
+    readonly simulated: true;
+  } | null;
   readonly snapshot: CustomerOrderSnapshotResponse;
   readonly status: CustomerOrderStatus;
   readonly terminalReason: string | null;
@@ -397,8 +406,112 @@ export interface CustomerOrderCancellationResponse {
   readonly cancelledAt: string;
   readonly couponRestored: boolean;
   readonly orderId: string;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly occurredAt: string;
+    readonly reason: string;
+    readonly simulated: true;
+  } | null;
   readonly replayed: boolean;
   readonly status: "cancelled";
+}
+
+export const STAFF_ORDER_STAGE_FILTERS = [
+  "all",
+  "simulated-paid",
+  "preparing",
+  "ready-for-pickup",
+  "exception",
+] as const;
+export type StaffOrderStageFilter = (typeof STAFF_ORDER_STAGE_FILTERS)[number];
+
+export const STAFF_ORDER_ACTIONS = [
+  "start-preparing",
+  "mark-ready",
+  "complete",
+  "cancel",
+] as const;
+export type StaffOrderAction = (typeof STAFF_ORDER_ACTIONS)[number];
+
+export interface StaffOrderSummaryResponse {
+  readonly amountCents: number;
+  readonly couponLabel: string | null;
+  readonly customerDisplayName: string;
+  readonly itemSummary: string;
+  readonly orderId: string;
+  readonly reservation: {
+    readonly reservationId: string;
+    readonly seatCode: string;
+    readonly status: CustomerReservationStatus;
+  };
+  readonly stageEnteredAt: string;
+  readonly status: CustomerOrderStatus;
+  readonly waitingMinutes: number;
+}
+
+export interface StaffOrderQueueResponse {
+  readonly counts: Record<
+    "exception" | "preparing" | "ready-for-pickup" | "simulated-paid",
+    number
+  >;
+  readonly currentTime: string;
+  readonly rows: ReadonlyArray<StaffOrderSummaryResponse>;
+  readonly stage: StaffOrderStageFilter;
+  readonly status: "ready";
+  readonly store: { readonly code: string; readonly displayName: string };
+}
+
+export interface StaffOrderDetailResponse {
+  readonly actions: {
+    readonly canCancel: boolean;
+    readonly primary: {
+      readonly kind: Exclude<StaffOrderAction, "cancel">;
+      readonly label: "开始制作" | "标记待取" | "完成订单";
+    } | null;
+  };
+  readonly coupon:
+    | (NonNullable<CustomerOrderSnapshotResponse["coupon"]> & {
+        readonly status: CustomerExperienceCouponStatus;
+      })
+    | null;
+  readonly currentTime: string;
+  readonly growth: {
+    readonly finalSimulatedAmountCents: number;
+    readonly growthPoints: number;
+  } | null;
+  readonly inventory: ReadonlyArray<{
+    readonly inventoryItemId: string;
+    readonly onHandQuantity: number;
+    readonly productId: string;
+    readonly quantity: number;
+    readonly reservationStatus: "active" | "released" | "sold" | "wasted";
+  }>;
+  readonly order: StaffOrderSummaryResponse;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly occurredAt: string;
+    readonly reason: string;
+    readonly simulated: true;
+  } | null;
+  readonly snapshot: CustomerOrderSnapshotResponse;
+  readonly timeline: CustomerOrderDetailResponse["timeline"];
+}
+
+export interface StaffOrderCommandRequest {
+  readonly action: StaffOrderAction;
+  readonly reason?: string;
+}
+
+export interface StaffOrderCommandResponse {
+  readonly action: StaffOrderAction;
+  readonly couponRestored: boolean;
+  readonly growthPoints: number;
+  readonly inventoryEffect: "release" | "retain" | "sale" | "waste";
+  readonly occurredAt: string;
+  readonly orderId: string;
+  readonly replayed: boolean;
+  readonly simulatedRefundCents: number;
+  readonly status: CustomerOrderStatus;
 }
 
 export type CustomerMemberTier = "bronze" | "gold" | "silver";

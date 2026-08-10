@@ -5,6 +5,8 @@ import type { PoolClient } from "pg";
 import type {
   FrontlineReservationAction,
   PublicRole,
+  StaffOrderAction,
+  StaffOrderStageFilter,
   StaffReservationAnomalyFilter,
   StaffReservationTimeFilter,
 } from "@jingshu/contracts";
@@ -15,6 +17,7 @@ import {
   type CustomerReservationMode,
   decideReservationLifecycle,
   decideFrontlineReservationLifecycle,
+  decideStaffOrderFulfillment,
   deriveExperienceCouponStatus,
   deriveSeatAvailability,
   evaluateReservationCoupon,
@@ -41,6 +44,7 @@ import {
   CustomerReservationLifecycleConflictError,
   CustomerSeatBrowseValidationError,
   FrontlineReservationConflictError,
+  StaffOrderConflictError,
   PublicSandboxIdempotencyConflictError,
   PublicSandboxOwnershipConflictError,
   RoleContextStaleError,
@@ -375,6 +379,12 @@ export interface DatabaseCustomerOrderCancellation {
   readonly cancelledAt: Date;
   readonly couponRestored: boolean;
   readonly orderId: string;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly occurredAt: Date;
+    readonly reason: string;
+    readonly simulated: true;
+  } | null;
   readonly replayed: boolean;
   readonly status: "cancelled";
 }
@@ -407,6 +417,12 @@ export interface DatabaseCustomerOrderDetail {
   }>;
   readonly orderId: string;
   readonly payment: DatabaseCustomerOrderPayment["payment"] | null;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly occurredAt: Date;
+    readonly reason: string;
+    readonly simulated: true;
+  } | null;
   readonly snapshot: CustomerOrderSnapshot;
   readonly status: CustomerOrderStatus;
   readonly terminalReason: string | null;
@@ -576,6 +592,92 @@ export interface ExecuteStaffReservationCommandInput extends ReadStaffReservatio
   readonly requestId: string;
 }
 
+export interface ReadStaffOrderQueueInput extends ReadStaffReservationWorkbenchInput {
+  readonly stage: StaffOrderStageFilter;
+}
+
+export interface ReadStaffOrderDetailInput extends ReadStaffReservationWorkbenchInput {
+  readonly orderId: string;
+}
+
+export interface ExecuteStaffOrderCommandInput extends ReadStaffOrderDetailInput {
+  readonly action: StaffOrderAction;
+  readonly idempotencyKey: string;
+  readonly reason: string | null;
+  readonly requestId: string;
+}
+
+export interface DatabaseStaffOrderSummary {
+  readonly amountCents: number;
+  readonly couponLabel: string | null;
+  readonly customerDisplayName: string;
+  readonly itemSummary: string;
+  readonly orderId: string;
+  readonly reservation: {
+    readonly reservationId: string;
+    readonly seatCode: string;
+    readonly status: ReservationStatus;
+  };
+  readonly stageEnteredAt: Date;
+  readonly status: CustomerOrderStatus;
+  readonly waitingMinutes: number;
+}
+
+export interface DatabaseStaffOrderQueue {
+  readonly counts: Record<
+    "exception" | "preparing" | "ready-for-pickup" | "simulated-paid",
+    number
+  >;
+  readonly currentTime: Date;
+  readonly rows: ReadonlyArray<DatabaseStaffOrderSummary>;
+  readonly stage: StaffOrderStageFilter;
+  readonly store: { readonly code: string; readonly displayName: string };
+}
+
+export interface DatabaseStaffOrderDetail {
+  readonly actions: {
+    readonly canCancel: boolean;
+    readonly primary: {
+      readonly kind: Exclude<StaffOrderAction, "cancel">;
+      readonly label: "开始制作" | "标记待取" | "完成订单";
+    } | null;
+  };
+  readonly coupon: DatabaseCustomerOrderDetail["coupon"];
+  readonly currentTime: Date;
+  readonly events: DatabaseCustomerOrderDetail["events"];
+  readonly growth: {
+    readonly finalSimulatedAmountCents: number;
+    readonly growthPoints: number;
+  } | null;
+  readonly inventory: ReadonlyArray<{
+    readonly inventoryItemId: string;
+    readonly onHandQuantity: number;
+    readonly productId: string;
+    readonly quantity: number;
+    readonly reservationStatus: "active" | "released" | "sold" | "wasted";
+  }>;
+  readonly order: DatabaseStaffOrderSummary;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly occurredAt: Date;
+    readonly reason: string;
+    readonly simulated: true;
+  } | null;
+  readonly snapshot: CustomerOrderSnapshot;
+}
+
+export interface DatabaseStaffOrderCommand {
+  readonly action: StaffOrderAction;
+  readonly couponRestored: boolean;
+  readonly growthPoints: number;
+  readonly inventoryEffect: "release" | "retain" | "sale" | "waste";
+  readonly occurredAt: Date;
+  readonly orderId: string;
+  readonly replayed: boolean;
+  readonly simulatedRefundCents: number;
+  readonly status: CustomerOrderStatus;
+}
+
 export interface DatabaseStaffReservationSummary {
   readonly anomaly: {
     readonly code: "seat-maintenance";
@@ -728,6 +830,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   executeStaffReservationCommand(
     input: ExecuteStaffReservationCommandInput,
   ): Promise<DatabaseStaffReservationCommand>;
+  executeStaffOrderCommand(
+    input: ExecuteStaffOrderCommandInput,
+  ): Promise<DatabaseStaffOrderCommand>;
   createCustomerPendingReservation(
     input: CreateCustomerPendingReservationInput,
   ): Promise<DatabaseCustomerPendingReservation>;
@@ -752,6 +857,12 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readStaffReservationWorkbench(
     input: ReadStaffReservationWorkbenchInput,
   ): Promise<DatabaseStaffReservationWorkbench>;
+  readStaffOrderDetail(
+    input: ReadStaffOrderDetailInput,
+  ): Promise<DatabaseStaffOrderDetail>;
+  readStaffOrderQueue(
+    input: ReadStaffOrderQueueInput,
+  ): Promise<DatabaseStaffOrderQueue>;
   readCustomerSeatAvailability(
     input: ReadCustomerSeatAvailabilityInput,
   ): Promise<DatabaseCustomerSeatAvailability>;
@@ -1189,6 +1300,9 @@ interface CustomerOrderRow {
   id: string;
   order_snapshot: CustomerOrderSnapshot;
   paid_business_at: Date | null;
+  refund_amount_cents: number | null;
+  refund_business_occurred_at: Date | null;
+  refund_reason: string | null;
   reservation_status: ReservationStatus;
   simulated_payment_cents: number | null;
   status: CustomerOrderStatus;
@@ -1262,7 +1376,52 @@ interface OrderCancelCommandRow {
     cancelledAt: string;
     couponRestored: boolean;
     orderId: string;
+    refund: {
+      amountCents: number;
+      occurredAt: string;
+      reason: string;
+      simulated: true;
+    } | null;
     status: "cancelled";
+  };
+}
+
+interface StaffOrderRow {
+  cancelled_business_at: Date | null;
+  coupon_status: "available" | "expired" | "redeemed" | "reserved" | null;
+  customer_persona_id: string;
+  customer_display_name: string;
+  id: string;
+  order_snapshot: CustomerOrderSnapshot;
+  paid_business_at: Date | null;
+  preparing_business_at: Date | null;
+  ready_business_at: Date | null;
+  reservation_id: string;
+  reservation_status: ReservationStatus;
+  seat_code: string;
+  status: CustomerOrderStatus;
+  store_id: string;
+}
+
+interface StaffOrderInventoryRow {
+  inventory_item_id: string;
+  on_hand_quantity: number;
+  product_id: string;
+  quantity: number;
+  status: "active" | "released" | "sold" | "wasted";
+}
+
+interface StaffOrderCommandRow {
+  payload_hash: string;
+  result_data: {
+    action: StaffOrderAction;
+    couponRestored: boolean;
+    growthPoints: number;
+    inventoryEffect: "release" | "retain" | "sale" | "waste";
+    occurredAt: string;
+    orderId: string;
+    simulatedRefundCents: number;
+    status: CustomerOrderStatus;
   };
 }
 
@@ -1295,7 +1454,14 @@ function orderCancellationFromStored(
   value: OrderCancelCommandRow["result_data"],
   replayed: boolean,
 ): DatabaseCustomerOrderCancellation {
-  return { ...value, cancelledAt: new Date(value.cancelledAt), replayed };
+  return {
+    ...value,
+    cancelledAt: new Date(value.cancelledAt),
+    refund: value.refund
+      ? { ...value.refund, occurredAt: new Date(value.refund.occurredAt) }
+      : null,
+    replayed,
+  };
 }
 
 const orderClockFormatter = new Intl.DateTimeFormat("en-GB", {
@@ -1378,6 +1544,7 @@ async function releaseOrderHold(
     businessTime: Date;
     eventType: string;
     nextStatus: "cancelled" | "expired";
+    expectedStatus?: "pending-simulated-payment" | "simulated-paid";
     orderId: string;
     reason: string;
     recordedAt: Date;
@@ -1411,14 +1578,14 @@ async function releaseOrderHold(
             cancelled_business_at = case when $3::text = 'cancelled' then $4::timestamptz else null end,
             expired_business_at = case when $3::text = 'expired' then $4::timestamptz else null end,
             terminal_reason = $5
-      where sandbox_id = $1 and id = $2
-        and status = 'pending-simulated-payment'`,
+      where sandbox_id = $1 and id = $2 and status = $6`,
     [
       input.sandboxId,
       input.orderId,
       input.nextStatus,
       input.businessTime,
       input.reason,
+      input.expectedStatus ?? "pending-simulated-payment",
     ],
   );
   if (updated.rowCount === 1) {
@@ -1546,10 +1713,14 @@ async function readCustomerOrderDetailWithClient(
             orders.simulated_payment_cents, orders.paid_business_at,
             orders.cancelled_business_at, orders.expired_business_at,
             orders.terminal_reason, coupon.status as coupon_status,
-            reservation.status as reservation_status
+            reservation.status as reservation_status,
+            refund.amount_cents as refund_amount_cents,
+            refund.business_occurred_at as refund_business_occurred_at,
+            refund.reason as refund_reason
        from customer_orders orders
        join reservations reservation on reservation.id = orders.reservation_id
        left join experience_coupons coupon on coupon.id = orders.coupon_id
+       left join order_simulated_refunds refund on refund.order_id = orders.id
       where orders.sandbox_id = $1
         and orders.customer_persona_id = $2 and orders.id = $3${lock ? " for update of orders" : ""}`,
     [input.sandboxId, input.personaId, input.orderId],
@@ -1578,7 +1749,10 @@ async function readCustomerOrderDetailWithClient(
   const snapshot = row.order_snapshot;
   return {
     detail: {
-      actions: { canCancel: live, canSimulatePayment: live },
+      actions: {
+        canCancel: live || row.status === "simulated-paid",
+        canSimulatePayment: live,
+      },
       cancelledAt: row.cancelled_business_at,
       coupon:
         snapshot.coupon && row.coupon_status
@@ -1609,12 +1783,62 @@ async function readCustomerOrderDetailWithClient(
               simulated: true,
             }
           : null,
+      refund:
+        row.refund_amount_cents !== null &&
+        row.refund_business_occurred_at &&
+        row.refund_reason
+          ? {
+              amountCents: row.refund_amount_cents,
+              occurredAt: row.refund_business_occurred_at,
+              reason: row.refund_reason,
+              simulated: true,
+            }
+          : null,
       snapshot,
       status: row.status,
       terminalReason: row.terminal_reason,
     },
     storeId: row.store_id,
   };
+}
+
+async function recordCustomerOrderDenial(
+  client: PoolClient,
+  input: {
+    readonly action: string;
+    readonly businessTime: Date;
+    readonly currentStatus: CustomerOrderStatus;
+    readonly orderId: string;
+    readonly personaId: string;
+    readonly reason: string;
+    readonly recordedAt: Date;
+    readonly requestId: string;
+    readonly sandboxId: string;
+    readonly storeId: string;
+  },
+) {
+  await client.query(
+    `insert into audit_events (
+       id, sandbox_id, store_id, persona_id, role, action, object_type,
+       object_id, result, reason, request_id, before_data, after_data,
+       business_occurred_at, recorded_at
+     ) values ($1, $2, $3, $4, 'customer', $5, 'order', $6, 'denied', $7,
+       $8, $9::jsonb, $10::jsonb, $11, $12)`,
+    [
+      randomUUID(),
+      input.sandboxId,
+      input.storeId,
+      input.personaId,
+      input.action,
+      input.orderId,
+      input.reason,
+      input.requestId,
+      JSON.stringify({ status: input.currentStatus }),
+      JSON.stringify({ status: input.currentStatus }),
+      input.businessTime,
+      input.recordedAt,
+    ],
+  );
 }
 
 function formatBusinessHours(store: StoreRow): string {
@@ -2691,6 +2915,226 @@ function frontlineCommandFromStored(
     occurredAt: new Date(value.occurredAt),
     replayed,
   };
+}
+
+async function readStaffOrderRows(
+  client: PoolClient,
+  input: {
+    readonly lock?: boolean;
+    readonly orderId?: string;
+    readonly sandboxId: string;
+    readonly storeId: string;
+  },
+): Promise<ReadonlyArray<StaffOrderRow>> {
+  const result = await client.query<StaffOrderRow>(
+    `select orders.id, orders.store_id, orders.customer_persona_id,
+            orders.status, orders.order_snapshot,
+            orders.paid_business_at, orders.preparing_business_at,
+            orders.ready_business_at, orders.cancelled_business_at,
+            reservation.id as reservation_id,
+            reservation.status as reservation_status, seat.code as seat_code,
+            customer.display_name as customer_display_name,
+            coupon.status as coupon_status
+       from customer_orders orders
+       join reservations reservation on reservation.id = orders.reservation_id
+       join seats seat on seat.id = orders.seat_id
+       join demo_personas customer on customer.id = orders.customer_persona_id
+       left join experience_coupons coupon on coupon.id = orders.coupon_id
+      where orders.sandbox_id = $1 and orders.store_id = $2
+        and ($3::uuid is null or orders.id = $3)
+      order by coalesce(orders.ready_business_at,
+        orders.preparing_business_at, orders.paid_business_at,
+        orders.created_business_at), orders.id
+      ${input.lock ? "for update of orders" : ""}`,
+    [input.sandboxId, input.storeId, input.orderId ?? null],
+  );
+  return result.rows;
+}
+
+function staffOrderSummary(
+  row: StaffOrderRow,
+  currentTime: Date,
+): DatabaseStaffOrderSummary {
+  const stageEnteredAt =
+    row.ready_business_at ??
+    row.preparing_business_at ??
+    row.paid_business_at ??
+    currentTime;
+  return {
+    amountCents: row.order_snapshot.payableCents,
+    couponLabel: row.order_snapshot.coupon?.displayName ?? null,
+    customerDisplayName: row.customer_display_name,
+    itemSummary: row.order_snapshot.lines
+      .map((line) => `${line.productName} × ${line.quantity}`)
+      .join(" · "),
+    orderId: row.id,
+    reservation: {
+      reservationId: row.reservation_id,
+      seatCode: row.seat_code,
+      status: row.reservation_status,
+    },
+    stageEnteredAt,
+    status: row.status,
+    waitingMinutes: Math.max(
+      0,
+      Math.floor((currentTime.getTime() - stageEnteredAt.getTime()) / 60_000),
+    ),
+  };
+}
+
+function staffOrderActions(status: CustomerOrderStatus) {
+  const primaryByStatus: Partial<
+    Record<
+      CustomerOrderStatus,
+      NonNullable<DatabaseStaffOrderDetail["actions"]["primary"]>
+    >
+  > = {
+    "simulated-paid": { kind: "start-preparing", label: "开始制作" },
+    preparing: { kind: "mark-ready", label: "标记待取" },
+    "ready-for-pickup": { kind: "complete", label: "完成订单" },
+  };
+  const primary = primaryByStatus[status];
+  return {
+    canCancel:
+      status === "pending-simulated-payment" ||
+      status === "simulated-paid" ||
+      status === "preparing" ||
+      status === "ready-for-pickup",
+    primary: primary ?? null,
+  };
+}
+
+async function readStaffOrderDetailWithClient(
+  client: PoolClient,
+  input: ReadStaffOrderDetailInput,
+  storeId: string,
+  currentTime: Date,
+  lock = false,
+): Promise<DatabaseStaffOrderDetail> {
+  const row = (
+    await readStaffOrderRows(client, {
+      lock,
+      orderId: input.orderId,
+      sandboxId: input.sandboxId,
+      storeId,
+    })
+  )[0];
+  if (!row) throw new StaffOrderConflictError("not-found");
+  const inventory = await client.query<StaffOrderInventoryRow>(
+    `select hold.inventory_item_id, hold.quantity, hold.status,
+            item.on_hand_quantity, config.product_id
+       from order_inventory_reservations hold
+       join inventory_items item on item.id = hold.inventory_item_id
+       join store_products config on config.inventory_item_id = item.id
+      where hold.sandbox_id = $1 and hold.order_id = $2
+      order by hold.id`,
+    [input.sandboxId, input.orderId],
+  );
+  const events = await client.query<OrderEventRow>(
+    `select event_type, event_data, business_occurred_at
+       from order_business_events
+      where sandbox_id = $1 and order_id = $2 order by sequence`,
+    [input.sandboxId, input.orderId],
+  );
+  const refund = await client.query<{
+    amount_cents: number;
+    business_occurred_at: Date;
+    reason: string;
+  }>(
+    `select amount_cents, reason, business_occurred_at
+       from order_simulated_refunds
+      where sandbox_id = $1 and order_id = $2`,
+    [input.sandboxId, input.orderId],
+  );
+  const growth = await client.query<{
+    final_simulated_amount_cents: number;
+    growth_points: number;
+  }>(
+    `select final_simulated_amount_cents, growth_points
+       from member_growth_events
+      where sandbox_id = $1 and source_kind = 'order' and source_id = $2`,
+    [input.sandboxId, input.orderId],
+  );
+  const refundRow = refund.rows[0];
+  const growthRow = growth.rows[0];
+  return {
+    actions: staffOrderActions(row.status),
+    coupon:
+      row.order_snapshot.coupon && row.coupon_status
+        ? { ...row.order_snapshot.coupon, status: row.coupon_status }
+        : null,
+    currentTime,
+    events: events.rows.map((event) => ({
+      data: event.event_data,
+      occurredAt: event.business_occurred_at,
+      type: event.event_type,
+    })),
+    growth: growthRow
+      ? {
+          finalSimulatedAmountCents: growthRow.final_simulated_amount_cents,
+          growthPoints: growthRow.growth_points,
+        }
+      : null,
+    inventory: inventory.rows.map((item) => ({
+      inventoryItemId: item.inventory_item_id,
+      onHandQuantity: item.on_hand_quantity,
+      productId: item.product_id,
+      quantity: item.quantity,
+      reservationStatus: item.status,
+    })),
+    order: staffOrderSummary(row, currentTime),
+    refund: refundRow
+      ? {
+          amountCents: refundRow.amount_cents,
+          occurredAt: refundRow.business_occurred_at,
+          reason: refundRow.reason,
+          simulated: true,
+        }
+      : null,
+    snapshot: row.order_snapshot,
+  };
+}
+
+async function recordStaffOrderDenial(
+  client: PoolClient,
+  input: ExecuteStaffOrderCommandInput & {
+    readonly actorStoreId: string;
+    readonly businessTime: Date;
+    readonly currentStatus: CustomerOrderStatus | null;
+    readonly denialReason: string;
+    readonly recordedAt: Date;
+  },
+) {
+  await client.query(
+    `insert into audit_events (
+       id, sandbox_id, store_id, persona_id, role, action, object_type,
+       object_id, result, reason, request_id, before_data, after_data,
+       business_occurred_at, recorded_at
+     ) values ($1, $2, $3, $4, $5, $6, 'order', $7, 'denied', $8, $9,
+       $10::jsonb, $11::jsonb, $12, $13)`,
+    [
+      randomUUID(),
+      input.sandboxId,
+      input.actorStoreId,
+      input.personaId,
+      input.role,
+      `order.${input.action}`,
+      input.orderId,
+      input.denialReason,
+      input.requestId,
+      JSON.stringify({ status: input.currentStatus }),
+      JSON.stringify({ status: input.currentStatus }),
+      input.businessTime,
+      input.recordedAt,
+    ],
+  );
+}
+
+function staffOrderCommandFromStored(
+  value: StaffOrderCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseStaffOrderCommand {
+  return { ...value, occurredAt: new Date(value.occurredAt), replayed };
 }
 
 function buildRoleContext(
@@ -4463,6 +4907,474 @@ export function createPublicSandboxDatabase(
         client.release();
       }
     },
+    async readStaffOrderQueue(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await processCustomerOrderDeadlines(client, {
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const allRows = await readStaffOrderRows(client, {
+          sandboxId: input.sandboxId,
+          storeId: context.actorStoreId,
+        });
+        const isException = (status: CustomerOrderStatus) =>
+          status === "cancelled" || status === "expired";
+        const queueRows = allRows.filter((row) => {
+          if (input.stage === "exception") return isException(row.status);
+          if (input.stage !== "all") return row.status === input.stage;
+          return (
+            row.status === "simulated-paid" ||
+            row.status === "preparing" ||
+            row.status === "ready-for-pickup" ||
+            isException(row.status)
+          );
+        });
+        const result: DatabaseStaffOrderQueue = {
+          counts: {
+            exception: allRows.filter((row) => isException(row.status)).length,
+            preparing: allRows.filter((row) => row.status === "preparing")
+              .length,
+            "ready-for-pickup": allRows.filter(
+              (row) => row.status === "ready-for-pickup",
+            ).length,
+            "simulated-paid": allRows.filter(
+              (row) => row.status === "simulated-paid",
+            ).length,
+          },
+          currentTime,
+          rows: queueRows.map((row) => staffOrderSummary(row, currentTime)),
+          stage: input.stage,
+          store: await readFrontlineStore(
+            client,
+            input.sandboxId,
+            context.actorStoreId,
+          ),
+        };
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readStaffOrderDetail(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await processCustomerOrderDeadlines(client, {
+          orderId: input.orderId,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const detail = await readStaffOrderDetailWithClient(
+          client,
+          input,
+          context.actorStoreId,
+          currentTime,
+        );
+        await client.query("commit");
+        return detail;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async executeStaffOrderCommand(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({
+            action: input.action,
+            orderId: input.orderId,
+            reason: input.reason,
+          }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:staff-order:${idempotencyKeyHash}`,
+          ],
+        );
+        const existing = await client.query<StaffOrderCommandRow>(
+          `select payload_hash, result_data
+             from order_frontline_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const existingRow = existing.rows[0];
+        if (existingRow) {
+          if (existingRow.payload_hash !== payloadHash) {
+            await recordStaffOrderDenial(client, {
+              ...input,
+              actorStoreId: context.actorStoreId,
+              businessTime: currentTime,
+              currentStatus: null,
+              denialReason: "idempotency-conflict",
+              recordedAt: wallTime,
+            });
+            await client.query("commit");
+            throw new StaffOrderConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return staffOrderCommandFromStored(existingRow.result_data, true);
+        }
+        await processCustomerOrderDeadlines(client, {
+          orderId: input.orderId,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const row = (
+          await readStaffOrderRows(client, {
+            lock: true,
+            orderId: input.orderId,
+            sandboxId: input.sandboxId,
+            storeId: context.actorStoreId,
+          })
+        )[0];
+        if (!row) {
+          await recordStaffOrderDenial(client, {
+            ...input,
+            actorStoreId: context.actorStoreId,
+            businessTime: currentTime,
+            currentStatus: null,
+            denialReason: "not-found",
+            recordedAt: wallTime,
+          });
+          await client.query("commit");
+          throw new StaffOrderConflictError("not-found");
+        }
+        const decision = decideStaffOrderFulfillment({
+          action: input.action,
+          finalSimulatedAmountCents: row.order_snapshot.payableCents,
+          status: row.status,
+        });
+        if (decision.status === "invalid") {
+          await recordStaffOrderDenial(client, {
+            ...input,
+            actorStoreId: context.actorStoreId,
+            businessTime: currentTime,
+            currentStatus: row.status,
+            denialReason: decision.reason,
+            recordedAt: wallTime,
+          });
+          await client.query("commit");
+          throw new StaffOrderConflictError(decision.reason, row.status);
+        }
+        let couponRestored = false;
+        if (decision.couponEffect === "restore" && row.order_snapshot.coupon) {
+          const restored = await client.query(
+            `update experience_coupons
+                set status = 'available', reserved_order_id = null,
+                    reserved_until = null
+              where sandbox_id = $1 and reserved_order_id = $2
+                and status in ('reserved', 'redeemed')`,
+            [input.sandboxId, row.id],
+          );
+          couponRestored = restored.rowCount === 1;
+          if (!couponRestored) {
+            throw new Error("The order coupon could not be restored.");
+          }
+        }
+        if (decision.inventoryEffect === "release") {
+          await client.query(
+            `update inventory_items item
+                set reserved_quantity = item.reserved_quantity - hold.quantity
+               from order_inventory_reservations hold
+              where hold.sandbox_id = $1 and hold.order_id = $2
+                and hold.status = 'active' and item.id = hold.inventory_item_id`,
+            [input.sandboxId, row.id],
+          );
+          await client.query(
+            `update order_inventory_reservations
+                set status = 'released', released_business_at = $3
+              where sandbox_id = $1 and order_id = $2 and status = 'active'`,
+            [input.sandboxId, row.id, currentTime],
+          );
+        }
+        if (
+          decision.inventoryEffect === "sale" ||
+          decision.inventoryEffect === "waste"
+        ) {
+          const holds = await client.query<{
+            inventory_item_id: string;
+            quantity: number;
+          }>(
+            `select inventory_item_id, quantity
+               from order_inventory_reservations
+              where sandbox_id = $1 and order_id = $2 and status = 'active'
+              order by inventory_item_id for update`,
+            [input.sandboxId, row.id],
+          );
+          for (const hold of holds.rows) {
+            const balance = await client.query<{ on_hand_quantity: number }>(
+              `update inventory_items
+                  set on_hand_quantity = on_hand_quantity - $3,
+                      reserved_quantity = reserved_quantity - $3
+                where sandbox_id = $1 and id = $2
+                  and on_hand_quantity >= $3 and reserved_quantity >= $3
+              returning on_hand_quantity`,
+              [input.sandboxId, hold.inventory_item_id, hold.quantity],
+            );
+            const onHandAfter = balance.rows[0]?.on_hand_quantity;
+            if (onHandAfter === undefined) {
+              throw new Error(
+                "The reserved order inventory could not be consumed.",
+              );
+            }
+            await client.query(
+              `insert into inventory_movements (
+                 id, sandbox_id, store_id, inventory_item_id, order_id,
+                 reason, on_hand_delta, on_hand_after, business_occurred_at,
+                 recorded_at
+               ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+              [
+                randomUUID(),
+                input.sandboxId,
+                row.store_id,
+                hold.inventory_item_id,
+                row.id,
+                decision.inventoryEffect === "sale"
+                  ? "order-sale"
+                  : "order-waste",
+                -hold.quantity,
+                onHandAfter,
+                currentTime,
+                wallTime,
+              ],
+            );
+          }
+          await client.query(
+            `update order_inventory_reservations
+                set status = $3, released_business_at = $4
+              where sandbox_id = $1 and order_id = $2 and status = 'active'`,
+            [
+              input.sandboxId,
+              row.id,
+              decision.inventoryEffect === "sale" ? "sold" : "wasted",
+              currentTime,
+            ],
+          );
+        }
+        if (decision.simulatedRefundCents > 0) {
+          await client.query(
+            `insert into order_simulated_refunds (
+               id, sandbox_id, order_id, amount_cents, reason,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              row.id,
+              decision.simulatedRefundCents,
+              input.reason,
+              currentTime,
+              wallTime,
+            ],
+          );
+        }
+        let growthPoints = 0;
+        if (decision.nextStatus === "completed") {
+          const profile = await client.query<{ id: string }>(
+            `select id from member_profiles
+              where sandbox_id = $1 and customer_persona_id = $2 for update`,
+            [input.sandboxId, row.customer_persona_id],
+          );
+          const profileId = profile.rows[0]?.id;
+          if (!profileId) {
+            throw new Error(
+              "The completed order customer has no member profile.",
+            );
+          }
+          const inserted = await client.query(
+            `insert into member_growth_events (
+               id, sandbox_id, member_profile_id, customer_persona_id,
+               source_kind, source_id, final_simulated_amount_cents,
+               growth_points, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'order', $5, $6, $7, $8, $9)
+             on conflict do nothing`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              profileId,
+              row.customer_persona_id,
+              row.id,
+              row.order_snapshot.payableCents,
+              decision.growthPoints,
+              currentTime,
+              wallTime,
+            ],
+          );
+          if (inserted.rowCount === 1) {
+            growthPoints = decision.growthPoints;
+            await client.query(
+              `update member_profiles set growth_points = growth_points + $3
+                where sandbox_id = $1 and id = $2`,
+              [input.sandboxId, profileId, growthPoints],
+            );
+          }
+        }
+        if (input.action === "start-preparing") {
+          await client.query(
+            `update customer_orders
+                set status = 'preparing', preparing_business_at = $3
+              where sandbox_id = $1 and id = $2 and status = $4`,
+            [input.sandboxId, row.id, currentTime, row.status],
+          );
+        } else if (input.action === "mark-ready") {
+          await client.query(
+            `update customer_orders
+                set status = 'ready-for-pickup', ready_business_at = $3
+              where sandbox_id = $1 and id = $2 and status = $4`,
+            [input.sandboxId, row.id, currentTime, row.status],
+          );
+        } else if (input.action === "complete") {
+          await client.query(
+            `update customer_orders
+                set status = 'completed', completed_business_at = $3
+              where sandbox_id = $1 and id = $2 and status = $4`,
+            [input.sandboxId, row.id, currentTime, row.status],
+          );
+        } else {
+          await client.query(
+            `update customer_orders
+                set status = 'cancelled', cancelled_business_at = $3,
+                    terminal_reason = $4
+              where sandbox_id = $1 and id = $2 and status = $5`,
+            [input.sandboxId, row.id, currentTime, input.reason, row.status],
+          );
+        }
+        const eventType = {
+          cancel: "order.cancelled",
+          complete: "order.completed",
+          "mark-ready": "order.ready-for-pickup",
+          "start-preparing": "order.preparing",
+        }[input.action];
+        await client.query(
+          `insert into order_business_events (
+             id, sandbox_id, order_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            row.id,
+            eventType,
+            JSON.stringify({
+              actorRole: input.role,
+              couponRestored,
+              finalSimulatedAmountCents:
+                decision.nextStatus === "completed"
+                  ? row.order_snapshot.payableCents
+                  : 0,
+              growthPoints,
+              inventoryEffect: decision.inventoryEffect,
+              reason: input.reason,
+              simulatedRefundCents: decision.simulatedRefundCents,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, reason, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, $6, 'order', $7, 'allowed', $8, $9,
+             $10::jsonb, $11::jsonb, $12, $13)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            row.store_id,
+            input.personaId,
+            input.role,
+            `order.${input.action}`,
+            row.id,
+            input.reason,
+            input.requestId,
+            JSON.stringify({ status: row.status }),
+            JSON.stringify({
+              couponRestored,
+              finalSimulatedAmountCents:
+                decision.nextStatus === "completed"
+                  ? row.order_snapshot.payableCents
+                  : 0,
+              growthPoints,
+              inventoryEffect: decision.inventoryEffect,
+              simulatedRefundCents: decision.simulatedRefundCents,
+              status: decision.nextStatus,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const stored = {
+          action: input.action,
+          couponRestored,
+          growthPoints,
+          inventoryEffect: decision.inventoryEffect,
+          occurredAt: currentTime.toISOString(),
+          orderId: row.id,
+          simulatedRefundCents: decision.simulatedRefundCents,
+          status: decision.nextStatus,
+        };
+        await client.query(
+          `insert into order_frontline_command_requests (
+             sandbox_id, actor_persona_id, order_id, command_type,
+             idempotency_key_hash, payload_hash, result_data
+           ) values ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            row.id,
+            input.action,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return staffOrderCommandFromStored(stored, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async create(input) {
       const client = await pool.connect();
 
@@ -5424,6 +6336,22 @@ export function createPublicSandboxDatabase(
           status: detail.status,
         });
         if (decision.status !== "applied") {
+          await recordCustomerOrderDenial(client, {
+            action: "order.simulate-payment",
+            businessTime: currentTime,
+            currentStatus: detail.status,
+            orderId: input.orderId,
+            personaId: input.personaId,
+            reason:
+              decision.reason === "hold-expired"
+                ? "hold-expired"
+                : "illegal-transition",
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            sandboxId: input.sandboxId,
+            storeId,
+          });
+          await client.query("commit");
           throw new CustomerOrderConflictError(
             decision.reason === "hold-expired"
               ? "hold-expired"
@@ -5589,6 +6517,22 @@ export function createPublicSandboxDatabase(
           status: detail.status,
         });
         if (decision.status !== "applied") {
+          await recordCustomerOrderDenial(client, {
+            action: "order.cancel",
+            businessTime: currentTime,
+            currentStatus: detail.status,
+            orderId: input.orderId,
+            personaId: input.personaId,
+            reason:
+              decision.reason === "hold-expired"
+                ? "hold-expired"
+                : "illegal-transition",
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            sandboxId: input.sandboxId,
+            storeId,
+          });
+          await client.query("commit");
           throw new CustomerOrderConflictError(
             decision.reason === "hold-expired"
               ? "hold-expired"
@@ -5597,9 +6541,20 @@ export function createPublicSandboxDatabase(
           );
         }
         const couponRestored = detail.coupon !== null;
+        const shouldRefund = detail.status === "simulated-paid";
+        const refund = shouldRefund
+          ? {
+              amountCents: detail.snapshot.payableCents,
+              occurredAt: currentTime.toISOString(),
+              reason: input.reason,
+              simulated: true as const,
+            }
+          : null;
         const changed = await releaseOrderHold(client, {
           businessTime: currentTime,
           eventType: "order.customer-cancelled",
+          expectedStatus: detail.status as
+            "pending-simulated-payment" | "simulated-paid",
           nextStatus: "cancelled",
           orderId: input.orderId,
           reason: input.reason,
@@ -5608,6 +6563,23 @@ export function createPublicSandboxDatabase(
         });
         if (!changed) {
           throw new CustomerOrderConflictError("illegal-transition");
+        }
+        if (refund) {
+          await client.query(
+            `insert into order_simulated_refunds (
+               id, sandbox_id, order_id, amount_cents, reason,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.orderId,
+              refund.amountCents,
+              refund.reason,
+              currentTime,
+              wallTime,
+            ],
+          );
         }
         await client.query(
           `insert into audit_events (
@@ -5625,7 +6597,11 @@ export function createPublicSandboxDatabase(
             input.reason,
             input.requestId,
             JSON.stringify({ status: detail.status }),
-            JSON.stringify({ couponRestored, status: "cancelled" }),
+            JSON.stringify({
+              couponRestored,
+              simulatedRefundCents: refund?.amountCents ?? 0,
+              status: "cancelled",
+            }),
             currentTime,
             wallTime,
           ],
@@ -5634,6 +6610,7 @@ export function createPublicSandboxDatabase(
           cancelledAt: currentTime.toISOString(),
           couponRestored,
           orderId: input.orderId,
+          refund,
           status: "cancelled",
         } as const;
         await client.query(

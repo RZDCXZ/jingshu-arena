@@ -214,6 +214,16 @@ export function App() {
     setToast({ tone: "success", text: `订单已推进为“${next}”` });
   }
 
+  function handleOrderCancel(id, reason) {
+    if (readonly) return;
+    const current = orderStates[id] || "已模拟支付";
+    setOrderStates((states) => ({ ...states, [id]: "已取消" }));
+    setToast({
+      tone: "success",
+      text: `${current === "制作中" || current === "待取" ? "库存记为损耗" : "库存预留已释放"} · 已全额模拟退款 · ${reason}`,
+    });
+  }
+
   function handleRepairAdvance(id) {
     if (readonly) return;
     const original =
@@ -345,6 +355,7 @@ export function App() {
           <OrdersPage
             orderStates={orderStates}
             onAdvance={handleOrderAdvance}
+            onCancel={handleOrderCancel}
             readonly={readonly}
           />
         );
@@ -385,6 +396,7 @@ export function App() {
             onOpenAction={setActionModal}
             orderStates={orderStates}
             onOrderAdvance={handleOrderAdvance}
+            onOrderCancel={handleOrderCancel}
             repairStates={repairStates}
             onRepairAdvance={handleRepairAdvance}
             readonly={readonly}
@@ -785,6 +797,7 @@ function ManagerLiveOps({
   onOpenAction,
   orderStates,
   onOrderAdvance,
+  onOrderCancel,
   repairStates,
   onRepairAdvance,
   readonly,
@@ -829,6 +842,7 @@ function ManagerLiveOps({
           <OrdersPage
             orderStates={orderStates}
             onAdvance={onOrderAdvance}
+            onCancel={onOrderCancel}
             readonly={readonly}
           />
         )}

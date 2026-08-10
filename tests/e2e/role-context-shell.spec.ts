@@ -6,6 +6,8 @@ import type {
   PublicRole,
   PublicSandboxReadyResponse,
   RoleContextReadyResponse,
+  StaffOrderDetailResponse,
+  StaffOrderSummaryResponse,
   StaffReservationDetailResponse,
   StaffReservationSummary,
 } from "@jingshu/contracts";
@@ -15,6 +17,10 @@ type MutableStaffReservationSummary = Omit<
   "status"
 > & {
   status: CustomerReservationStatus;
+};
+
+type MutableStaffOrderSummary = Omit<StaffOrderSummaryResponse, "status"> & {
+  status: StaffOrderSummaryResponse["status"];
 };
 
 const roleDetails = {
@@ -228,6 +234,120 @@ test.beforeEach(async ({ context }) => {
     },
   ];
   const commandReasons = new Map<string, string>();
+  const staffOrderRows: MutableStaffOrderSummary[] = [
+    {
+      amountCents: 1_100,
+      couponLabel: "商品体验券",
+      customerDisplayName: "林澈",
+      itemSummary: "能量饮料 × 2",
+      orderId: "00000000-0000-4000-8000-000000000951",
+      reservation: {
+        reservationId: "00000000-0000-4000-8000-000000000901",
+        seatCode: "A-18",
+        status: "in-use",
+      },
+      stageEnteredAt: "2026-08-10T11:18:00.000Z",
+      status: "simulated-paid",
+      waitingMinutes: 29,
+    },
+    {
+      amountCents: 1_500,
+      couponLabel: null,
+      customerDisplayName: "顾辰",
+      itemSummary: "烤肠 × 1 · 气泡水 × 1",
+      orderId: "00000000-0000-4000-8000-000000000952",
+      reservation: {
+        reservationId: "00000000-0000-4000-8000-000000000902",
+        seatCode: "B-03",
+        status: "in-use",
+      },
+      stageEnteredAt: "2026-08-10T11:34:00.000Z",
+      status: "ready-for-pickup",
+      waitingMinutes: 13,
+    },
+  ];
+
+  function staffOrderDetail(
+    row: MutableStaffOrderSummary,
+  ): StaffOrderDetailResponse {
+    const primary =
+      row.status === "simulated-paid"
+        ? ({ kind: "start-preparing", label: "开始制作" } as const)
+        : row.status === "preparing"
+          ? ({ kind: "mark-ready", label: "标记待取" } as const)
+          : row.status === "ready-for-pickup"
+            ? ({ kind: "complete", label: "完成订单" } as const)
+            : null;
+    return {
+      actions: {
+        canCancel: primary !== null,
+        primary,
+      },
+      coupon: row.couponLabel
+        ? {
+            code: "PRODUCT-6",
+            discountCents: 600,
+            displayName: row.couponLabel,
+            status: "reserved",
+          }
+        : null,
+      currentTime: "2026-08-10T11:47:23.000Z",
+      growth:
+        row.status === "completed"
+          ? { finalSimulatedAmountCents: row.amountCents, growthPoints: 11 }
+          : null,
+      inventory: [
+        {
+          inventoryItemId: "00000000-0000-4000-8000-000000000961",
+          onHandQuantity: 12,
+          productId: "00000000-0000-4000-8000-000000000962",
+          quantity: 2,
+          reservationStatus: row.status === "completed" ? "sold" : "active",
+        },
+      ],
+      order: row,
+      refund: null,
+      snapshot: {
+        coupon: row.couponLabel
+          ? {
+              code: "PRODUCT-6",
+              discountCents: 600,
+              displayName: row.couponLabel,
+            }
+          : null,
+        discountCents: row.couponLabel ? 600 : 0,
+        lines: [
+          {
+            lineTotalCents: 1_700,
+            productId: "00000000-0000-4000-8000-000000000962",
+            productName: "能量饮料",
+            quantity: 2,
+            unitPriceCents: 850,
+          },
+        ],
+        payableCents: row.amountCents,
+        reservation: {
+          reservationId: row.reservation.reservationId,
+          seatCode: row.reservation.seatCode,
+          storeCode: "prism-flagship",
+          storeDisplayName: "棱镜旗舰店",
+        },
+        subtotalCents: 1_700,
+      },
+      timeline: [
+        {
+          data: {},
+          occurredAt: "2026-08-10T11:18:00.000Z",
+          type: "order.inventory-reserved",
+        },
+        {
+          data: { simulated: true },
+          occurredAt: "2026-08-10T11:19:00.000Z",
+          type: "order.simulated-payment-succeeded",
+        },
+      ],
+    };
+  }
 
   function staffDetail(
     row: StaffReservationSummary,
@@ -441,6 +561,98 @@ test.beforeEach(async ({ context }) => {
     const row = staffRows.find((item) => item.reservationId === reservationId);
     await route.fulfill({
       json: row ? staffDetail(row) : { error: { message: "预约不存在" } },
+      status: row ? 200 : 404,
+    });
+  });
+  await context.route("**/api/v1/staff/orders**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/commands")) {
+      expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+      expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+      const orderId = url.pathname.split("/").at(-2) ?? "";
+      const row = staffOrderRows.find((item) => item.orderId === orderId);
+      const body = request.postDataJSON() as {
+        action: "cancel" | "complete" | "mark-ready" | "start-preparing";
+        reason?: string;
+      };
+      if (!row) {
+        await route.fulfill({ status: 404 });
+        return;
+      }
+      const previousStatus = row.status;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      row.status =
+        body.action === "start-preparing"
+          ? "preparing"
+          : body.action === "mark-ready"
+            ? "ready-for-pickup"
+            : body.action === "complete"
+              ? "completed"
+              : "cancelled";
+      await route.fulfill({
+        json: {
+          action: body.action,
+          couponRestored: body.action === "cancel",
+          growthPoints: body.action === "complete" ? 11 : 0,
+          inventoryEffect:
+            body.action === "complete"
+              ? "sale"
+              : body.action === "cancel"
+                ? previousStatus === "preparing" ||
+                  previousStatus === "ready-for-pickup"
+                  ? "waste"
+                  : "release"
+                : "retain",
+          occurredAt: businessTime,
+          orderId,
+          replayed: false,
+          simulatedRefundCents: body.action === "cancel" ? row.amountCents : 0,
+          status: row.status,
+        },
+        status: 200,
+      });
+      return;
+    }
+    if (url.pathname === "/api/v1/staff/orders") {
+      const stage = url.searchParams.get("stage") ?? "all";
+      const rows = staffOrderRows.filter((row) => {
+        if (stage === "all") return true;
+        if (stage === "exception") {
+          return row.status === "cancelled" || row.status === "expired";
+        }
+        return row.status === stage;
+      });
+      await route.fulfill({
+        json: {
+          counts: {
+            exception: staffOrderRows.filter(
+              (row) => row.status === "cancelled" || row.status === "expired",
+            ).length,
+            preparing: staffOrderRows.filter(
+              (row) => row.status === "preparing",
+            ).length,
+            "ready-for-pickup": staffOrderRows.filter(
+              (row) => row.status === "ready-for-pickup",
+            ).length,
+            "simulated-paid": staffOrderRows.filter(
+              (row) => row.status === "simulated-paid",
+            ).length,
+          },
+          currentTime: "2026-08-10T11:47:23.000Z",
+          rows,
+          stage,
+          status: "ready",
+          store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+        },
+        status: 200,
+      });
+      return;
+    }
+    const orderId = url.pathname.split("/").at(-1) ?? "";
+    const row = staffOrderRows.find((item) => item.orderId === orderId);
+    await route.fulfill({
+      json: row ? staffOrderDetail(row) : { error: { message: "订单不存在" } },
       status: row ? 200 : 404,
     });
   });
@@ -763,6 +975,88 @@ test("shared shell exposes the signed persona, role, scope, lifecycle, and fresh
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(roleTrigger).toBeFocused();
+});
+
+test("staff fulfills paid orders one observable stage at a time and safely retries cancellation", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "商品订单", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "商品订单" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "待制作 1" })).toBeVisible();
+  await page.getByRole("tab", { name: "待制作 1" }).click();
+  await expect(
+    page.getByRole("button", { name: /林澈.*能量饮料.*已模拟支付/u }),
+  ).toBeVisible();
+  await page.getByRole("tab", { name: "全部 2" }).click();
+  await page
+    .getByRole("button", { name: /林澈.*能量饮料.*已模拟支付/u })
+    .click();
+  await expect(
+    page.getByRole("complementary", { name: "商品订单详情" }),
+  ).toContainText("商品快照");
+  await expect(page.getByRole("button", { name: "开始制作" })).toBeVisible();
+
+  const commandRequest = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/v1/staff/orders/") &&
+      request.url().endsWith("/commands"),
+  );
+  await page.getByRole("button", { name: "开始制作" }).click();
+  await commandRequest;
+  await expect(
+    page.getByRole("button", { name: "正在提交开始制作" }),
+  ).toBeDisabled();
+  await expect(page.getByRole("button", { name: "标记待取" })).toBeVisible();
+  await page.getByRole("button", { name: "标记待取" }).click();
+  await expect(page.getByRole("button", { name: "完成订单" })).toBeVisible();
+  await page.getByRole("button", { name: "完成订单" }).click();
+  await expect(
+    page.getByRole("complementary", { name: "商品订单详情" }),
+  ).toContainText("已完成");
+  await expect(page.getByRole("main").getByText("成长值 +11")).toBeVisible();
+
+  await page.getByRole("button", { name: /顾辰.*烤肠.*待取/u }).click();
+  await page.getByRole("button", { name: "取消订单" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "取消商品订单" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("取消原因")).toBeFocused();
+  await expect(page.getByRole("button", { name: "确认取消" })).toBeDisabled();
+  await page.getByLabel("取消原因").fill("顾客临时改变取货计划");
+
+  const failCancellation = async (route: Route) => {
+    await route.fulfill({
+      json: {
+        error: {
+          code: "STAFF_ORDER_SERVICE_UNAVAILABLE",
+          message: "订单动作未能完成，原状态保持不变；可以安全重试。",
+          requestId: "00000000-0000-4000-8000-000000000971",
+        },
+      },
+      status: 503,
+    });
+  };
+  await page.route("**/api/v1/staff/orders/**/commands", failCancellation);
+  await page.getByRole("button", { name: "确认取消" }).click();
+  const cancelDialog = page.getByRole("dialog", { name: "取消商品订单" });
+  await expect(cancelDialog.getByRole("alert")).toContainText("原状态保持不变");
+  await expect(cancelDialog).toBeVisible();
+  await page.unroute("**/api/v1/staff/orders/**/commands", failCancellation);
+  await page.getByRole("button", { name: "重试取消" }).click();
+  await expect(
+    page.getByRole("main").getByText("模拟退款 ¥15.00"),
+  ).toBeVisible();
+  await expect(page.getByRole("main").getByText("库存记为损耗")).toBeVisible();
+
+  await page.setViewportSize({ width: 1024, height: 768 });
+  const widths = await page.evaluate(() => ({
+    bodyClientWidth: document.body.clientWidth,
+    bodyScrollWidth: document.body.scrollWidth,
+  }));
+  expect(widths.bodyScrollWidth).toBe(widths.bodyClientWidth);
 });
 
 test("narrow workbench collapses the inspector without clipping the primary surface", async ({

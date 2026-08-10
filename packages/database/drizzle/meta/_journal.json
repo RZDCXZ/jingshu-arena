@@ -99,6 +99,13 @@
       "when": 1786330800000,
       "tag": "0013_customer_order_inventory",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1786334400000,
+      "tag": "0014_staff_order_fulfillment",
+      "breakpoints": true
     }
   ]
 }

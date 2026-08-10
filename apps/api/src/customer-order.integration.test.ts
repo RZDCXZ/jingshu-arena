@@ -139,7 +139,530 @@ function writeHeaders(context: { cookie: string; csrfToken: string }) {
   };
 }
 
+async function switchRole(
+  context: {
+    cookie: string;
+    csrfToken: string;
+    sandboxId: string;
+  },
+  targetRole: "customer" | "staff",
+) {
+  const response = await app.request("/api/v1/demo/context/switch", {
+    body: JSON.stringify({ targetRole }),
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: context.cookie,
+      Origin: publicOrigin,
+      "X-CSRF-Token": context.csrfToken,
+    },
+    method: "POST",
+  });
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { csrfToken: string };
+  return {
+    cookie: response.headers.get("set-cookie")?.split(";", 1)[0] ?? "",
+    csrfToken: body.csrfToken,
+    sandboxId: context.sandboxId,
+  };
+}
+
 describe("customer order API", () => {
+  it("allows customer cancellation only before preparation and returns the full simulated amount", async () => {
+    const context = await createArrivedReservation();
+    const catalogResponse = await app.request(
+      `/api/v1/customer/reservations/${context.reservationId}/products`,
+      { headers: { Cookie: context.cookie } },
+    );
+    const catalog = (await catalogResponse.json()) as {
+      coupons: Array<{ id: string }>;
+      products: Array<{ id: string }>;
+    };
+    const createPaid = async (couponId: string | null) => {
+      const created = await app.request("/api/v1/customer/orders", {
+        body: JSON.stringify({
+          couponId,
+          lines: [
+            {
+              productId: catalog.products[0]!.id,
+              quantity: couponId ? 2 : 1,
+            },
+          ],
+          reservationId: context.reservationId,
+        }),
+        headers: writeHeaders(context),
+        method: "POST",
+      });
+      expect(created.status).toBe(201);
+      const order = (await created.json()) as {
+        orderId: string;
+        snapshot: { payableCents: number };
+      };
+      const paid = await app.request(
+        `/api/v1/customer/orders/${order.orderId}/simulated-payment`,
+        { body: "{}", headers: writeHeaders(context), method: "POST" },
+      );
+      expect(paid.status).toBe(200);
+      return order;
+    };
+    const cancellable = await createPaid(catalog.coupons[0]!.id);
+    const futurePreparing = await createPaid(null);
+
+    const cancelled = await app.request(
+      `/api/v1/customer/orders/${cancellable.orderId}/cancel`,
+      {
+        body: JSON.stringify({ reason: "顾客在制作前改变计划" }),
+        headers: writeHeaders(context),
+        method: "POST",
+      },
+    );
+    expect(cancelled.status).toBe(200);
+    await expect(cancelled.json()).resolves.toMatchObject({
+      couponRestored: true,
+      refund: {
+        amountCents: cancellable.snapshot.payableCents,
+        simulated: true,
+      },
+      status: "cancelled",
+    });
+
+    const staff = await switchRole(context, "staff");
+    const preparing = await app.request(
+      `/api/v1/staff/orders/${futurePreparing.orderId}/commands`,
+      {
+        body: JSON.stringify({ action: "start-preparing" }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(preparing.status).toBe(200);
+    const customer = await switchRole(staff, "customer");
+    const tooLate = await app.request(
+      `/api/v1/customer/orders/${futurePreparing.orderId}/cancel`,
+      {
+        body: JSON.stringify({ reason: "制作后不应允许顾客取消" }),
+        headers: writeHeaders(customer),
+        method: "POST",
+      },
+    );
+    expect(tooLate.status).toBe(409);
+    await expect(tooLate.json()).resolves.toMatchObject({
+      error: {
+        code: "CUSTOMER_ORDER_ILLEGAL_TRANSITION",
+        currentStatus: "preparing",
+      },
+    });
+  });
+
+  it("makes staff cancellation release before preparation and consume waste after preparation", async () => {
+    const context = await createArrivedReservation();
+    const catalogResponse = await app.request(
+      `/api/v1/customer/reservations/${context.reservationId}/products`,
+      { headers: { Cookie: context.cookie } },
+    );
+    const catalog = (await catalogResponse.json()) as {
+      coupons: Array<{ id: string }>;
+      products: Array<{ id: string; onHandQuantity: number }>;
+    };
+    const createPaid = async (couponId: string | null, quantity: number) => {
+      const created = await app.request("/api/v1/customer/orders", {
+        body: JSON.stringify({
+          couponId,
+          lines: [{ productId: catalog.products[0]!.id, quantity }],
+          reservationId: context.reservationId,
+        }),
+        headers: writeHeaders(context),
+        method: "POST",
+      });
+      expect(created.status).toBe(201);
+      const order = (await created.json()) as {
+        orderId: string;
+        snapshot: { payableCents: number };
+      };
+      const paid = await app.request(
+        `/api/v1/customer/orders/${order.orderId}/simulated-payment`,
+        { body: "{}", headers: writeHeaders(context), method: "POST" },
+      );
+      expect(paid.status).toBe(200);
+      return order;
+    };
+    const beforeProduction = await createPaid(catalog.coupons[0]!.id, 2);
+    const afterProduction = await createPaid(null, 1);
+    const staff = await switchRole(context, "staff");
+
+    const cancellationKey = crypto.randomUUID();
+    const cancellationBody = JSON.stringify({
+      action: "cancel",
+      reason: "顾客临时离店，尚未开始制作",
+    });
+    const cancelledBefore = await app.request(
+      `/api/v1/staff/orders/${beforeProduction.orderId}/commands`,
+      {
+        body: cancellationBody,
+        headers: {
+          ...writeHeaders(staff),
+          "Idempotency-Key": cancellationKey,
+        },
+        method: "POST",
+      },
+    );
+    expect(cancelledBefore.status).toBe(200);
+    await expect(cancelledBefore.json()).resolves.toMatchObject({
+      couponRestored: true,
+      inventoryEffect: "release",
+      simulatedRefundCents: beforeProduction.snapshot.payableCents,
+      status: "cancelled",
+    });
+    const replay = await app.request(
+      `/api/v1/staff/orders/${beforeProduction.orderId}/commands`,
+      {
+        body: cancellationBody,
+        headers: {
+          ...writeHeaders(staff),
+          "Idempotency-Key": cancellationKey,
+        },
+        method: "POST",
+      },
+    );
+    expect(replay.status).toBe(200);
+    await expect(replay.json()).resolves.toMatchObject({ replayed: true });
+    const repeated = await app.request(
+      `/api/v1/staff/orders/${beforeProduction.orderId}/commands`,
+      {
+        body: cancellationBody,
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(repeated.status).toBe(409);
+
+    const preparing = await app.request(
+      `/api/v1/staff/orders/${afterProduction.orderId}/commands`,
+      {
+        body: JSON.stringify({ action: "start-preparing" }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(preparing.status).toBe(200);
+    const cancelledAfter = await app.request(
+      `/api/v1/staff/orders/${afterProduction.orderId}/commands`,
+      {
+        body: JSON.stringify({
+          action: "cancel",
+          reason: "制作后顾客离店，按订单损耗处理",
+        }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(cancelledAfter.status).toBe(200);
+    await expect(cancelledAfter.json()).resolves.toMatchObject({
+      couponRestored: false,
+      inventoryEffect: "waste",
+      simulatedRefundCents: afterProduction.snapshot.payableCents,
+      status: "cancelled",
+    });
+    const detailResponse = await app.request(
+      `/api/v1/staff/orders/${afterProduction.orderId}`,
+      { headers: { Cookie: staff.cookie } },
+    );
+    expect(detailResponse.status).toBe(200);
+    await expect(detailResponse.json()).resolves.toMatchObject({
+      actions: { canCancel: false, primary: null },
+      inventory: [{ reservationStatus: "wasted" }],
+      refund: {
+        amountCents: afterProduction.snapshot.payableCents,
+        simulated: true,
+      },
+      timeline: expect.arrayContaining([
+        expect.objectContaining({ type: "order.pending-created" }),
+        expect.objectContaining({ type: "order.preparing" }),
+        expect.objectContaining({ type: "order.cancelled" }),
+      ]),
+    });
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      await client.query("begin");
+      await client.query("set local role jingshu_runtime");
+      await client.query("select set_config('app.sandbox_id', $1, true)", [
+        context.sandboxId,
+      ]);
+      const holds = await client.query(
+        `select hold.order_id, hold.status, refund.amount_cents,
+                movement.reason as movement_reason, movement.on_hand_delta,
+                item.on_hand_quantity, item.reserved_quantity
+           from order_inventory_reservations hold
+           join inventory_items item on item.id = hold.inventory_item_id
+           left join order_simulated_refunds refund on refund.order_id = hold.order_id
+           left join inventory_movements movement on movement.order_id = hold.order_id
+          where hold.sandbox_id = $1 and hold.order_id = any($2::uuid[])
+          order by hold.order_id`,
+        [
+          context.sandboxId,
+          [beforeProduction.orderId, afterProduction.orderId],
+        ],
+      );
+      expect(holds.rows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            amount_cents: beforeProduction.snapshot.payableCents,
+            movement_reason: null,
+            order_id: beforeProduction.orderId,
+            status: "released",
+          }),
+          expect.objectContaining({
+            amount_cents: afterProduction.snapshot.payableCents,
+            movement_reason: "order-waste",
+            on_hand_delta: -1,
+            on_hand_quantity: catalog.products[0]!.onHandQuantity - 1,
+            order_id: afterProduction.orderId,
+            reserved_quantity: 0,
+            status: "wasted",
+          }),
+        ]),
+      );
+      await client.query("commit");
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("keeps a paid order in the normal counter queue after an equipment-fault reservation ending", async () => {
+    const context = await createArrivedReservation();
+    const catalogResponse = await app.request(
+      `/api/v1/customer/reservations/${context.reservationId}/products`,
+      { headers: { Cookie: context.cookie } },
+    );
+    const catalog = (await catalogResponse.json()) as {
+      products: Array<{ id: string }>;
+    };
+    const created = await app.request("/api/v1/customer/orders", {
+      body: JSON.stringify({
+        couponId: null,
+        lines: [{ productId: catalog.products[0]!.id, quantity: 1 }],
+        reservationId: context.reservationId,
+      }),
+      headers: writeHeaders(context),
+      method: "POST",
+    });
+    const order = (await created.json()) as { orderId: string };
+    const paid = await app.request(
+      `/api/v1/customer/orders/${order.orderId}/simulated-payment`,
+      { body: "{}", headers: writeHeaders(context), method: "POST" },
+    );
+    expect(paid.status).toBe(200);
+    const staff = await switchRole(context, "staff");
+    wallTime = new Date("2026-08-10T12:30:00.000Z");
+    const started = await app.request(
+      `/api/v1/staff/reservations/${context.reservationId}/commands`,
+      {
+        body: JSON.stringify({ action: "start-use" }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(started.status).toBe(200);
+    const ended = await app.request(
+      `/api/v1/staff/reservations/${context.reservationId}/commands`,
+      {
+        body: JSON.stringify({
+          action: "complete-early",
+          reason: "设备故障，提前结束预约",
+        }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(ended.status).toBe(200);
+
+    const queue = await app.request(
+      "/api/v1/staff/orders?stage=simulated-paid",
+      { headers: { Cookie: staff.cookie } },
+    );
+    expect(queue.status).toBe(200);
+    await expect(queue.json()).resolves.toMatchObject({
+      rows: [
+        {
+          orderId: order.orderId,
+          reservation: { status: "completed" },
+          status: "simulated-paid",
+        },
+      ],
+    });
+  });
+
+  it("lets staff read the paid queue and advance exactly one fulfillment stage", async () => {
+    const context = await createArrivedReservation();
+    const catalogResponse = await app.request(
+      `/api/v1/customer/reservations/${context.reservationId}/products`,
+      { headers: { Cookie: context.cookie } },
+    );
+    const catalog = (await catalogResponse.json()) as {
+      coupons: Array<{ id: string }>;
+      products: Array<{ id: string; onHandQuantity: number }>;
+    };
+    const created = await app.request("/api/v1/customer/orders", {
+      body: JSON.stringify({
+        couponId: catalog.coupons[0]!.id,
+        lines: [{ productId: catalog.products[0]!.id, quantity: 2 }],
+        reservationId: context.reservationId,
+      }),
+      headers: writeHeaders(context),
+      method: "POST",
+    });
+    const order = (await created.json()) as { orderId: string };
+    const paid = await app.request(
+      `/api/v1/customer/orders/${order.orderId}/simulated-payment`,
+      { body: "{}", headers: writeHeaders(context), method: "POST" },
+    );
+    expect(paid.status).toBe(200);
+
+    const staff = await switchRole(context, "staff");
+    const queueResponse = await app.request(
+      "/api/v1/staff/orders?stage=simulated-paid",
+      { headers: { Cookie: staff.cookie } },
+    );
+    expect(queueResponse.status).toBe(200);
+    await expect(queueResponse.json()).resolves.toMatchObject({
+      rows: [
+        {
+          orderId: order.orderId,
+          reservation: { reservationId: context.reservationId },
+          status: "simulated-paid",
+        },
+      ],
+      status: "ready",
+      store: { code: "prism-flagship" },
+    });
+
+    const advanced = await app.request(
+      `/api/v1/staff/orders/${order.orderId}/commands`,
+      {
+        body: JSON.stringify({ action: "start-preparing" }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(advanced.status).toBe(200);
+    await expect(advanced.json()).resolves.toMatchObject({
+      action: "start-preparing",
+      orderId: order.orderId,
+      status: "preparing",
+    });
+
+    const skipped = await app.request(
+      `/api/v1/staff/orders/${order.orderId}/commands`,
+      {
+        body: JSON.stringify({ action: "complete" }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(skipped.status).toBe(409);
+    await expect(skipped.json()).resolves.toMatchObject({
+      error: {
+        code: "STAFF_ORDER_ILLEGAL_TRANSITION",
+        currentStatus: "preparing",
+      },
+    });
+    const ready = await app.request(
+      `/api/v1/staff/orders/${order.orderId}/commands`,
+      {
+        body: JSON.stringify({ action: "mark-ready" }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(ready.status).toBe(200);
+    await expect(ready.json()).resolves.toMatchObject({
+      inventoryEffect: "retain",
+      status: "ready-for-pickup",
+    });
+    const completed = await app.request(
+      `/api/v1/staff/orders/${order.orderId}/commands`,
+      {
+        body: JSON.stringify({ action: "complete" }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(completed.status).toBe(200);
+    await expect(completed.json()).resolves.toMatchObject({
+      growthPoints: 11,
+      inventoryEffect: "sale",
+      simulatedRefundCents: 0,
+      status: "completed",
+    });
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      await client.query("begin");
+      await client.query("set local role jingshu_runtime");
+      await client.query("select set_config('app.sandbox_id', $1, true)", [
+        context.sandboxId,
+      ]);
+      const evidence = await client.query(
+        `select orders.status, item.on_hand_quantity, item.reserved_quantity,
+                hold.status as hold_status, movement.reason as movement_reason,
+                movement.on_hand_delta, growth.growth_points,
+                growth.final_simulated_amount_cents
+           from customer_orders orders
+           join order_inventory_reservations hold on hold.order_id = orders.id
+           join inventory_items item on item.id = hold.inventory_item_id
+           left join inventory_movements movement on movement.order_id = orders.id
+           left join member_growth_events growth
+             on growth.source_kind = 'order' and growth.source_id = orders.id
+          where orders.sandbox_id = $1 and orders.id = $2`,
+        [context.sandboxId, order.orderId],
+      );
+      expect(evidence.rows).toEqual([
+        expect.objectContaining({
+          final_simulated_amount_cents: 1_100,
+          growth_points: 11,
+          hold_status: "sold",
+          movement_reason: "order-sale",
+          on_hand_delta: -2,
+          on_hand_quantity: catalog.products[0]!.onHandQuantity - 2,
+          reserved_quantity: 0,
+          status: "completed",
+        }),
+      ]);
+      const audit = await client.query<{ action: string; result: string }>(
+        `select action, result from audit_events
+          where sandbox_id = $1 and object_id = $2 and action like 'order.%'
+          order by recorded_at, id`,
+        [context.sandboxId, order.orderId],
+      );
+      expect(audit.rows).toEqual(
+        expect.arrayContaining([
+          { action: "order.complete", result: "denied" },
+          { action: "order.complete", result: "allowed" },
+        ]),
+      );
+      const revenueEvent = await client.query<{ event_data: unknown }>(
+        `select event_data from order_business_events
+          where sandbox_id = $1 and order_id = $2
+            and event_type = 'order.completed'`,
+        [context.sandboxId, order.orderId],
+      );
+      expect(revenueEvent.rows).toEqual([
+        {
+          event_data: expect.objectContaining({
+            finalSimulatedAmountCents: 1_100,
+            growthPoints: 11,
+            inventoryEffect: "sale",
+          }),
+        },
+      ]);
+      await client.query("commit");
+    } finally {
+      await client.end();
+    }
+  });
+
   it("exposes the arrived-reservation catalog and a CSRF-protected snapshot/payment flow", async () => {
     const context = await createArrivedReservation();
     const catalogResponse = await app.request(

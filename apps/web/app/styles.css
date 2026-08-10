@@ -5567,6 +5567,287 @@ strong {
   }
 }
 
+/* Ticket 12 — staff order fulfillment */
+
+.staff-order-title small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.staff-order-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 12px 0 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+}
+
+.staff-order-tabs button {
+  min-height: 42px;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  padding: 0 13px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.staff-order-tabs button:hover,
+.staff-order-tabs button:focus-visible,
+.staff-order-tabs button.is-active {
+  color: var(--text);
+}
+
+.staff-order-tabs button.is-active {
+  border-bottom-color: var(--lime);
+}
+
+.staff-order-tabs strong {
+  min-width: 20px;
+  padding: 2px 5px;
+  border-radius: 9px;
+  background: #172a36;
+  color: var(--cyan);
+  font-size: 9px;
+  text-align: center;
+}
+
+.staff-order-outcome {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 8px 11px;
+  border: 1px solid rgb(184 243 74 / 24%);
+  border-radius: var(--radius-sm);
+  background: rgb(184 243 74 / 6%);
+  color: #d8f4a3;
+  font-size: 10px;
+}
+
+.staff-order-outcome svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  color: var(--lime);
+}
+
+.staff-order-state {
+  min-height: 150px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.staff-order-table {
+  min-width: 680px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.staff-order-main {
+  overflow-x: auto;
+}
+
+.staff-order-table-head,
+.staff-order-row {
+  display: grid;
+  grid-template-columns:
+    68px minmax(135px, 1.1fr) minmax(145px, 1.3fr)
+    84px 92px 86px 18px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 13px;
+}
+
+.staff-order-table-head {
+  min-height: 38px;
+  border-bottom: 1px solid var(--line);
+  background: #07131d;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.staff-order-row {
+  width: 100%;
+  min-height: 70px;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  text-align: left;
+}
+
+.staff-order-row:last-of-type {
+  border-bottom: 0;
+}
+
+.staff-order-row:hover,
+.staff-order-row:focus-visible,
+.staff-order-row.is-selected {
+  background: var(--surface-hover);
+}
+
+.staff-order-row.is-selected {
+  box-shadow: inset 3px 0 0 var(--lime);
+}
+
+.staff-order-row > time,
+.staff-order-row > strong,
+.staff-order-wait {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.staff-order-row > svg {
+  width: 16px;
+  height: 16px;
+  color: var(--faint);
+}
+
+.staff-order-person {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.staff-order-person strong,
+.staff-order-person small,
+.staff-order-items {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.staff-order-person strong {
+  font-size: 11px;
+}
+
+.staff-order-person small,
+.staff-order-wait {
+  color: var(--muted);
+}
+
+.staff-order-person small {
+  font-size: 9px;
+}
+
+.staff-order-items {
+  font-size: 10px;
+}
+
+.staff-order-empty {
+  min-height: 160px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.role-status-pill.is-simulated-paid {
+  background: rgb(89 216 255 / 10%);
+  color: var(--cyan);
+}
+
+.role-status-pill.is-preparing {
+  background: rgb(242 166 43 / 10%);
+  color: var(--amber);
+}
+
+.role-status-pill.is-ready-for-pickup {
+  background: rgb(184 243 74 / 10%);
+  color: var(--lime);
+}
+
+.staff-order-inspector {
+  position: relative;
+}
+
+.staff-order-inspector .staff-detail-primary,
+.staff-order-inspector .staff-detail-cancel {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.staff-order-mono {
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.staff-order-snapshot ul {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.staff-order-snapshot li,
+.staff-order-snapshot > p {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  font-size: 10px;
+}
+
+.staff-order-snapshot li span,
+.staff-order-snapshot > p span {
+  color: var(--muted);
+}
+
+.staff-order-snapshot > p {
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+
+.staff-order-snapshot > p strong {
+  color: var(--lime);
+  font-size: 12px;
+}
+
+.staff-order-command-error {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid rgb(255 101 77 / 28%);
+  border-radius: var(--radius-sm);
+  background: rgb(255 101 77 / 6%);
+  color: #ff9584;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+@media (max-width: 1180px) {
+  .staff-order-table {
+    min-width: 640px;
+  }
+
+  .staff-order-table-head,
+  .staff-order-row {
+    grid-template-columns:
+      62px minmax(120px, 1.1fr) minmax(130px, 1.2fr)
+      74px 86px 74px 16px;
+    gap: 8px;
+    padding-inline: 10px;
+  }
+}
+
 /* Ticket 10 — customer membership, coupons and unified journey */
 
 .customer-story-page {

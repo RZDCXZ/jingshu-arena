@@ -49,6 +49,7 @@ import type {
   CustomerOrderCatalogResponse,
   CustomerOrderDetailResponse,
   CustomerOrderPaymentResponse,
+  CustomerOrderStatus,
   CustomerPendingOrderResponse,
   CustomerSeatAvailability,
   CustomerSeatAvailabilityResponse,
@@ -212,8 +213,11 @@ const lifecycleProgressSteps = [
 
 const orderStatusLabels = {
   cancelled: "已取消",
+  completed: "已完成",
   expired: "已过期",
   "pending-simulated-payment": "待模拟支付",
+  preparing: "制作中",
+  "ready-for-pickup": "待取",
   "simulated-paid": "模拟支付成功",
 } as const;
 
@@ -221,8 +225,32 @@ const orderTimelineLabels: Record<string, string> = {
   "order.cancelled": "商品订单已取消，库存与体验券已释放",
   "order.expired": "十分钟库存保留已到期",
   "order.pending-created": "整单库存已排他保留",
+  "order.preparing": "店员已开始制作",
+  "order.ready-for-pickup": "商品已备齐，等待领取",
+  "order.completed": "全部商品已领取",
   "order.simulated-payment-succeeded": "模拟支付成功（未扣款）",
 };
+
+function orderProgressIndex(
+  status: CustomerOrderStatus,
+  timeline: CustomerOrderDetailResponse["timeline"],
+) {
+  const directProgress: Partial<Record<CustomerOrderStatus, number>> = {
+    completed: 4,
+    "pending-simulated-payment": 0,
+    preparing: 2,
+    "ready-for-pickup": 3,
+    "simulated-paid": 1,
+  };
+  return (
+    directProgress[status] ??
+    (timeline.some(
+      (event) => event.type === "order.simulated-payment-succeeded",
+    )
+      ? 1
+      : 0)
+  );
+}
 
 const journeyGroupLabels: Record<JourneyGroup, string> = {
   current: "当前",
@@ -1701,18 +1729,25 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                 </div>
               </section>
               <ol className="customer-order-progress" aria-label="商品订单进度">
-                {[
-                  ["待支付", true],
-                  ["已支付", orderDetail.status === "simulated-paid"],
-                  ["制作中", false],
-                  ["待取", false],
-                  ["完成", false],
-                ].map(([label, active], index) => (
-                  <li className={active ? "is-active" : ""} key={String(label)}>
-                    <i>{index + 1}</i>
-                    <span>{String(label)}</span>
-                  </li>
-                ))}
+                {["待支付", "已支付", "制作中", "待取", "完成"].map(
+                  (label, index) => (
+                    <li
+                      className={
+                        index <=
+                        orderProgressIndex(
+                          orderDetail.status,
+                          orderDetail.timeline,
+                        )
+                          ? "is-active"
+                          : ""
+                      }
+                      key={label}
+                    >
+                      <i>{index + 1}</i>
+                      <span>{label}</span>
+                    </li>
+                  ),
+                )}
               </ol>
               <section className="customer-order-confirm-card">
                 <div className="customer-section-title">
@@ -1744,6 +1779,17 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                   </strong>
                 </div>
               </section>
+              {orderDetail.refund ? (
+                <section className="customer-feedback">
+                  <CurrencyCny />
+                  <span>
+                    <strong>模拟退款已记录</strong>
+                    {formatMoney(orderDetail.refund.amountCents)} ·
+                    {formatWindow(orderDetail.refund.occurredAt)} ·
+                    {orderDetail.refund.reason}
+                  </span>
+                </section>
+              ) : null}
               <section className="customer-order-confirm-card">
                 <div className="customer-section-title">
                   <div>

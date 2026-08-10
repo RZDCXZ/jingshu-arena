@@ -613,6 +613,13 @@ export const customerOrders = pgTable(
     couponSnapshot: jsonb("coupon_snapshot"),
     simulatedPaymentCents: integer("simulated_payment_cents"),
     paidBusinessAt: timestamp("paid_business_at", { withTimezone: true }),
+    preparingBusinessAt: timestamp("preparing_business_at", {
+      withTimezone: true,
+    }),
+    readyBusinessAt: timestamp("ready_business_at", { withTimezone: true }),
+    completedBusinessAt: timestamp("completed_business_at", {
+      withTimezone: true,
+    }),
     cancelledBusinessAt: timestamp("cancelled_business_at", {
       withTimezone: true,
     }),
@@ -622,7 +629,7 @@ export const customerOrders = pgTable(
   (table) => [
     check(
       "customer_orders_status",
-      sql`${table.status} IN ('pending-simulated-payment', 'simulated-paid', 'cancelled', 'expired')`,
+      sql`${table.status} IN ('pending-simulated-payment', 'simulated-paid', 'preparing', 'ready-for-pickup', 'completed', 'cancelled', 'expired')`,
     ),
     check(
       "customer_orders_non_negative_payment",
@@ -670,7 +677,7 @@ export const orderInventoryReservations = pgTable(
     ),
     check(
       "order_inventory_reservations_status",
-      sql`${table.status} IN ('active', 'released')`,
+      sql`${table.status} IN ('active', 'released', 'sold', 'wasted')`,
     ),
     pgPolicy("order_inventory_reservations_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
@@ -816,6 +823,81 @@ export const orderLifecycleCommandRequests = pgTable(
       sql`${table.commandType} IN ('simulate-payment', 'cancel')`,
     ),
     pgPolicy("order_lifecycle_command_requests_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const orderFrontlineCommandRequests = pgTable(
+  "order_frontline_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    actorPersonaId: uuid("actor_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => customerOrders.id, { onDelete: "cascade" }),
+    commandType: text("command_type").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.actorPersonaId,
+        table.idempotencyKeyHash,
+      ],
+      name: "order_frontline_command_requests_pk",
+    }),
+    check(
+      "order_frontline_command_requests_type",
+      sql`${table.commandType} IN ('start-preparing', 'mark-ready', 'complete', 'cancel')`,
+    ),
+    pgPolicy("order_frontline_command_requests_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const orderSimulatedRefunds = pgTable(
+  "order_simulated_refunds",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => customerOrders.id, { onDelete: "cascade" }),
+    amountCents: integer("amount_cents").notNull(),
+    reason: text("reason").notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("order_simulated_refunds_order_unique").on(
+      table.sandboxId,
+      table.orderId,
+    ),
+    check(
+      "order_simulated_refunds_non_negative_amount",
+      sql`${table.amountCents} >= 0`,
+    ),
+    pgPolicy("order_simulated_refunds_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),

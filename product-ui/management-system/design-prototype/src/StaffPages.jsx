@@ -693,10 +693,24 @@ export function ReservationsPage({
   );
 }
 
-export function OrdersPage({ orderStates, onAdvance, readonly }) {
+export function OrdersPage({ orderStates, onAdvance, onCancel, readonly }) {
   const [tab, setTab] = useState("active");
   const [selectedId, setSelectedId] = useState(orders[0].id);
   const [search, setSearch] = useState("");
+  const [stage, setStage] = useState("all");
+  const fixedCommandState = new URLSearchParams(window.location.search).get(
+    "orderCommandState",
+  );
+  const [submitting, setSubmitting] = useState(
+    fixedCommandState === "processing",
+  );
+  const [commandError, setCommandError] = useState(
+    fixedCommandState === "failure"
+      ? "订单动作未能完成，原状态保持不变；可以安全重试。"
+      : "",
+  );
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
   const stateFor = (order) => orderStates[order.id] || order.status;
   const rows = orders
     .map((order) => ({ ...order, status: stateFor(order) }))
@@ -708,6 +722,7 @@ export function OrdersPage({ orderStates, onAdvance, readonly }) {
         return ["已取消", "已过期"].includes(order.status);
       return true;
     })
+    .filter((order) => stage === "all" || order.status === stage)
     .filter((order) =>
       `${order.customer}${order.id}${order.items}`.includes(search),
     );
@@ -718,6 +733,34 @@ export function OrdersPage({ orderStates, onAdvance, readonly }) {
     制作中: "标记待取",
     待取: "完成订单",
   }[selectedStatus];
+  const stageCounts = {
+    all: orders.length,
+    已模拟支付: orders.filter((order) => stateFor(order) === "已模拟支付")
+      .length,
+    制作中: orders.filter((order) => stateFor(order) === "制作中").length,
+    待取: orders.filter((order) => stateFor(order) === "待取").length,
+  };
+
+  function submitAction(action, reason = "") {
+    if (readonly || submitting) return;
+    setSubmitting(true);
+    setCommandError("");
+    window.setTimeout(() => {
+      if (fixedCommandState === "failure") {
+        setCommandError("订单动作未能完成，原状态保持不变；可以安全重试。");
+        setSubmitting(false);
+        return;
+      }
+      if (action === "cancel") {
+        onCancel(selected.id, reason);
+        setCancelOpen(false);
+        setCancelReason("");
+      } else {
+        onAdvance(selected.id);
+      }
+      setSubmitting(false);
+    }, 520);
+  }
   const columns = [
     { key: "time", label: "下单时间" },
     {
@@ -770,13 +813,20 @@ export function OrdersPage({ orderStates, onAdvance, readonly }) {
           onSearch={setSearch}
           placeholder="搜索订单、顾客或商品"
         >
-          <Select label="履约阶段" value="全部阶段">
-            <option>全部阶段</option>
-            <option>已模拟支付</option>
-            <option>制作中</option>
-            <option>待取</option>
+          <Select label="履约阶段" value={stage} onChange={setStage}>
+            <option value="all">全部阶段（{stageCounts.all}）</option>
+            <option value="已模拟支付">
+              已模拟支付（{stageCounts.已模拟支付}）
+            </option>
+            <option value="制作中">制作中（{stageCounts.制作中}）</option>
+            <option value="待取">待取（{stageCounts.待取}）</option>
           </Select>
         </FilterBar>
+        {commandError && (
+          <InlineNotice title="动作未完成" tone="warning">
+            {commandError}
+          </InlineNotice>
+        )}
         <Surface className="table-surface">
           <DataTable
             columns={columns}
@@ -803,10 +853,11 @@ export function OrdersPage({ orderStates, onAdvance, readonly }) {
               <Button
                 tone="primary"
                 icon={Receipt}
-                disabled={readonly}
-                onClick={() => onAdvance(selected.id)}
+                disabled={readonly || submitting}
+                loading={submitting}
+                onClick={() => submitAction("advance")}
               >
-                {nextAction}
+                {submitting ? `正在提交${nextAction}` : nextAction}
               </Button>
             )}
           </div>
@@ -861,12 +912,66 @@ export function OrdersPage({ orderStates, onAdvance, readonly }) {
             />
           </section>
           {nextAction && (
-            <Button tone="ghost" disabled={readonly}>
+            <Button
+              tone="ghost"
+              disabled={readonly || submitting}
+              onClick={() => {
+                setCommandError("");
+                setCancelOpen(true);
+              }}
+            >
               带原因取消订单
             </Button>
           )}
         </div>
       </aside>
+      {cancelOpen && (
+        <Modal
+          title="取消商品订单"
+          eyebrow="商品订单履约动作"
+          initialFocusSelector="textarea"
+          onClose={() => !submitting && setCancelOpen(false)}
+          footer={
+            <>
+              <Button
+                tone="secondary"
+                disabled={submitting}
+                onClick={() => setCancelOpen(false)}
+              >
+                返回
+              </Button>
+              <Button
+                tone="primary"
+                disabled={!cancelReason.trim() || submitting}
+                loading={submitting}
+                onClick={() => submitAction("cancel", cancelReason.trim())}
+              >
+                {commandError ? "重试取消" : "确认取消"}
+              </Button>
+            </>
+          }
+        >
+          <InlineNotice title="服务端负责最终校验" tone="info">
+            将按当前阶段原子决定库存释放或损耗、模拟退款和体验券恢复。
+          </InlineNotice>
+          <label className="field reservation-command-reason">
+            <span>取消原因</span>
+            <textarea
+              autoFocus
+              maxLength={200}
+              onChange={(event) => setCancelReason(event.target.value)}
+              placeholder="请输入 1–200 字纯文本原因"
+              value={cancelReason}
+            />
+            <small>请勿填写真实个人信息 · {cancelReason.length}/200</small>
+          </label>
+          {commandError && (
+            <InlineNotice title="原状态保持不变" tone="warning">
+              {commandError}
+            </InlineNotice>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }

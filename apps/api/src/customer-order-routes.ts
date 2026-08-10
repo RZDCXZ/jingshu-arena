@@ -450,6 +450,12 @@ export function registerCustomerOrderRoutes(app: Hono, services: AppServices) {
               occurredAt: detail.payment.occurredAt.toISOString(),
             }
           : null,
+        refund: detail.refund
+          ? {
+              ...detail.refund,
+              occurredAt: detail.refund.occurredAt.toISOString(),
+            }
+          : null,
         snapshot: detail.snapshot,
         status: detail.status,
         terminalReason: detail.terminalReason,
@@ -587,6 +593,12 @@ export function registerCustomerOrderRoutes(app: Hono, services: AppServices) {
         cancelledAt: result.cancelledAt.toISOString(),
         couponRestored: result.couponRestored,
         orderId: result.orderId,
+        refund: result.refund
+          ? {
+              ...result.refund,
+              occurredAt: result.refund.occurredAt.toISOString(),
+            }
+          : null,
         replayed: result.replayed,
         status: result.status,
       } satisfies CustomerOrderCancellationResponse);

@@ -187,4 +187,23 @@ export class FrontlineReservationConflictError extends Error {
     this.currentStatus = currentStatus;
   }
 }
+
+export type StaffOrderConflictReason =
+  "cross-store" | "idempotency-conflict" | "illegal-transition" | "not-found";
+
+export class StaffOrderConflictError extends Error {
+  readonly code = "STAFF_ORDER_CONFLICT";
+  readonly currentStatus: string | null;
+  readonly reason: StaffOrderConflictReason;
+
+  constructor(
+    reason: StaffOrderConflictReason,
+    currentStatus: string | null = null,
+  ) {
+    super(`Staff order command was rejected: ${reason}.`);
+    this.name = "StaffOrderConflictError";
+    this.reason = reason;
+    this.currentStatus = currentStatus;
+  }
+}
 import type { ReservationStatus } from "@jingshu/domain";
