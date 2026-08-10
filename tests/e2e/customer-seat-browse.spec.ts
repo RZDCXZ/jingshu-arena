@@ -38,8 +38,8 @@ const customerContext: RoleContextReadyResponse = {
       timeZone: "Asia/Shanghai",
     },
     expiresAt: "2026-08-11T11:47:23.000Z",
-    schemaVersion: "17",
-    seedVersion: "2026-08-10.10",
+    schemaVersion: "18",
+    seedVersion: "2026-08-11.1",
   },
   status: "ready",
   storeScope: {
@@ -76,6 +76,8 @@ const catalog: CustomerStoreCatalogResponse = {
       closesNextDay: true,
       code: "prism-flagship",
       displayName: "棱镜旗舰店",
+      fictitiousCity: "栖光市（虚构）",
+      introduction: "96 座、24 小时运营的主演示门店。",
       isOpen24Hours: true,
       machineProfiles: [
         {
@@ -114,6 +116,8 @@ const catalog: CustomerStoreCatalogResponse = {
       closesNextDay: true,
       code: "starbridge-standard",
       displayName: "星桥标准店",
+      fictitiousCity: "栖光市（虚构）",
+      introduction: "适合工作日与周末预约的固定演示门店。",
       isOpen24Hours: false,
       machineProfiles: [
         {
@@ -152,6 +156,8 @@ const catalog: CustomerStoreCatalogResponse = {
       closesNextDay: false,
       code: "apex-new",
       displayName: "极点新店",
+      fictitiousCity: "栖光市（虚构）",
+      introduction: "用于演示未来门店配置的固定虚构新店。",
       isOpen24Hours: false,
       machineProfiles: [
         {
@@ -1045,17 +1051,19 @@ test("mobile customer can browse three stores and inspect server-derived seats a
   await expect(page.getByText("¥36.00", { exact: true })).toBeVisible();
 
   await page
-    .getByRole("button", { name: /02 固定虚构门店 星桥标准店/u })
+    .getByRole("button", { name: /02 固定虚构门店.*星桥标准店/u })
     .click();
   await expect(
-    page.getByRole("button", { name: /02 固定虚构门店 星桥标准店/u }),
+    page.getByRole("button", { name: /02 固定虚构门店.*星桥标准店/u }),
   ).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("radio", { name: /标准型/u })).toHaveAttribute(
     "aria-checked",
     "true",
   );
   await expect(page.getByText("¥19.20", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /01 主演示门店 棱镜旗舰店/u }).click();
+  await page
+    .getByRole("button", { name: /01 主演示门店.*棱镜旗舰店/u })
+    .click();
   await page.getByRole("radio", { name: /竞技型/u }).click();
   await expect(page.getByText("¥36.00", { exact: true })).toBeVisible();
 

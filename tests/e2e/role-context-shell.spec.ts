@@ -5,6 +5,8 @@ import type {
   CustomerReservationStatus,
   HandoverCommandResponse,
   ManagerHandoverExceptionsResponse,
+  ManagerStoreConfigurationCommandRequest,
+  ManagerStoreConfigurationResponse,
   PublicRole,
   PublicSandboxReadyResponse,
   RepairDetailResponse,
@@ -406,6 +408,96 @@ test.beforeEach(async ({ context }) => {
     },
   ];
   const inventoryMovements: StoreInventoryResponse["movements"][number][] = [];
+  const storeId = "00000000-0000-4000-8000-000000000111";
+  const competitiveAreaId = "00000000-0000-4000-8000-000000000112";
+  const draftAreaId = "00000000-0000-4000-8000-000000000113";
+  const machineProfileId = "00000000-0000-4000-8000-000000000114";
+  const busySeatId = "00000000-0000-4000-8000-000000000115";
+  let storeConfiguration: ManagerStoreConfigurationResponse = {
+    areas: [
+      {
+        areaId: competitiveAreaId,
+        businessReferenced: true,
+        code: "competitive-a",
+        displayName: "竞技区 A",
+        lifecycleStatus: "active",
+        seatCount: 1,
+        sortOrder: 10,
+        version: 3,
+      },
+      {
+        areaId: draftAreaId,
+        businessReferenced: false,
+        code: "new-zone",
+        displayName: "即将开放的超长区域名称用于验证窄屏换行而不是溢出布局",
+        lifecycleStatus: "draft",
+        seatCount: 0,
+        sortOrder: 90,
+        version: 1,
+      },
+    ],
+    businessHours: {
+      baseline: {
+        closesAt: "00:00",
+        closesNextDay: true,
+        display: "24 小时",
+        isOpen24Hours: true,
+        opensAt: "00:00",
+      },
+      current: {
+        closesAt: "00:00",
+        closesNextDay: true,
+        display: "24 小时",
+        isOpen24Hours: true,
+        opensAt: "00:00",
+      },
+      effective: [],
+      scheduled: [],
+    },
+    currentTime: businessTime,
+    machineProfiles: [
+      {
+        archived: false,
+        code: "competitive",
+        displayName: "竞技机型",
+        experienceDescription: "高刷竞技配置",
+        machineProfileId,
+      },
+    ],
+    seats: [
+      {
+        area: {
+          areaId: competitiveAreaId,
+          displayName: "竞技区 A",
+        },
+        businessReferenced: true,
+        code: "A-18",
+        dependencies: { activeReservations: 2, openRepairs: 1 },
+        lifecycleStatus: "active",
+        machineProfile: {
+          code: "competitive",
+          displayName: "竞技机型",
+          machineProfileId,
+        },
+        operationalStatus: "normal",
+        seatId: busySeatId,
+        sortOrder: 18,
+        version: 4,
+      },
+    ],
+    status: "ready",
+    store: {
+      code: "prism-flagship",
+      displayName: "棱镜旗舰店",
+      fictitiousCity: "栖光市（虚构）",
+      fixed: true,
+      introduction:
+        "96 座、24 小时运营的主演示门店，用于展示跨角色预约、订单与维修联动。",
+      seatCount: 96,
+      storeId,
+      version: 5,
+    },
+  };
 
   function staffOrderDetail(
     row: MutableStaffOrderSummary,
@@ -1501,6 +1593,89 @@ test.beforeEach(async ({ context }) => {
     });
   });
 
+  await context.route(
+    "**/api/v1/manager/store-configuration**",
+    async (route) => {
+      const request = route.request();
+      if (request.method() === "GET") {
+        await route.fulfill({ json: storeConfiguration, status: 200 });
+        return;
+      }
+      expect(currentRole).toBe("manager");
+      expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+      expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+      const body =
+        request.postDataJSON() as ManagerStoreConfigurationCommandRequest;
+      if (body.action === "update-store-profile") {
+        storeConfiguration = {
+          ...storeConfiguration,
+          store: {
+            ...storeConfiguration.store,
+            displayName: body.displayName,
+            fictitiousCity: body.fictitiousCity,
+            introduction: body.introduction,
+            version: storeConfiguration.store.version + 1,
+          },
+        };
+      } else if (body.action === "schedule-business-hours") {
+        expect(body.effectiveFrom).toBe("2026-08-10T11:30:00.000Z");
+        storeConfiguration = {
+          ...storeConfiguration,
+          businessHours: {
+            ...storeConfiguration.businessHours,
+            scheduled: [
+              ...storeConfiguration.businessHours.scheduled,
+              {
+                businessHoursId: crypto.randomUUID(),
+                closesAt: body.closesAt,
+                closesNextDay: body.closesNextDay,
+                daySet: body.daySet,
+                effectiveFrom: body.effectiveFrom,
+                isOpen24Hours: body.isOpen24Hours,
+                opensAt: body.opensAt,
+              },
+            ],
+          },
+          store: {
+            ...storeConfiguration.store,
+            version: storeConfiguration.store.version + 1,
+          },
+        };
+      } else if (body.action === "create-area") {
+        expect(body.code).toBe("quiet-zone");
+        storeConfiguration = {
+          ...storeConfiguration,
+          areas: [
+            ...storeConfiguration.areas,
+            {
+              areaId: crypto.randomUUID(),
+              businessReferenced: false,
+              code: body.code,
+              displayName: body.displayName,
+              lifecycleStatus: body.lifecycleStatus,
+              seatCount: 0,
+              sortOrder: body.sortOrder,
+              version: 1,
+            },
+          ],
+          store: {
+            ...storeConfiguration.store,
+            version: storeConfiguration.store.version + 1,
+          },
+        };
+      }
+      await route.fulfill({
+        json: {
+          action: body.action,
+          objectId: "00000000-0000-4000-8000-000000000111",
+          replayed: false,
+          version: storeConfiguration.store.version,
+        },
+        status: 200,
+      });
+    },
+  );
+
   await context.route("**/api/v1/customer/stores", async (route) => {
     await route.fulfill({
       json: {
@@ -1766,6 +1941,18 @@ async function enterStaffShell(page: Page) {
   await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
 }
 
+async function enterManagerStoreConfiguration(page: Page) {
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "店长 许知远 · 虚构人物 棱镜旗舰店",
+    })
+    .click();
+  await page.getByRole("button", { name: "门店配置" }).click();
+  await expect(page.getByRole("heading", { name: "门店配置" })).toBeVisible();
+}
+
 test("staff sees own shift summary, explicit simulation boundary and manual attendance actions", async ({
   page,
 }) => {
@@ -1905,6 +2092,360 @@ test("manager reads three store-scoped handover exception kinds without edit con
     scrollWidth: document.body.scrollWidth,
   }));
   expect(layout.scrollWidth).toBe(layout.clientWidth);
+});
+
+test("manager edits only the owned store through dedicated configuration forms and sees seat dependencies", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "店长 许知远 · 虚构人物 棱镜旗舰店",
+    })
+    .click();
+  await page.getByRole("button", { name: "门店配置" }).click();
+
+  await expect(page.getByRole("heading", { name: "门店配置" })).toBeVisible();
+  await expect(
+    page.getByText("固定演示门店 · 不可新增、删除或停用门店"),
+  ).toBeVisible();
+  await expect(page.getByLabel("虚构城市")).toHaveValue("栖光市（虚构）");
+  const effectiveHours = page
+    .locator(".store-config-scheduled-hours")
+    .filter({ hasText: "默认回退与各适用日已生效版本" });
+  await expect(effectiveHours).toContainText("默认回退");
+  await expect(effectiveHours).toContainText("尚无各适用日已生效版本");
+
+  await page.getByLabel("门店工作名称").fill("尚未提交的门店名称");
+
+  const hoursTrigger = page.getByRole("button", { name: "新建规则" });
+  await hoursTrigger.click();
+  await expect(page.getByLabel("适用日")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(hoursTrigger).toBeFocused();
+  await hoursTrigger.click();
+  const hoursDialog = page.getByRole("dialog", { name: "创建未来营业规则" });
+  await hoursDialog.getByLabel("适用日").selectOption("weekends");
+  await hoursDialog.getByRole("button", { name: "创建未来规则" }).click();
+  await expect(
+    page.getByText("未来营业规则已创建，当前营业时间保持不变"),
+  ).toBeVisible();
+  await expect(page.getByLabel("门店工作名称")).toHaveValue(
+    "尚未提交的门店名称",
+  );
+  await expect(page.getByText("周末", { exact: true })).toBeVisible();
+  await expect(page.getByText("24 小时", { exact: true })).toBeVisible();
+
+  await page.getByLabel("门店工作名称").fill("棱镜旗舰演示店");
+  await page.getByRole("button", { name: "保存资料" }).click();
+  await expect(page.getByText("门店展示资料已由服务端确认保存")).toBeVisible();
+  await expect(page.getByText("棱镜旗舰演示店 · 固定所属门店")).toBeVisible();
+
+  await page.getByRole("tab", { name: /区域与座位/u }).click();
+  await expect(
+    page.getByText("即将开放的超长区域名称用于验证窄屏换行而不是溢出布局"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "创建区域" }).click();
+  const areaDialog = page.getByRole("dialog", { name: "创建区域" });
+  await areaDialog.getByLabel("区域代码").fill("quiet-zone");
+  await areaDialog.getByLabel("区域显示名称").fill("静音训练区");
+  await areaDialog.getByRole("button", { name: "创建区域" }).click();
+  await expect(page.getByText("区域已由服务端确认创建")).toBeVisible();
+  await expect(page.getByText("静音训练区")).toBeVisible();
+
+  await page.getByRole("button", { name: "编辑座位 A-18" }).click();
+  const seatDialog = page.getByRole("dialog", { name: "编辑座位 A-18" });
+  await expect(seatDialog.getByLabel("座位编号")).toBeDisabled();
+  await expect(seatDialog.getByLabel("座位生命周期")).toBeFocused();
+  await expect(seatDialog.getByLabel("座位运营状态")).toBeDisabled();
+  await seatDialog.getByLabel("座位生命周期").selectOption("inactive");
+  await seatDialog.getByRole("button", { name: "保存座位" }).click();
+  const dependencyDialog = page.getByRole("dialog", {
+    name: "A-18 暂不能停用",
+  });
+  await expect(dependencyDialog.getByText("2 条有效预约")).toBeVisible();
+  await expect(dependencyDialog.getByText("1 条未关闭报修")).toBeVisible();
+
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.body.clientWidth,
+    scrollWidth: document.body.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBe(layout.clientWidth);
+});
+
+test("manager sees current, per-day-set effective, and truly future business-hour rules after the 06:00 boundary", async ({
+  page,
+}) => {
+  const boundaryConfiguration: ManagerStoreConfigurationResponse = {
+    areas: [],
+    businessHours: {
+      baseline: {
+        closesAt: "00:00",
+        closesNextDay: true,
+        display: "24 小时",
+        isOpen24Hours: true,
+        opensAt: "00:00",
+      },
+      current: {
+        closesAt: "23:00",
+        closesNextDay: false,
+        display: "09:00–23:00",
+        isOpen24Hours: false,
+        opensAt: "09:00",
+      },
+      effective: [
+        {
+          businessHoursId: "00000000-0000-4000-8000-000000000121",
+          closesAt: "02:00",
+          closesNextDay: true,
+          daySet: "weekends",
+          effectiveFrom: "2026-08-09T22:00:00.000Z",
+          isOpen24Hours: false,
+          opensAt: "10:00",
+        },
+        {
+          businessHoursId: "00000000-0000-4000-8000-000000000122",
+          closesAt: "23:00",
+          closesNextDay: false,
+          daySet: "weekdays",
+          effectiveFrom: "2026-08-10T22:00:00.000Z",
+          isOpen24Hours: false,
+          opensAt: "09:00",
+        },
+      ],
+      scheduled: [
+        {
+          businessHoursId: "00000000-0000-4000-8000-000000000123",
+          closesAt: "00:00",
+          closesNextDay: true,
+          daySet: "all",
+          effectiveFrom: "2026-08-12T22:00:00.000Z",
+          isOpen24Hours: true,
+          opensAt: "00:00",
+        },
+      ],
+    },
+    currentTime: "2026-08-10T22:30:00.000Z",
+    machineProfiles: [],
+    seats: [],
+    status: "ready",
+    store: {
+      code: "prism-flagship",
+      displayName: "棱镜旗舰店",
+      fictitiousCity: "栖光市（虚构）",
+      fixed: true,
+      introduction: "营业规则边界可见性回归使用的虚构演示门店。",
+      seatCount: 0,
+      storeId: "00000000-0000-4000-8000-000000000111",
+      version: 4,
+    },
+  };
+  await page.route("**/api/v1/manager/store-configuration", async (route) => {
+    await route.fulfill({ json: boundaryConfiguration, status: 200 });
+  });
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterManagerStoreConfiguration(page);
+
+  await expect(page.locator(".store-config-current-hours")).toContainText(
+    "09:00–23:00",
+  );
+  const effective = page
+    .locator(".store-config-scheduled-hours")
+    .filter({ hasText: "默认回退与各适用日已生效版本" });
+  await expect(effective).toContainText("默认回退");
+  await expect(effective).toContainText("未命中适用日版本时使用");
+  await expect(effective).toContainText("工作日");
+  await expect(effective).toContainText("周末");
+  const future = page
+    .locator(".store-config-scheduled-hours")
+    .filter({ hasText: "未来规则" });
+  await expect(future).toContainText("每天");
+  await expect(future.getByText(/2026年8月13日.*06:00 生效/u)).toHaveCount(1);
+
+  await page.setViewportSize({ width: 1024, height: 768 });
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.body.clientWidth,
+    scrollWidth: document.body.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBe(layout.clientWidth);
+});
+
+test("manager store configuration withholds success when the confirmed result cannot be reread", async ({
+  page,
+}) => {
+  let commandConfirmed = false;
+  await page.route("**/api/v1/manager/store-configuration**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === "POST" && pathname.endsWith("/commands")) {
+      commandConfirmed = true;
+      await route.fulfill({
+        json: {
+          action: "update-store-profile",
+          objectId: "00000000-0000-4000-8000-000000000111",
+          replayed: false,
+          version: 2,
+        },
+        status: 200,
+      });
+      return;
+    }
+    if (request.method() === "GET" && commandConfirmed) {
+      await route.fulfill({
+        json: {
+          error: {
+            code: "STORE_CONFIGURATION_SERVICE_UNAVAILABLE",
+            message: "最新配置暂时无法回读。",
+            requestId: crypto.randomUUID(),
+          },
+        },
+        status: 503,
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await enterManagerStoreConfiguration(page);
+
+  await page.getByLabel("门店工作名称").fill("等待服务端回读的门店名称");
+  await page.getByRole("button", { name: "保存资料" }).click();
+  await expect(
+    page.getByText(
+      "服务端已确认写入，但最新配置回读失败；请刷新页面后再继续。",
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("门店展示资料已由服务端确认保存")).toHaveCount(0);
+});
+
+test("manager store configuration reuses the idempotency key after an unknown response", async ({
+  page,
+}) => {
+  const attemptedKeys: string[] = [];
+  await page.route(
+    "**/api/v1/manager/store-configuration/commands",
+    async (route) => {
+      attemptedKeys.push(route.request().headers()["idempotency-key"] ?? "");
+      if (attemptedKeys.length === 1) {
+        await route.abort("connectionreset");
+        return;
+      }
+      await route.fallback();
+    },
+  );
+  await enterManagerStoreConfiguration(page);
+
+  await page.getByLabel("门店工作名称").fill("安全重试门店名称");
+  await page.getByRole("button", { name: "保存资料" }).click();
+  await expect(
+    page.getByText("提交结果暂时未知，请使用原提交标识安全重试。"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "保存资料" }).click();
+  await expect(page.getByText("门店展示资料已由服务端确认保存")).toBeVisible();
+  expect(attemptedKeys).toHaveLength(2);
+  expect(attemptedKeys[0]).toBe(attemptedKeys[1]);
+});
+
+test("manager store configuration reuses the idempotency key after parsed 408 and 503 responses", async ({
+  page,
+}) => {
+  const attemptedKeys: string[] = [];
+  await page.route(
+    "**/api/v1/manager/store-configuration/commands",
+    async (route) => {
+      attemptedKeys.push(route.request().headers()["idempotency-key"] ?? "");
+      if (attemptedKeys.length <= 2) {
+        await route.fulfill({
+          json: {
+            error: {
+              code: "STORE_CONFIGURATION_SERVICE_UNAVAILABLE",
+              message: "门店配置服务暂不可用，请稍后重试。",
+              requestId: crypto.randomUUID(),
+            },
+          },
+          status: attemptedKeys.length === 1 ? 408 : 503,
+        });
+        return;
+      }
+      await route.fallback();
+    },
+  );
+  await enterManagerStoreConfiguration(page);
+
+  await page.getByLabel("门店工作名称").fill("可解析未知结果重试门店名称");
+  await page.getByRole("button", { name: "保存资料" }).click();
+  await expect(
+    page.getByText("提交结果暂时未知，请使用原提交标识安全重试。"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "保存资料" }).click();
+  expect(attemptedKeys).toHaveLength(2);
+  await page.getByRole("button", { name: "保存资料" }).click();
+  await expect(page.getByText("门店展示资料已由服务端确认保存")).toBeVisible();
+  expect(attemptedKeys).toHaveLength(3);
+  expect(attemptedKeys[0]).toBe(attemptedKeys[1]);
+  expect(attemptedKeys[1]).toBe(attemptedKeys[2]);
+});
+
+test("manager store configuration keeps each unresolved command idempotency key independently", async ({
+  page,
+}) => {
+  const attempts: Array<{ body: string; key: string }> = [];
+  await page.route(
+    "**/api/v1/manager/store-configuration/commands",
+    async (route) => {
+      attempts.push({
+        body: route.request().postData() ?? "",
+        key: route.request().headers()["idempotency-key"] ?? "",
+      });
+      if (attempts.length === 1) {
+        await route.fulfill({
+          json: {
+            error: {
+              code: "STORE_CONFIGURATION_SERVICE_UNAVAILABLE",
+              message: "门店配置服务暂不可用，请稍后重试。",
+              requestId: crypto.randomUUID(),
+            },
+          },
+          status: 503,
+        });
+        return;
+      }
+      if (attempts.length === 2) {
+        await route.fulfill({
+          json: {
+            error: {
+              code: "STORE_CONFIGURATION_INVALID_INPUT",
+              message: "第二项配置未被服务端接受。",
+              requestId: crypto.randomUUID(),
+            },
+          },
+          status: 422,
+        });
+        return;
+      }
+      await route.fallback();
+    },
+  );
+  await enterManagerStoreConfiguration(page);
+
+  await page.getByLabel("门店工作名称").fill("第一项未知结果配置");
+  await page.getByRole("button", { name: "保存资料" }).click();
+  await expect(
+    page.getByText("提交结果暂时未知，请使用原提交标识安全重试。"),
+  ).toBeVisible();
+
+  await page.getByLabel("门店工作名称").fill("第二项确定失败配置");
+  await page.getByRole("button", { name: "保存资料" }).click();
+  await expect(page.getByText("第二项配置未被服务端接受。")).toBeVisible();
+
+  await page.getByLabel("门店工作名称").fill("第一项未知结果配置");
+  await page.getByRole("button", { name: "保存资料" }).click();
+  await expect(page.getByText("门店展示资料已由服务端确认保存")).toBeVisible();
+  expect(attempts).toHaveLength(3);
+  expect(attempts[0]?.body).toBe(attempts[2]?.body);
+  expect(attempts[0]?.key).toBe(attempts[2]?.key);
+  expect(attempts[1]?.key).not.toBe(attempts[0]?.key);
 });
 
 test("staff reads inventory while manager stocktakes, receives and compensates with dedicated dialogs", async ({

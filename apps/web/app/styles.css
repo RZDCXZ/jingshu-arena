@@ -4610,7 +4610,7 @@ strong {
 }
 
 .customer-store-list > button {
-  min-height: 92px;
+  min-height: 112px;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) 22px;
   align-items: center;
@@ -4688,6 +4688,10 @@ strong {
   font-style: normal;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.customer-store-copy em.customer-store-introduction {
+  color: #a9bac3;
 }
 
 .customer-segmented {
@@ -10751,5 +10755,967 @@ strong {
 
   .inventory-dialog-fields .is-wide {
     grid-column: auto;
+  }
+}
+
+/* Ticket 19 — manager store, area and seat configuration */
+
+.store-config-main {
+  height: 100%;
+  min-width: 0;
+  overflow: auto;
+  padding: 18px 18px 28px;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.store-config-title-row {
+  min-height: 86px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0 3px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.store-config-title-row > div {
+  min-width: 0;
+}
+
+.store-config-title-row > div > span {
+  color: var(--cyan);
+  font-size: 10px;
+}
+
+.store-config-title-row h1 {
+  margin-top: 3px;
+  font-size: 24px;
+  letter-spacing: -0.025em;
+}
+
+.store-config-title-row p {
+  max-width: 680px;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.store-config-title-row > strong {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid #2d536a;
+  border-radius: var(--radius-sm);
+  background: #0b2130;
+  color: var(--cyan);
+  font-size: 9px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.store-config-title-row > strong svg,
+.store-config-fixed-note > svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+}
+
+.store-config-fixed-note,
+.store-config-state {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-top: 13px;
+  padding: 10px 13px;
+  border: 1px solid #2d536a;
+  border-radius: var(--radius);
+  background: #0b2130;
+  color: var(--muted);
+}
+
+.store-config-fixed-note > svg {
+  color: var(--cyan);
+}
+
+.store-config-fixed-note > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.store-config-fixed-note strong {
+  color: var(--text);
+  font-size: 10px;
+}
+
+.store-config-fixed-note small {
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.store-config-state {
+  justify-content: center;
+  font-size: 10px;
+}
+
+.store-config-state.is-error {
+  border-color: #633027;
+  background: #2a1717;
+  color: #ffd2cb;
+}
+
+.store-config-state svg {
+  width: 18px;
+  height: 18px;
+  color: var(--red);
+}
+
+.store-config-state button {
+  margin-left: auto;
+  padding: 7px 10px;
+  border: 1px solid #8e4a3f;
+  border-radius: var(--radius-sm);
+}
+
+.store-config-tabs {
+  min-height: 48px;
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  margin-top: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.store-config-tabs > button {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 15px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.store-config-tabs > button:hover,
+.store-config-tabs > button:focus-visible,
+.store-config-tabs > button.is-active {
+  border-bottom-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.store-config-tabs > button span {
+  min-width: 20px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: #153140;
+  font-size: 8px;
+  text-align: center;
+}
+
+.store-config-profile-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(330px, 0.85fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.store-config-profile-card,
+.store-config-hours-card,
+.store-config-areas,
+.store-config-seat-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.store-config-profile-card,
+.store-config-hours-card {
+  padding: 15px;
+}
+
+.store-config-profile-card > header,
+.store-config-hours-card > header,
+.store-config-areas > header,
+.store-config-seat-panel > header {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.store-config-profile-card > header > span,
+.store-config-hours-card > header > span {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  flex: none;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: #0e2c3a;
+  color: var(--cyan);
+}
+
+.store-config-profile-card > header svg,
+.store-config-hours-card > header svg {
+  width: 18px;
+  height: 18px;
+}
+
+.store-config-profile-card > header > div,
+.store-config-hours-card > header > div,
+.store-config-areas > header > div,
+.store-config-seat-panel > header > div {
+  min-width: 0;
+}
+
+.store-config-profile-card h2,
+.store-config-hours-card h2,
+.store-config-areas h2,
+.store-config-seat-panel h2 {
+  font-size: 13px;
+}
+
+.store-config-profile-card header p,
+.store-config-hours-card header p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.store-config-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 13px;
+}
+
+.store-config-fields > label {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.store-config-fields > label.is-wide {
+  grid-column: 1 / -1;
+}
+
+.store-config-fields input,
+.store-config-fields select,
+.store-config-fields textarea {
+  width: 100%;
+  min-height: 39px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: #07131d;
+  color: var(--text);
+  font: inherit;
+  font-size: 10px;
+}
+
+.store-config-fields textarea {
+  min-height: 84px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.store-config-fields input:focus,
+.store-config-fields select:focus,
+.store-config-fields textarea:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px rgb(89 216 255 / 13%);
+}
+
+.store-config-fields input:disabled,
+.store-config-fields select:disabled,
+.store-config-fields textarea:disabled {
+  color: #718791;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.store-config-fields label > small {
+  color: var(--faint);
+  font-size: 7px;
+  text-align: right;
+}
+
+.store-config-profile-card > footer,
+.store-config-dialog > footer {
+  min-height: 48px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.store-config-profile-card > footer > span {
+  margin-right: auto;
+  color: var(--faint);
+  font-size: 8px;
+}
+
+.store-config-profile-card button,
+.store-config-hours-card header button,
+.store-config-areas header button,
+.store-config-seat-panel header button,
+.store-config-dialog > footer button {
+  min-height: 37px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--cyan);
+  font-size: 9px;
+}
+
+.store-config-profile-card button.is-primary,
+.store-config-seat-panel header button.is-primary,
+.store-config-dialog > footer button.is-primary {
+  border-color: #9bcf3d;
+  background: var(--lime);
+  color: #0b190c;
+  font-weight: 750;
+}
+
+.store-config-profile-card button:disabled,
+.store-config-dialog button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.store-config-hours-card header button {
+  margin-left: auto;
+}
+
+.store-config-hours-card header button svg,
+.store-config-areas header button svg,
+.store-config-seat-panel header button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.store-config-current-hours {
+  display: grid;
+  gap: 5px;
+  margin-top: 14px;
+  padding: 13px;
+  border: 1px solid #315166;
+  border-radius: var(--radius-sm);
+  background: #0b2130;
+}
+
+.store-config-current-hours small,
+.store-config-current-hours span,
+.store-config-scheduled-hours small {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.store-config-current-hours strong {
+  color: var(--cyan);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.store-config-scheduled-hours {
+  margin-top: 13px;
+}
+
+.store-config-scheduled-hours h3 {
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.store-config-scheduled-hours article {
+  min-height: 47px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.store-config-scheduled-hours article > span {
+  display: grid;
+  gap: 3px;
+}
+
+.store-config-scheduled-hours article strong {
+  font-size: 9px;
+}
+
+.store-config-scheduled-hours article time {
+  color: var(--cyan);
+  font-size: 8px;
+  text-align: right;
+}
+
+.store-config-scheduled-hours > p {
+  padding: 13px 0;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.store-config-seats-layout {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.store-config-areas {
+  align-self: start;
+  padding: 12px;
+}
+
+.store-config-areas > header,
+.store-config-seat-panel > header {
+  margin-bottom: 9px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line);
+}
+
+.store-config-areas > header small,
+.store-config-seat-panel > header small {
+  color: var(--cyan);
+  font-size: 7px;
+}
+
+.store-config-areas > header button {
+  width: 33px;
+  margin-left: auto;
+  padding: 0;
+}
+
+.store-config-areas > button,
+.store-config-areas > div {
+  width: 100%;
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-bottom-color: var(--line);
+  color: var(--text);
+  text-align: left;
+}
+
+.store-config-areas > button:hover,
+.store-config-areas > button:focus-visible,
+.store-config-areas > button.is-selected,
+.store-config-areas > div:hover,
+.store-config-areas > div:focus-within,
+.store-config-areas > div.is-selected {
+  border-color: #315166;
+  border-radius: var(--radius-sm);
+  background: #0b2130;
+}
+
+.store-config-areas > div {
+  padding: 0;
+}
+
+.store-config-areas > div > button:first-child {
+  min-width: 0;
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 0 8px 9px;
+  color: inherit;
+  text-align: left;
+}
+
+.store-config-areas > button > span,
+.store-config-areas > div > button:first-child > span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.store-config-areas > button strong,
+.store-config-areas > div strong {
+  overflow-wrap: anywhere;
+  font-size: 10px;
+}
+
+.store-config-areas > button small,
+.store-config-areas > div small {
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.store-config-areas > button b,
+.store-config-areas > div b {
+  min-width: 24px;
+  color: var(--cyan);
+  font-size: 9px;
+  text-align: center;
+}
+
+.store-config-areas > div > button:last-child {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.store-config-areas > div > button:last-child:hover,
+.store-config-areas > div > button:last-child:focus-visible {
+  background: #153140;
+  color: var(--cyan);
+}
+
+.store-config-areas > div > button:last-child svg {
+  width: 14px;
+  height: 14px;
+}
+
+.store-config-seat-panel {
+  padding: 12px;
+}
+
+.store-config-seat-panel > header button {
+  margin-left: auto;
+}
+
+.store-config-seat-filter {
+  min-height: 51px;
+  display: flex;
+  align-items: center;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #091923;
+}
+
+.store-config-seat-filter label {
+  width: min(290px, 100%);
+  min-height: 35px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+
+.store-config-seat-filter label:focus-within {
+  border-color: var(--cyan);
+}
+
+.store-config-seat-filter svg {
+  width: 15px;
+  height: 15px;
+}
+
+.store-config-seat-filter input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 9px;
+}
+
+.store-config-seat-table-wrap {
+  max-height: 420px;
+  overflow: auto;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.store-config-seat-table {
+  width: 100%;
+  min-width: 740px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 9px;
+}
+
+.store-config-seat-table th {
+  height: 36px;
+  padding: 0 9px;
+  border-bottom: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 550;
+  text-align: left;
+}
+
+.store-config-seat-table th:nth-child(1) {
+  width: 96px;
+}
+.store-config-seat-table th:nth-child(4) {
+  width: 80px;
+}
+.store-config-seat-table th:nth-child(5) {
+  width: 130px;
+}
+.store-config-seat-table th:nth-child(6) {
+  width: 78px;
+}
+
+.store-config-seat-table td {
+  height: 58px;
+  padding: 8px 9px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.store-config-seat-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.store-config-seat-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.store-config-seat-table td:first-child,
+.store-config-seat-table td:nth-child(3) {
+  display: grid;
+  align-content: center;
+  gap: 3px;
+}
+
+.store-config-seat-table td small {
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.store-config-status {
+  display: inline-flex;
+  padding: 4px 7px;
+  border-radius: var(--radius-sm);
+  background: #153227;
+  color: #79d9a2;
+  white-space: nowrap;
+}
+
+.store-config-status.is-draft {
+  background: #392a13;
+  color: var(--amber);
+}
+
+.store-config-status.is-inactive {
+  background: #202a30;
+  color: var(--muted);
+}
+
+.store-config-dependency-link,
+.store-config-edit-button {
+  color: var(--cyan);
+  font-size: 8px;
+}
+
+.store-config-dependency-link {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.store-config-edit-button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.store-config-edit-button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.store-config-no-dependency {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.store-config-empty {
+  padding: 20px;
+  color: var(--muted);
+  font-size: 9px;
+  text-align: center;
+}
+
+.store-config-dialog-backdrop {
+  position: fixed;
+  z-index: 150;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  background: rgb(0 7 12 / 78%);
+  backdrop-filter: blur(5px);
+}
+
+.store-config-dialog {
+  width: min(610px, 100%);
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid #315166;
+  border-radius: 12px;
+  background: #0b1b25;
+  box-shadow: 0 28px 74px rgb(0 0 0 / 56%);
+}
+
+.store-config-dialog > header {
+  min-height: 46px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 10px;
+}
+
+.store-config-dialog > header > span {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: #0e2c3a;
+  color: var(--cyan);
+}
+
+.store-config-dialog > header svg {
+  width: 19px;
+  height: 19px;
+}
+
+.store-config-dialog > header small {
+  color: var(--cyan);
+  font-size: 8px;
+}
+
+.store-config-dialog > header h2 {
+  margin-top: 2px;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.store-config-dialog > header > button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+
+.store-config-dialog-notice,
+.store-config-dependency-summary,
+.store-config-form-error {
+  margin-top: 11px;
+  padding: 10px 12px;
+  border: 1px solid #2d536a;
+  border-radius: var(--radius-sm);
+  background: #0b2130;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.store-config-dialog-notice.is-warning,
+.store-config-dependency-summary {
+  border-color: #6b5229;
+  background: #2b2415;
+  color: #f5d895;
+}
+
+.store-config-dependency-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.store-config-dependency-summary svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.store-config-form-error {
+  border-color: #633027;
+  background: #2a1717;
+  color: #ffd2cb;
+}
+
+.store-config-check {
+  min-height: 39px;
+  display: flex !important;
+  grid-column: 1 / -1;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #07131d;
+}
+
+.store-config-check input {
+  width: 15px;
+  min-height: 15px;
+  padding: 0;
+}
+
+.store-config-dialog > footer button.is-danger {
+  margin-right: auto;
+  border-color: #7d3c34;
+  background: #2a1717;
+  color: #ff9587;
+}
+
+.store-config-dependency-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.store-config-dependency-cards > button {
+  min-height: 78px;
+  display: grid;
+  grid-template-columns: 27px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--cyan);
+  text-align: left;
+}
+
+.store-config-dependency-cards > button:hover,
+.store-config-dependency-cards > button:focus-visible {
+  border-color: var(--cyan);
+  background: var(--surface-raised);
+}
+
+.store-config-dependency-cards > button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.store-config-dependency-cards > button:disabled:hover {
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+.store-config-dependency-cards svg {
+  width: 23px;
+  height: 23px;
+}
+
+.store-config-dependency-cards span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.store-config-dependency-cards strong {
+  color: var(--text);
+  font-size: 10px;
+}
+
+.store-config-dependency-cards small {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+@media (max-width: 1100px) {
+  .store-config-profile-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(290px, 0.85fr);
+  }
+
+  .store-config-seats-layout {
+    grid-template-columns: 205px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .store-config-profile-grid,
+  .store-config-seats-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .store-config-areas {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .store-config-areas > header {
+    grid-column: 1 / -1;
+  }
+
+  .store-config-areas > button,
+  .store-config-areas > div {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+  }
+}
+
+@media (max-width: 720px) {
+  .store-config-main {
+    padding-inline: 12px;
+  }
+
+  .store-config-title-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .store-config-title-row > strong {
+    align-self: flex-start;
+  }
+
+  .store-config-fields,
+  .store-config-dependency-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .store-config-fields > label.is-wide,
+  .store-config-check {
+    grid-column: auto;
+  }
+
+  .store-config-areas {
+    grid-template-columns: 1fr 1fr;
   }
 }

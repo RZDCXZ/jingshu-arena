@@ -148,6 +148,13 @@
       "when": 1786374000000,
       "tag": "0020_staff_handover",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1786381200000,
+      "tag": "0021_manager_store_configuration",
+      "breakpoints": true
     }
   ]
 }

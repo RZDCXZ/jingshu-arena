@@ -422,6 +422,11 @@ describe("role-context expand migration", () => {
     await client.query(
       "alter table demo_personas owner to ticket04_migration_owner",
     );
+    await client.query("alter table stores owner to ticket04_migration_owner");
+    await client.query(
+      "alter table store_areas owner to ticket04_migration_owner",
+    );
+    await client.query("alter table seats owner to ticket04_migration_owner");
     await client.query("set role ticket04_migration_owner");
     try {
       await applyMigration("0019_staff_shift_attendance.sql");
@@ -514,6 +519,55 @@ describe("role-context expand migration", () => {
         exception_table: "handover_exceptions",
         handover_force_rls: true,
         handover_table: "handovers",
+      },
+    ]);
+
+    await client.query("set role ticket04_migration_owner");
+    try {
+      await applyMigration("0021_manager_store_configuration.sql");
+    } finally {
+      await client.query("reset role");
+    }
+    const configurationMetadata = await client.query<{ value: string }>(
+      "select value from jingshu_schema_metadata where key = 'schema_version'",
+    );
+    expect(configurationMetadata.rows).toEqual([{ value: "18" }]);
+    const configurationStructures = await client.query<{
+      command_force_rls: boolean;
+      command_table: string | null;
+      hours_force_rls: boolean;
+      hours_table: string | null;
+    }>(
+      `select
+         to_regclass('public.store_business_hours_versions')::text as hours_table,
+         to_regclass('public.store_config_command_requests')::text as command_table,
+         (select relforcerowsecurity from pg_class
+           where oid = 'public.store_business_hours_versions'::regclass) as hours_force_rls,
+         (select relforcerowsecurity from pg_class
+           where oid = 'public.store_config_command_requests'::regclass) as command_force_rls`,
+    );
+    expect(configurationStructures.rows).toEqual([
+      {
+        command_force_rls: true,
+        command_table: "store_config_command_requests",
+        hours_force_rls: true,
+        hours_table: "store_business_hours_versions",
+      },
+    ]);
+    const backfilledConfiguration = await client.query<{
+      config_version: number;
+      fictitious_city: string;
+      introduction: string;
+    }>(
+      `select config_version, fictitious_city, introduction
+         from stores where id = $1`,
+      [rollingStoreId],
+    );
+    expect(backfilledConfiguration.rows).toEqual([
+      {
+        config_version: 1,
+        fictitious_city: "栖光市（虚构）",
+        introduction: "竞枢固定虚构演示门店。",
       },
     ]);
   });

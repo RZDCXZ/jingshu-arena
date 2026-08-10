@@ -1,5 +1,5 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "17";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.10";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "18";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-11.1";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -1275,6 +1275,8 @@ interface PublicSandboxStoreSeed {
   readonly baseHourlyCents: Readonly<Record<MachineProfileCode, number>>;
   readonly code: string;
   readonly displayName: string;
+  readonly fictitiousCity: string;
+  readonly introduction: string;
   readonly seatCount: number;
   readonly opensAt: string;
   readonly closesAt: string;
@@ -1359,6 +1361,9 @@ const storeSeeds = [
     },
     code: "prism-flagship",
     displayName: "棱镜旗舰店",
+    fictitiousCity: "栖光市（虚构）",
+    introduction:
+      "96 座、24 小时运营的主演示门店，用于展示跨角色预约、订单与维修联动。",
     seatCount: 96,
     opensAt: "00:00",
     closesAt: "00:00",
@@ -1398,6 +1403,8 @@ const storeSeeds = [
     },
     code: "starbridge-standard",
     displayName: "星桥标准店",
+    fictitiousCity: "栖光市（虚构）",
+    introduction: "64 座跨午夜营业的固定虚构门店，用于展示标准门店经营。",
     seatCount: 64,
     opensAt: "10:00",
     closesAt: "02:00",
@@ -1437,6 +1444,8 @@ const storeSeeds = [
     },
     code: "apex-new",
     displayName: "极点新店",
+    fictitiousCity: "栖光市（虚构）",
+    introduction: "40 座日间营业的固定虚构新店，用于展示成长阶段经营。",
     seatCount: 40,
     opensAt: "12:00",
     closesAt: "00:00",

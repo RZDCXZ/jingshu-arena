@@ -58,6 +58,8 @@ import {
   FrontlineReservationConflictError,
   ManagerInventoryConflictError,
   type ManagerInventoryConflictReason,
+  ManagerStoreConfigurationConflictError,
+  type ManagerStoreConfigurationConflictReason,
   RepairCommandConflictError,
   type RepairCommandConflictReason,
   RepairIntakeConflictError,
@@ -145,6 +147,8 @@ export interface DatabaseCustomerStoreCatalog {
     readonly closesNextDay: boolean;
     readonly code: string;
     readonly displayName: string;
+    readonly fictitiousCity: string;
+    readonly introduction: string;
     readonly isOpen24Hours: boolean;
     readonly machineProfiles: ReadonlyArray<{
       readonly baseHourlyCents: number;
@@ -1034,6 +1038,187 @@ export interface ExecuteStaffOrderCommandInput extends ReadStaffOrderDetailInput
 
 export type ReadStoreInventoryInput = ReadStaffReservationWorkbenchInput;
 
+export type ReadManagerStoreConfigurationInput =
+  ReadStaffReservationWorkbenchInput & {
+    readonly role: "manager";
+  };
+
+export interface DatabaseManagerStoreConfiguration {
+  readonly areas: ReadonlyArray<{
+    readonly areaId: string;
+    readonly businessReferenced: boolean;
+    readonly code: string;
+    readonly displayName: string;
+    readonly lifecycleStatus: "active" | "archived" | "draft";
+    readonly seatCount: number;
+    readonly sortOrder: number;
+    readonly version: number;
+  }>;
+  readonly businessHours: {
+    readonly baseline: {
+      readonly closesAt: string;
+      readonly closesNextDay: boolean;
+      readonly display: string;
+      readonly isOpen24Hours: boolean;
+      readonly opensAt: string;
+    };
+    readonly current: {
+      readonly closesAt: string;
+      readonly closesNextDay: boolean;
+      readonly display: string;
+      readonly isOpen24Hours: boolean;
+      readonly opensAt: string;
+    };
+    readonly effective: ReadonlyArray<{
+      readonly businessHoursId: string;
+      readonly closesAt: string;
+      readonly closesNextDay: boolean;
+      readonly daySet: "all" | "weekdays" | "weekends";
+      readonly effectiveFrom: Date;
+      readonly isOpen24Hours: boolean;
+      readonly opensAt: string;
+    }>;
+    readonly scheduled: ReadonlyArray<{
+      readonly businessHoursId: string;
+      readonly closesAt: string;
+      readonly closesNextDay: boolean;
+      readonly daySet: "all" | "weekdays" | "weekends";
+      readonly effectiveFrom: Date;
+      readonly isOpen24Hours: boolean;
+      readonly opensAt: string;
+    }>;
+  };
+  readonly currentTime: Date;
+  readonly machineProfiles: ReadonlyArray<{
+    readonly archived: boolean;
+    readonly code: MachineProfileCode;
+    readonly displayName: string;
+    readonly experienceDescription: string;
+    readonly machineProfileId: string;
+  }>;
+  readonly seats: ReadonlyArray<{
+    readonly area: { readonly areaId: string; readonly displayName: string };
+    readonly businessReferenced: boolean;
+    readonly code: string;
+    readonly dependencies: {
+      readonly activeReservations: number;
+      readonly openRepairs: number;
+    };
+    readonly lifecycleStatus: "active" | "inactive" | "draft";
+    readonly machineProfile: {
+      readonly code: MachineProfileCode;
+      readonly displayName: string;
+      readonly machineProfileId: string;
+    };
+    readonly operationalStatus: "maintenance" | "normal";
+    readonly seatId: string;
+    readonly sortOrder: number;
+    readonly version: number;
+  }>;
+  readonly store: {
+    readonly code: string;
+    readonly displayName: string;
+    readonly fictitiousCity: string;
+    readonly fixed: true;
+    readonly introduction: string;
+    readonly seatCount: number;
+    readonly storeId: string;
+    readonly version: number;
+  };
+}
+
+interface ManagerStoreConfigurationCommandBase extends ReadManagerStoreConfigurationInput {
+  readonly expectedVersion: number;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+  readonly storeId: string;
+}
+
+export type ExecuteManagerStoreConfigurationCommandInput =
+  ManagerStoreConfigurationCommandBase &
+    (
+      | {
+          readonly action: "update-store-profile";
+          readonly displayName: string;
+          readonly fictitiousCity: string;
+          readonly introduction: string;
+        }
+      | {
+          readonly action: "schedule-business-hours";
+          readonly closesAt: string;
+          readonly closesNextDay: boolean;
+          readonly daySet: "all" | "weekdays" | "weekends";
+          readonly effectiveFrom: Date;
+          readonly isOpen24Hours: boolean;
+          readonly opensAt: string;
+        }
+      | {
+          readonly action: "create-area";
+          readonly code: string;
+          readonly displayName: string;
+          readonly lifecycleStatus: "active" | "draft";
+          readonly sortOrder: number;
+        }
+      | {
+          readonly action: "create-seat";
+          readonly areaId: string;
+          readonly code: string;
+          readonly lifecycleStatus: "active" | "draft";
+          readonly machineProfileId: string;
+          readonly sortOrder: number;
+        }
+      | {
+          readonly action: "update-seat";
+          readonly areaId: string;
+          readonly code: string;
+          readonly lifecycleStatus: "active" | "inactive" | "draft";
+          readonly machineProfileId: string;
+          readonly seatId: string;
+          readonly sortOrder: number;
+        }
+      | {
+          readonly action: "update-area";
+          readonly areaId: string;
+          readonly displayName: string;
+          readonly lifecycleStatus: "active" | "archived" | "draft";
+          readonly sortOrder: number;
+        }
+      | {
+          readonly action: "delete-area";
+          readonly areaId: string;
+        }
+      | {
+          readonly action: "delete-seat";
+          readonly seatId: string;
+        }
+    );
+
+export interface DatabaseManagerStoreConfigurationCommand {
+  readonly action: ExecuteManagerStoreConfigurationCommandInput["action"];
+  readonly objectId: string;
+  readonly replayed: boolean;
+  readonly version: number;
+}
+
+interface StoredManagerStoreConfigurationDenial {
+  readonly denied: true;
+  readonly reason: ManagerStoreConfigurationConflictReason;
+}
+
+type StoredManagerStoreConfigurationResult =
+  | DatabaseManagerStoreConfigurationCommand
+  | StoredManagerStoreConfigurationDenial;
+
+function isStoredManagerStoreConfigurationDenial(
+  result: StoredManagerStoreConfigurationResult,
+): result is StoredManagerStoreConfigurationDenial {
+  return "denied" in result && result.denied;
+}
+
+function isSafeManagerConfigurationText(value: string) {
+  return !/[<>\p{C}]/u.test(value);
+}
+
 interface ManagerInventoryCommandBase extends ReadStoreInventoryInput {
   readonly idempotencyKey: string;
   readonly inventoryItemId: string;
@@ -1550,6 +1735,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   executeManagerInventoryCommand(
     input: ExecuteManagerInventoryCommandInput,
   ): Promise<DatabaseManagerInventoryCommand>;
+  executeManagerStoreConfigurationCommand(
+    input: ExecuteManagerStoreConfigurationCommandInput,
+  ): Promise<DatabaseManagerStoreConfigurationCommand>;
   createCustomerPendingReservation(
     input: CreateCustomerPendingReservationInput,
   ): Promise<DatabaseCustomerPendingReservation>;
@@ -1641,6 +1829,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readStoreInventory(
     input: ReadStoreInventoryInput,
   ): Promise<DatabaseStoreInventory>;
+  readManagerStoreConfiguration(
+    input: ReadManagerStoreConfigurationInput,
+  ): Promise<DatabaseManagerStoreConfiguration>;
   readCustomerSeatAvailability(
     input: ReadCustomerSeatAvailabilityInput,
   ): Promise<DatabaseCustomerSeatAvailability>;
@@ -1884,6 +2075,8 @@ interface StoreRow {
   id: string;
   code: string;
   display_name: string;
+  fictitious_city: string;
+  introduction: string;
   seat_count: number;
   opens_at: string;
   closes_at: string;
@@ -3109,7 +3302,7 @@ async function recordCustomerOrderDenial(
   );
 }
 
-function formatBusinessHours(store: StoreRow): string {
+function formatBusinessHours(store: StoreBusinessHoursSelection): string {
   if (store.is_open_24_hours) return "24 小时";
 
   const opensAt = store.opens_at.slice(0, 5);
@@ -3118,8 +3311,105 @@ function formatBusinessHours(store: StoreRow): string {
   return `${opensAt}–${store.closes_next_day ? "次日 " : ""}${closesAt}`;
 }
 
+interface StoreBusinessHoursSelection {
+  closes_at: string;
+  closes_next_day: boolean;
+  is_open_24_hours: boolean;
+  opens_at: string;
+}
+
+async function businessHoursFor(
+  client: PoolClient,
+  input: {
+    readonly at: Date;
+    readonly baseline: StoreBusinessHoursSelection;
+    readonly sandboxId: string;
+    readonly storeId: string;
+  },
+): Promise<StoreBusinessHoursSelection> {
+  const scheduled = await client.query<StoreBusinessHoursSelection>(
+    `select opens_at, closes_at, closes_next_day, is_open_24_hours
+       from store_business_hours_versions
+      where sandbox_id = $1 and store_id = $2 and effective_from <= $3
+        and (
+          day_set = 'all'
+          or (day_set = 'weekdays'
+            and extract(isodow from
+              ($3::timestamptz at time zone 'Asia/Shanghai') - interval '6 hours'
+            ) between 1 and 5)
+          or (day_set = 'weekends'
+            and extract(isodow from
+              ($3::timestamptz at time zone 'Asia/Shanghai') - interval '6 hours'
+            ) between 6 and 7)
+        )
+      order by effective_from desc,
+        case day_set when 'all' then 0 else 1 end desc
+      limit 1`,
+    [input.sandboxId, input.storeId, input.at],
+  );
+  return scheduled.rows[0] ?? input.baseline;
+}
+
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function managerStoreConfigurationDenialSummary(
+  input: ExecuteManagerStoreConfigurationCommandInput,
+  payloadHash: string,
+): Record<string, unknown> {
+  const common = {
+    action: input.action,
+    expectedVersion: input.expectedVersion,
+    payloadHash,
+    storeId: input.storeId,
+  };
+  switch (input.action) {
+    case "update-store-profile":
+      return common;
+    case "schedule-business-hours":
+      return {
+        ...common,
+        closesNextDay: input.closesNextDay,
+        daySet: input.daySet,
+        effectiveFrom: input.effectiveFrom.toISOString(),
+        isOpen24Hours: input.isOpen24Hours,
+      };
+    case "create-area":
+      return {
+        ...common,
+        lifecycleStatus: input.lifecycleStatus,
+        sortOrder: input.sortOrder,
+      };
+    case "update-area":
+      return {
+        ...common,
+        areaId: input.areaId,
+        lifecycleStatus: input.lifecycleStatus,
+        sortOrder: input.sortOrder,
+      };
+    case "delete-area":
+      return { ...common, areaId: input.areaId };
+    case "create-seat":
+      return {
+        ...common,
+        areaId: input.areaId,
+        lifecycleStatus: input.lifecycleStatus,
+        machineProfileId: input.machineProfileId,
+        sortOrder: input.sortOrder,
+      };
+    case "update-seat":
+      return {
+        ...common,
+        areaId: input.areaId,
+        lifecycleStatus: input.lifecycleStatus,
+        machineProfileId: input.machineProfileId,
+        seatId: input.seatId,
+        sortOrder: input.sortOrder,
+      };
+    case "delete-seat":
+      return { ...common, seatId: input.seatId };
+  }
 }
 
 function reservationSnapshot(
@@ -5484,11 +5774,13 @@ async function materializePublicSandbox(input: {
   await input.client.query(
     `insert into stores (
        id, sandbox_id, operator_id, code, display_name, seat_count,
-       opens_at, closes_at, closes_next_day, is_open_24_hours
+       opens_at, closes_at, closes_next_day, is_open_24_hours,
+       fictitious_city, introduction
      )
      select * from unnest(
        $1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::text[],
-       $6::integer[], $7::time[], $8::time[], $9::boolean[], $10::boolean[]
+       $6::integer[], $7::time[], $8::time[], $9::boolean[], $10::boolean[],
+       $11::text[], $12::text[]
      )`,
     [
       seededStores.map((store) => store.id),
@@ -5501,6 +5793,8 @@ async function materializePublicSandbox(input: {
       seededStores.map((store) => store.closesAt),
       seededStores.map((store) => store.closesNextDay),
       seededStores.map((store) => store.isOpen24Hours),
+      seededStores.map((store) => store.fictitiousCity),
+      seededStores.map((store) => store.introduction),
     ],
   );
 
@@ -7364,6 +7658,8 @@ export function createPublicSandboxDatabase(
              left join repairs repair on repair.sandbox_id = seat.sandbox_id
               and repair.seat_id = seat.id and repair.status <> 'closed'
             where seat.sandbox_id = $1 and seat.store_id = $2
+              and seat.lifecycle_status = 'active'
+              and area.lifecycle_status = 'active'
             order by area.sort_order, seat.sort_order`,
           [input.sandboxId, context.actorStoreId],
         );
@@ -9281,7 +9577,8 @@ export function createPublicSandboxDatabase(
              join machine_profiles profile on profile.id = seat.machine_profile_id
              join stores store on store.id = seat.store_id
             where seat.sandbox_id = $1 and seat.store_id = $2
-              and seat.id = $3
+              and seat.id = $3 and seat.lifecycle_status = 'active'
+              and area.lifecycle_status = 'active'
             for update of seat`,
           [input.sandboxId, context.actorStoreId, input.seatId],
         );
@@ -11620,6 +11917,1431 @@ export function createPublicSandboxDatabase(
         client.release();
       }
     },
+    async readManagerStoreConfiguration(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        if (input.role !== "manager") throw new RoleContextStaleError();
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await processFrontlineReservationDeadlines(client, {
+          currentTime,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+        });
+        const store = await client.query<{
+          closes_at: string;
+          closes_next_day: boolean;
+          code: string;
+          config_version: number;
+          display_name: string;
+          fictitious_city: string;
+          id: string;
+          introduction: string;
+          is_open_24_hours: boolean;
+          opens_at: string;
+          seat_count: number;
+        }>(
+          `select id, code, display_name, fictitious_city, introduction,
+                  seat_count, opens_at, closes_at, closes_next_day,
+                  is_open_24_hours, config_version
+             from stores where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const storeRow = store.rows[0];
+        if (!storeRow) throw new RoleContextUnavailableError();
+        const areas = await client.query<{
+          business_referenced: boolean;
+          code: string;
+          config_version: number;
+          display_name: string;
+          id: string;
+          lifecycle_status: "active" | "archived" | "draft";
+          seat_count: number;
+          sort_order: number;
+        }>(
+          `select area.id, area.code, area.display_name, area.sort_order,
+                  area.lifecycle_status, area.config_version,
+                  count(seat.id)::integer as seat_count,
+                  exists(select 1 from price_plans plan where plan.area_id = area.id)
+                    or exists(
+                      select 1 from seats referenced_seat
+                       join reservations reservation on reservation.seat_id = referenced_seat.id
+                      where referenced_seat.area_id = area.id
+                    )
+                    or exists(
+                      select 1 from seats referenced_seat
+                       join repairs repair on repair.seat_id = referenced_seat.id
+                      where referenced_seat.area_id = area.id
+                    ) as business_referenced
+             from store_areas area
+             left join seats seat on seat.area_id = area.id
+            where area.sandbox_id = $1 and area.store_id = $2
+            group by area.id
+            order by area.sort_order, area.code`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const seats = await client.query<{
+          active_reservations: number;
+          area_display_name: string;
+          area_id: string;
+          business_referenced: boolean;
+          code: string;
+          config_version: number;
+          id: string;
+          lifecycle_status: "active" | "inactive" | "draft";
+          machine_code: MachineProfileCode;
+          machine_display_name: string;
+          machine_profile_id: string;
+          open_repairs: number;
+          operational_status: "maintenance" | "normal";
+          sort_order: number;
+        }>(
+          `select seat.id, seat.code, seat.sort_order, seat.operational_status,
+                  seat.lifecycle_status, seat.config_version,
+                  area.id as area_id, area.display_name as area_display_name,
+                  profile.id as machine_profile_id, profile.code as machine_code,
+                  profile.display_name as machine_display_name,
+                  (select count(*)::integer from reservations reservation
+                    where reservation.seat_id = seat.id
+                      and reservation.status = any($3::text[])) as active_reservations,
+                  (select count(*)::integer from repairs repair
+                    where repair.seat_id = seat.id and repair.status <> 'closed') as open_repairs,
+                  exists(select 1 from reservations reservation where reservation.seat_id = seat.id)
+                    or exists(select 1 from repairs repair where repair.seat_id = seat.id)
+                    as business_referenced
+             from seats seat
+             join store_areas area on area.id = seat.area_id
+             join machine_profiles profile on profile.id = seat.machine_profile_id
+            where seat.sandbox_id = $1 and seat.store_id = $2
+            order by area.sort_order, seat.sort_order, seat.code`,
+          [
+            input.sandboxId,
+            context.actorStoreId,
+            ["pending-confirmation", "confirmed", "arrived", "in-use"],
+          ],
+        );
+        const machineProfiles = await client.query<{
+          archived: boolean;
+          code: MachineProfileCode;
+          display_name: string;
+          experience_description: string;
+          id: string;
+        }>(
+          `select id, code, display_name, experience_description, archived
+             from machine_profiles where sandbox_id = $1
+            order by case code when 'standard' then 1 when 'competitive' then 2 else 3 end`,
+          [input.sandboxId],
+        );
+        const scheduled = await client.query<{
+          closes_at: string;
+          closes_next_day: boolean;
+          day_set: "all" | "weekdays" | "weekends";
+          effective_from: Date;
+          id: string;
+          is_open_24_hours: boolean;
+          opens_at: string;
+        }>(
+          `select id, day_set, opens_at, closes_at, closes_next_day,
+                  is_open_24_hours, effective_from
+             from store_business_hours_versions
+            where sandbox_id = $1 and store_id = $2 and effective_from > $3
+            order by effective_from, day_set`,
+          [input.sandboxId, context.actorStoreId, currentTime],
+        );
+        const effective = await client.query<{
+          closes_at: string;
+          closes_next_day: boolean;
+          day_set: "all" | "weekdays" | "weekends";
+          effective_from: Date;
+          id: string;
+          is_open_24_hours: boolean;
+          opens_at: string;
+        }>(
+          `select distinct on (day_set) id, day_set, opens_at, closes_at,
+                  closes_next_day, is_open_24_hours, effective_from
+             from store_business_hours_versions
+            where sandbox_id = $1 and store_id = $2 and effective_from <= $3
+            order by day_set, effective_from desc`,
+          [input.sandboxId, context.actorStoreId, currentTime],
+        );
+        const currentHours = await businessHoursFor(client, {
+          at: currentTime,
+          baseline: storeRow,
+          sandboxId: input.sandboxId,
+          storeId: context.actorStoreId,
+        });
+        await client.query("commit");
+        return {
+          areas: areas.rows.map((area) => ({
+            areaId: area.id,
+            businessReferenced: area.business_referenced,
+            code: area.code,
+            displayName: area.display_name,
+            lifecycleStatus: area.lifecycle_status,
+            seatCount: area.seat_count,
+            sortOrder: area.sort_order,
+            version: area.config_version,
+          })),
+          businessHours: {
+            baseline: {
+              closesAt: storeRow.closes_at.slice(0, 5),
+              closesNextDay: storeRow.closes_next_day,
+              display: formatBusinessHours(storeRow),
+              isOpen24Hours: storeRow.is_open_24_hours,
+              opensAt: storeRow.opens_at.slice(0, 5),
+            },
+            current: {
+              closesAt: currentHours.closes_at.slice(0, 5),
+              closesNextDay: currentHours.closes_next_day,
+              display: formatBusinessHours(currentHours),
+              isOpen24Hours: currentHours.is_open_24_hours,
+              opensAt: currentHours.opens_at.slice(0, 5),
+            },
+            effective: effective.rows.map((hours) => ({
+              businessHoursId: hours.id,
+              closesAt: hours.closes_at.slice(0, 5),
+              closesNextDay: hours.closes_next_day,
+              daySet: hours.day_set,
+              effectiveFrom: hours.effective_from,
+              isOpen24Hours: hours.is_open_24_hours,
+              opensAt: hours.opens_at.slice(0, 5),
+            })),
+            scheduled: scheduled.rows.map((hours) => ({
+              businessHoursId: hours.id,
+              closesAt: hours.closes_at.slice(0, 5),
+              closesNextDay: hours.closes_next_day,
+              daySet: hours.day_set,
+              effectiveFrom: hours.effective_from,
+              isOpen24Hours: hours.is_open_24_hours,
+              opensAt: hours.opens_at.slice(0, 5),
+            })),
+          },
+          currentTime,
+          machineProfiles: machineProfiles.rows.map((profile) => ({
+            archived: profile.archived,
+            code: profile.code,
+            displayName: profile.display_name,
+            experienceDescription: profile.experience_description,
+            machineProfileId: profile.id,
+          })),
+          seats: seats.rows.map((seat) => ({
+            area: {
+              areaId: seat.area_id,
+              displayName: seat.area_display_name,
+            },
+            businessReferenced: seat.business_referenced,
+            code: seat.code,
+            dependencies: {
+              activeReservations: seat.active_reservations,
+              openRepairs: seat.open_repairs,
+            },
+            lifecycleStatus: seat.lifecycle_status,
+            machineProfile: {
+              code: seat.machine_code,
+              displayName: seat.machine_display_name,
+              machineProfileId: seat.machine_profile_id,
+            },
+            operationalStatus: seat.operational_status,
+            seatId: seat.id,
+            sortOrder: seat.sort_order,
+            version: seat.config_version,
+          })),
+          store: {
+            code: storeRow.code,
+            displayName: storeRow.display_name,
+            fictitiousCity: storeRow.fictitious_city,
+            fixed: true,
+            introduction: storeRow.introduction,
+            seatCount: storeRow.seat_count,
+            storeId: storeRow.id,
+            version: storeRow.config_version,
+          },
+        } satisfies DatabaseManagerStoreConfiguration;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async executeManagerStoreConfigurationCommand(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      let denialAudit: {
+        readonly actorStoreId: string;
+        readonly businessTime: Date;
+        readonly commandPayload: unknown;
+      } | null = null;
+      let commandFingerprint: {
+        readonly idempotencyKeyHash: string;
+        readonly payloadHash: string;
+      } | null = null;
+      let idempotencySlotAvailable = false;
+      let replayedDenial = false;
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const commandPayload = (() => {
+          switch (input.action) {
+            case "update-store-profile":
+              return {
+                action: input.action,
+                displayName: input.displayName,
+                expectedVersion: input.expectedVersion,
+                fictitiousCity: input.fictitiousCity,
+                introduction: input.introduction,
+                storeId: input.storeId,
+              };
+            case "schedule-business-hours":
+              return {
+                action: input.action,
+                closesAt: input.closesAt,
+                closesNextDay: input.closesNextDay,
+                daySet: input.daySet,
+                effectiveFrom: input.effectiveFrom.toISOString(),
+                expectedVersion: input.expectedVersion,
+                isOpen24Hours: input.isOpen24Hours,
+                opensAt: input.opensAt,
+                storeId: input.storeId,
+              };
+            case "create-area":
+              return {
+                action: input.action,
+                code: input.code,
+                displayName: input.displayName,
+                expectedVersion: input.expectedVersion,
+                lifecycleStatus: input.lifecycleStatus,
+                sortOrder: input.sortOrder,
+                storeId: input.storeId,
+              };
+            case "create-seat":
+              return {
+                action: input.action,
+                areaId: input.areaId,
+                code: input.code,
+                expectedVersion: input.expectedVersion,
+                lifecycleStatus: input.lifecycleStatus,
+                machineProfileId: input.machineProfileId,
+                sortOrder: input.sortOrder,
+                storeId: input.storeId,
+              };
+            case "update-seat":
+              return {
+                action: input.action,
+                areaId: input.areaId,
+                code: input.code,
+                expectedVersion: input.expectedVersion,
+                lifecycleStatus: input.lifecycleStatus,
+                machineProfileId: input.machineProfileId,
+                seatId: input.seatId,
+                sortOrder: input.sortOrder,
+                storeId: input.storeId,
+              };
+            case "update-area":
+              return {
+                action: input.action,
+                areaId: input.areaId,
+                displayName: input.displayName,
+                expectedVersion: input.expectedVersion,
+                lifecycleStatus: input.lifecycleStatus,
+                sortOrder: input.sortOrder,
+                storeId: input.storeId,
+              };
+            case "delete-area":
+              return {
+                action: input.action,
+                areaId: input.areaId,
+                expectedVersion: input.expectedVersion,
+                storeId: input.storeId,
+              };
+            case "delete-seat":
+              return {
+                action: input.action,
+                expectedVersion: input.expectedVersion,
+                seatId: input.seatId,
+                storeId: input.storeId,
+              };
+          }
+        })();
+        denialAudit = {
+          actorStoreId: context.actorStoreId,
+          businessTime: currentTime,
+          commandPayload,
+        };
+        const payloadHash = hash(JSON.stringify(commandPayload));
+        commandFingerprint = { idempotencyKeyHash, payloadHash };
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:store-config:${idempotencyKeyHash}`,
+          ],
+        );
+        const existing = await client.query<{
+          payload_hash: string;
+          result_data: StoredManagerStoreConfigurationResult;
+        }>(
+          `select payload_hash, result_data
+             from store_config_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const existingRow = existing.rows[0];
+        if (existingRow) {
+          if (existingRow.payload_hash !== payloadHash) {
+            throw new ManagerStoreConfigurationConflictError(
+              "idempotency-conflict",
+            );
+          }
+          if (
+            isStoredManagerStoreConfigurationDenial(existingRow.result_data)
+          ) {
+            await client.query("commit");
+            replayedDenial = true;
+            throw new ManagerStoreConfigurationConflictError(
+              existingRow.result_data.reason,
+            );
+          }
+          await client.query("commit");
+          return { ...existingRow.result_data, replayed: true };
+        }
+        idempotencySlotAvailable = true;
+        if (
+          input.role !== "manager" ||
+          context.actorStoreId !== input.storeId
+        ) {
+          throw new ManagerStoreConfigurationConflictError("cross-store");
+        }
+        await processFrontlineReservationDeadlines(client, {
+          currentTime,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+        });
+        const commandStore = await client.query<{ config_version: number }>(
+          `select config_version from stores
+            where sandbox_id = $1 and id = $2 for update`,
+          [input.sandboxId, input.storeId],
+        );
+        if (!commandStore.rows[0]) {
+          throw new ManagerStoreConfigurationConflictError("cross-store");
+        }
+        const persistCommand = async (
+          stored: DatabaseManagerStoreConfigurationCommand,
+        ) => {
+          await client.query(
+            `insert into store_config_command_requests (
+               sandbox_id, actor_persona_id, store_id, command_type,
+               idempotency_key_hash, payload_hash, result_data, created_at
+             ) values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+            [
+              input.sandboxId,
+              input.personaId,
+              input.storeId,
+              input.action,
+              idempotencyKeyHash,
+              payloadHash,
+              JSON.stringify(stored),
+              wallTime,
+            ],
+          );
+          await client.query("commit");
+          return stored;
+        };
+        if (input.action === "create-area") {
+          const areaValid =
+            /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(input.code) &&
+            input.code.length <= 40 &&
+            input.displayName.trim().length >= 1 &&
+            input.displayName.trim().length <= 60 &&
+            isSafeManagerConfigurationText(input.displayName) &&
+            Number.isInteger(input.sortOrder) &&
+            input.sortOrder >= 0;
+          if (!areaValid) {
+            throw new ManagerStoreConfigurationConflictError("invalid-area");
+          }
+          const lockedStore = await client.query<{ config_version: number }>(
+            `select config_version from stores
+              where sandbox_id = $1 and id = $2 for update`,
+            [input.sandboxId, input.storeId],
+          );
+          if (!lockedStore.rows[0]) {
+            throw new ManagerStoreConfigurationConflictError("cross-store");
+          }
+          if (lockedStore.rows[0].config_version !== input.expectedVersion) {
+            throw new ManagerStoreConfigurationConflictError(
+              "version-conflict",
+            );
+          }
+          const duplicate = await client.query<{ exists: boolean }>(
+            `select exists(select 1 from store_areas
+              where sandbox_id = $1 and store_id = $2 and code = $3) as exists`,
+            [input.sandboxId, input.storeId, input.code],
+          );
+          if (duplicate.rows[0]?.exists) {
+            throw new ManagerStoreConfigurationConflictError(
+              "duplicate-area-code",
+            );
+          }
+          const areaId = randomUUID();
+          await client.query(
+            `insert into store_areas (
+               id, sandbox_id, store_id, code, display_name, sort_order,
+               lifecycle_status
+             ) values ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              areaId,
+              input.sandboxId,
+              input.storeId,
+              input.code,
+              input.displayName.trim(),
+              input.sortOrder,
+              input.lifecycleStatus,
+            ],
+          );
+          const updated = await client.query<{ config_version: number }>(
+            `update stores set config_version = config_version + 1
+              where sandbox_id = $1 and id = $2 returning config_version`,
+            [input.sandboxId, input.storeId],
+          );
+          const storeVersion = updated.rows[0]!.config_version;
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'manager', 'store-area.create',
+               'store_area', $5, 'allowed', null, $6, null, $7::jsonb, $8, $9)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.storeId,
+              input.personaId,
+              areaId,
+              input.requestId,
+              JSON.stringify(commandPayload),
+              currentTime,
+              wallTime,
+            ],
+          );
+          return persistCommand({
+            action: input.action,
+            objectId: areaId,
+            replayed: false,
+            version: storeVersion,
+          });
+        }
+        if (input.action === "update-area") {
+          const areaValid =
+            input.displayName.trim().length >= 1 &&
+            input.displayName.trim().length <= 60 &&
+            isSafeManagerConfigurationText(input.displayName) &&
+            Number.isInteger(input.sortOrder) &&
+            input.sortOrder >= 0;
+          if (!areaValid) {
+            throw new ManagerStoreConfigurationConflictError("invalid-area");
+          }
+          const area = await client.query<{
+            business_referenced: boolean;
+            code: string;
+            config_version: number;
+            display_name: string;
+            lifecycle_status: "active" | "archived" | "draft";
+            active_seats: number;
+            sort_order: number;
+          }>(
+            `select area.code, area.display_name, area.sort_order,
+                    area.lifecycle_status, area.config_version,
+                    (select count(*)::integer from seats seat
+                      where seat.area_id = area.id
+                        and seat.lifecycle_status = 'active') as active_seats,
+                    exists(select 1 from price_plans plan where plan.area_id = area.id)
+                      or exists(
+                        select 1 from seats referenced_seat
+                         join reservations reservation on reservation.seat_id = referenced_seat.id
+                        where referenced_seat.area_id = area.id
+                      )
+                      or exists(
+                        select 1 from seats referenced_seat
+                         join repairs repair on repair.seat_id = referenced_seat.id
+                        where referenced_seat.area_id = area.id
+                      ) as business_referenced
+               from store_areas area
+              where area.sandbox_id = $1 and area.store_id = $2
+                and area.id = $3 for update`,
+            [input.sandboxId, input.storeId, input.areaId],
+          );
+          const areaRow = area.rows[0];
+          if (!areaRow) {
+            throw new ManagerStoreConfigurationConflictError("area-not-found");
+          }
+          if (areaRow.config_version !== input.expectedVersion) {
+            throw new ManagerStoreConfigurationConflictError(
+              "version-conflict",
+            );
+          }
+          if (
+            input.lifecycleStatus === "archived" &&
+            areaRow.active_seats > 0
+          ) {
+            throw new ManagerStoreConfigurationConflictError(
+              "area-has-active-seats",
+            );
+          }
+          const changesReferencedFields =
+            areaRow.display_name !== input.displayName.trim() ||
+            areaRow.sort_order !== input.sortOrder;
+          const validAreaTransition =
+            areaRow.lifecycle_status === input.lifecycleStatus ||
+            (areaRow.lifecycle_status === "draft" &&
+              input.lifecycleStatus === "active") ||
+            (areaRow.lifecycle_status === "active" &&
+              input.lifecycleStatus === "archived");
+          if (!validAreaTransition) {
+            throw new ManagerStoreConfigurationConflictError(
+              "area-lifecycle-transition",
+            );
+          }
+          const invalidReferencedAreaTransition = !(
+            areaRow.lifecycle_status === input.lifecycleStatus ||
+            (areaRow.lifecycle_status === "active" &&
+              input.lifecycleStatus === "archived")
+          );
+          if (
+            areaRow.business_referenced &&
+            (changesReferencedFields || invalidReferencedAreaTransition)
+          ) {
+            throw new ManagerStoreConfigurationConflictError(
+              "referenced-area-immutable",
+            );
+          }
+          const updated = await client.query<{ config_version: number }>(
+            `update store_areas set display_name = $4, sort_order = $5,
+                lifecycle_status = $6, config_version = config_version + 1
+              where sandbox_id = $1 and store_id = $2 and id = $3
+            returning config_version`,
+            [
+              input.sandboxId,
+              input.storeId,
+              input.areaId,
+              input.displayName.trim(),
+              input.sortOrder,
+              input.lifecycleStatus,
+            ],
+          );
+          const version = updated.rows[0]!.config_version;
+          await client.query(
+            `update stores set config_version = config_version + 1
+              where sandbox_id = $1 and id = $2`,
+            [input.sandboxId, input.storeId],
+          );
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'manager', 'store-area.update',
+               'store_area', $5, 'allowed', null, $6, $7::jsonb, $8::jsonb,
+               $9, $10)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.storeId,
+              input.personaId,
+              input.areaId,
+              input.requestId,
+              JSON.stringify(areaRow),
+              JSON.stringify(commandPayload),
+              currentTime,
+              wallTime,
+            ],
+          );
+          return persistCommand({
+            action: input.action,
+            objectId: input.areaId,
+            replayed: false,
+            version,
+          });
+        }
+        if (input.action === "delete-area") {
+          const area = await client.query<{
+            code: string;
+            config_version: number;
+            display_name: string;
+            lifecycle_status: "active" | "archived" | "draft";
+            sort_order: number;
+          }>(
+            `select code, display_name, sort_order, lifecycle_status,
+                    config_version
+               from store_areas
+              where sandbox_id = $1 and store_id = $2 and id = $3
+              for update`,
+            [input.sandboxId, input.storeId, input.areaId],
+          );
+          const areaRow = area.rows[0];
+          if (!areaRow) {
+            throw new ManagerStoreConfigurationConflictError("area-not-found");
+          }
+          if (areaRow.config_version !== input.expectedVersion) {
+            throw new ManagerStoreConfigurationConflictError(
+              "version-conflict",
+            );
+          }
+          const references = await client.query<{ referenced: boolean }>(
+            `select exists(select 1 from seats where area_id = $1)
+                or exists(select 1 from price_plans where area_id = $1)
+                as referenced`,
+            [input.areaId],
+          );
+          if (
+            areaRow.lifecycle_status !== "draft" ||
+            references.rows[0]?.referenced
+          ) {
+            throw new ManagerStoreConfigurationConflictError(
+              "area-not-deletable",
+            );
+          }
+          await client.query(
+            `delete from store_areas
+              where sandbox_id = $1 and store_id = $2 and id = $3`,
+            [input.sandboxId, input.storeId, input.areaId],
+          );
+          const updated = await client.query<{ config_version: number }>(
+            `update stores set config_version = config_version + 1
+              where sandbox_id = $1 and id = $2 returning config_version`,
+            [input.sandboxId, input.storeId],
+          );
+          const storeVersion = updated.rows[0]!.config_version;
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'manager', 'store-area.delete-draft',
+               'store_area', $5, 'allowed', null, $6, $7::jsonb, null, $8, $9)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.storeId,
+              input.personaId,
+              input.areaId,
+              input.requestId,
+              JSON.stringify(areaRow),
+              currentTime,
+              wallTime,
+            ],
+          );
+          return persistCommand({
+            action: input.action,
+            objectId: input.areaId,
+            replayed: false,
+            version: storeVersion,
+          });
+        }
+        if (input.action === "create-seat") {
+          const seatValid =
+            /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/u.test(input.code) &&
+            input.code.length <= 20 &&
+            Number.isInteger(input.sortOrder) &&
+            input.sortOrder >= 0;
+          if (!seatValid) {
+            throw new ManagerStoreConfigurationConflictError("invalid-seat");
+          }
+          const lockedStore = await client.query<{ config_version: number }>(
+            `select config_version from stores
+              where sandbox_id = $1 and id = $2 for update`,
+            [input.sandboxId, input.storeId],
+          );
+          if (!lockedStore.rows[0]) {
+            throw new ManagerStoreConfigurationConflictError("cross-store");
+          }
+          if (lockedStore.rows[0].config_version !== input.expectedVersion) {
+            throw new ManagerStoreConfigurationConflictError(
+              "version-conflict",
+            );
+          }
+          const area = await client.query<{
+            lifecycle_status: "active" | "archived" | "draft";
+          }>(
+            `select lifecycle_status from store_areas
+              where sandbox_id = $1 and store_id = $2 and id = $3`,
+            [input.sandboxId, input.storeId, input.areaId],
+          );
+          if (
+            !area.rows[0] ||
+            area.rows[0].lifecycle_status === "archived" ||
+            (input.lifecycleStatus === "active" &&
+              area.rows[0].lifecycle_status !== "active")
+          ) {
+            throw new ManagerStoreConfigurationConflictError("area-not-found");
+          }
+          const profile = await client.query<{ exists: boolean }>(
+            `select exists(select 1 from machine_profiles
+              where sandbox_id = $1 and id = $2 and archived = false) as exists`,
+            [input.sandboxId, input.machineProfileId],
+          );
+          if (!profile.rows[0]?.exists) {
+            throw new ManagerStoreConfigurationConflictError(
+              "machine-profile-not-found",
+            );
+          }
+          const duplicate = await client.query<{ exists: boolean }>(
+            `select exists(select 1 from seats
+              where sandbox_id = $1 and store_id = $2 and code = $3) as exists`,
+            [input.sandboxId, input.storeId, input.code],
+          );
+          if (duplicate.rows[0]?.exists) {
+            throw new ManagerStoreConfigurationConflictError(
+              "duplicate-seat-code",
+            );
+          }
+          const seatId = randomUUID();
+          await client.query(
+            `insert into seats (
+               id, sandbox_id, store_id, area_id, machine_profile_id, code,
+               sort_order, operational_status, lifecycle_status
+             ) values ($1, $2, $3, $4, $5, $6, $7, 'normal', $8)`,
+            [
+              seatId,
+              input.sandboxId,
+              input.storeId,
+              input.areaId,
+              input.machineProfileId,
+              input.code,
+              input.sortOrder,
+              input.lifecycleStatus,
+            ],
+          );
+          const updated = await client.query<{ config_version: number }>(
+            `update stores set config_version = config_version + 1,
+                seat_count = (select count(*)::integer from seats
+                  where sandbox_id = $1 and store_id = $2
+                    and lifecycle_status = 'active')
+              where sandbox_id = $1 and id = $2 returning config_version`,
+            [input.sandboxId, input.storeId],
+          );
+          const storeVersion = updated.rows[0]!.config_version;
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'manager', 'seat.create', 'seat', $5,
+               'allowed', null, $6, null, $7::jsonb, $8, $9)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.storeId,
+              input.personaId,
+              seatId,
+              input.requestId,
+              JSON.stringify(commandPayload),
+              currentTime,
+              wallTime,
+            ],
+          );
+          return persistCommand({
+            action: input.action,
+            objectId: seatId,
+            replayed: false,
+            version: storeVersion,
+          });
+        }
+        if (input.action === "update-seat") {
+          const seatValid =
+            /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/u.test(input.code) &&
+            input.code.length <= 20 &&
+            Number.isInteger(input.sortOrder) &&
+            input.sortOrder >= 0;
+          if (!seatValid) {
+            throw new ManagerStoreConfigurationConflictError("invalid-seat");
+          }
+          const seat = await client.query<{
+            area_id: string;
+            business_referenced: boolean;
+            code: string;
+            config_version: number;
+            lifecycle_status: "active" | "inactive" | "draft";
+            machine_profile_id: string;
+            operational_status: "maintenance" | "normal";
+            sort_order: number;
+          }>(
+            `select seat.area_id, seat.machine_profile_id, seat.code,
+                    seat.sort_order, seat.operational_status,
+                    seat.lifecycle_status, seat.config_version,
+                    exists(select 1 from reservations reservation
+                      where reservation.seat_id = seat.id)
+                      or exists(select 1 from repairs repair
+                        where repair.seat_id = seat.id) as business_referenced
+               from seats seat
+              where seat.sandbox_id = $1 and seat.store_id = $2
+                and seat.id = $3 for update`,
+            [input.sandboxId, input.storeId, input.seatId],
+          );
+          const seatRow = seat.rows[0];
+          if (!seatRow) {
+            throw new ManagerStoreConfigurationConflictError("seat-not-found");
+          }
+          if (seatRow.config_version !== input.expectedVersion) {
+            throw new ManagerStoreConfigurationConflictError(
+              "version-conflict",
+            );
+          }
+          const dependencies = await client.query<{
+            active_reservations: number;
+            open_repairs: number;
+          }>(
+            `select
+               (select count(*)::integer from reservations
+                 where sandbox_id = $1 and seat_id = $2
+                   and status = any($3::text[])) as active_reservations,
+               (select count(*)::integer from repairs
+                 where sandbox_id = $1 and seat_id = $2
+                   and status <> 'closed') as open_repairs`,
+            [
+              input.sandboxId,
+              input.seatId,
+              ["pending-confirmation", "confirmed", "arrived", "in-use"],
+            ],
+          );
+          const dependency = dependencies.rows[0]!;
+          if (
+            input.lifecycleStatus === "inactive" &&
+            seatRow.lifecycle_status !== "inactive" &&
+            (dependency.active_reservations > 0 || dependency.open_repairs > 0)
+          ) {
+            throw new ManagerStoreConfigurationConflictError(
+              "seat-dependencies",
+            );
+          }
+          const changesReferencedFields =
+            seatRow.area_id !== input.areaId ||
+            seatRow.machine_profile_id !== input.machineProfileId ||
+            seatRow.code !== input.code ||
+            seatRow.sort_order !== input.sortOrder;
+          if (seatRow.business_referenced && changesReferencedFields) {
+            throw new ManagerStoreConfigurationConflictError(
+              "referenced-seat-immutable",
+            );
+          }
+          const invalidReferencedSeatTransition = !(
+            seatRow.lifecycle_status === input.lifecycleStatus ||
+            (seatRow.lifecycle_status === "draft" &&
+              input.lifecycleStatus === "active") ||
+            (seatRow.lifecycle_status === "active" &&
+              input.lifecycleStatus === "inactive")
+          );
+          if (invalidReferencedSeatTransition) {
+            throw new ManagerStoreConfigurationConflictError(
+              "seat-lifecycle-transition",
+            );
+          }
+          const invalidReferencedSeatLifecycle = !(
+            seatRow.lifecycle_status === input.lifecycleStatus ||
+            (seatRow.lifecycle_status === "active" &&
+              input.lifecycleStatus === "inactive")
+          );
+          if (seatRow.business_referenced && invalidReferencedSeatLifecycle) {
+            throw new ManagerStoreConfigurationConflictError(
+              "referenced-seat-immutable",
+            );
+          }
+          const area = await client.query<{
+            lifecycle_status: "active" | "archived" | "draft";
+          }>(
+            `select lifecycle_status from store_areas
+              where sandbox_id = $1 and store_id = $2 and id = $3
+              for update`,
+            [input.sandboxId, input.storeId, input.areaId],
+          );
+          const targetArea = area.rows[0];
+          if (
+            !targetArea ||
+            (input.areaId !== seatRow.area_id &&
+              targetArea.lifecycle_status === "archived") ||
+            (input.lifecycleStatus === "active" &&
+              targetArea.lifecycle_status !== "active")
+          ) {
+            throw new ManagerStoreConfigurationConflictError("area-not-found");
+          }
+          const profile = await client.query<{ archived: boolean }>(
+            `select archived from machine_profiles
+              where sandbox_id = $1 and id = $2`,
+            [input.sandboxId, input.machineProfileId],
+          );
+          const targetProfile = profile.rows[0];
+          const activatesWithChangedProfile =
+            input.lifecycleStatus === "active" &&
+            seatRow.lifecycle_status !== "active";
+          if (
+            !targetProfile ||
+            (targetProfile.archived &&
+              (input.machineProfileId !== seatRow.machine_profile_id ||
+                activatesWithChangedProfile))
+          ) {
+            throw new ManagerStoreConfigurationConflictError(
+              "machine-profile-not-found",
+            );
+          }
+          const duplicate = await client.query<{ exists: boolean }>(
+            `select exists(select 1 from seats
+              where sandbox_id = $1 and store_id = $2 and code = $3
+                and id <> $4) as exists`,
+            [input.sandboxId, input.storeId, input.code, input.seatId],
+          );
+          if (duplicate.rows[0]?.exists) {
+            throw new ManagerStoreConfigurationConflictError(
+              "duplicate-seat-code",
+            );
+          }
+          const updated = await client.query<{ config_version: number }>(
+            `update seats set area_id = $4, machine_profile_id = $5,
+                code = $6, sort_order = $7,
+                lifecycle_status = $8, config_version = config_version + 1
+              where sandbox_id = $1 and store_id = $2 and id = $3
+            returning config_version`,
+            [
+              input.sandboxId,
+              input.storeId,
+              input.seatId,
+              input.areaId,
+              input.machineProfileId,
+              input.code,
+              input.sortOrder,
+              input.lifecycleStatus,
+            ],
+          );
+          const version = updated.rows[0]!.config_version;
+          await client.query(
+            `update stores set config_version = config_version + 1,
+                seat_count = (select count(*)::integer from seats
+                  where sandbox_id = $1 and store_id = $2
+                    and lifecycle_status = 'active')
+              where sandbox_id = $1 and id = $2`,
+            [input.sandboxId, input.storeId],
+          );
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'manager', 'seat.update', 'seat', $5,
+               'allowed', null, $6, $7::jsonb, $8::jsonb, $9, $10)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.storeId,
+              input.personaId,
+              input.seatId,
+              input.requestId,
+              JSON.stringify(seatRow),
+              JSON.stringify(commandPayload),
+              currentTime,
+              wallTime,
+            ],
+          );
+          return persistCommand({
+            action: input.action,
+            objectId: input.seatId,
+            replayed: false,
+            version,
+          });
+        }
+        if (input.action === "delete-seat") {
+          const seat = await client.query<{
+            area_id: string;
+            code: string;
+            config_version: number;
+            lifecycle_status: "active" | "inactive" | "draft";
+            machine_profile_id: string;
+            operational_status: "maintenance" | "normal";
+            sort_order: number;
+          }>(
+            `select area_id, machine_profile_id, code, sort_order,
+                    operational_status, lifecycle_status, config_version
+               from seats
+              where sandbox_id = $1 and store_id = $2 and id = $3
+              for update`,
+            [input.sandboxId, input.storeId, input.seatId],
+          );
+          const seatRow = seat.rows[0];
+          if (!seatRow) {
+            throw new ManagerStoreConfigurationConflictError("seat-not-found");
+          }
+          if (seatRow.config_version !== input.expectedVersion) {
+            throw new ManagerStoreConfigurationConflictError(
+              "version-conflict",
+            );
+          }
+          const references = await client.query<{ referenced: boolean }>(
+            `select exists(select 1 from reservations where seat_id = $1)
+                or exists(select 1 from repairs where seat_id = $1)
+                as referenced`,
+            [input.seatId],
+          );
+          if (
+            seatRow.lifecycle_status !== "draft" ||
+            references.rows[0]?.referenced
+          ) {
+            throw new ManagerStoreConfigurationConflictError(
+              "seat-not-deletable",
+            );
+          }
+          await client.query(
+            `delete from seats
+              where sandbox_id = $1 and store_id = $2 and id = $3`,
+            [input.sandboxId, input.storeId, input.seatId],
+          );
+          const updated = await client.query<{ config_version: number }>(
+            `update stores set config_version = config_version + 1,
+                seat_count = (select count(*)::integer from seats
+                  where sandbox_id = $1 and store_id = $2
+                    and lifecycle_status = 'active')
+              where sandbox_id = $1 and id = $2 returning config_version`,
+            [input.sandboxId, input.storeId],
+          );
+          const storeVersion = updated.rows[0]!.config_version;
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'manager', 'seat.delete-draft', 'seat',
+               $5, 'allowed', null, $6, $7::jsonb, null, $8, $9)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.storeId,
+              input.personaId,
+              input.seatId,
+              input.requestId,
+              JSON.stringify(seatRow),
+              currentTime,
+              wallTime,
+            ],
+          );
+          return persistCommand({
+            action: input.action,
+            objectId: input.seatId,
+            replayed: false,
+            version: storeVersion,
+          });
+        }
+        if (input.action === "schedule-business-hours") {
+          const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/u;
+          const minuteOfDay = (value: string) =>
+            Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
+          const opensMinute = minuteOfDay(input.opensAt);
+          const closesMinute = minuteOfDay(input.closesAt);
+          const intervalValid = input.isOpen24Hours
+            ? true
+            : input.closesNextDay
+              ? closesMinute < opensMinute
+              : closesMinute > opensMinute;
+          const hoursValid =
+            timePattern.test(input.opensAt) &&
+            timePattern.test(input.closesAt) &&
+            input.effectiveFrom.getTime() > currentTime.getTime() &&
+            intervalValid;
+          if (!hoursValid) {
+            throw new ManagerStoreConfigurationConflictError(
+              "invalid-business-hours",
+            );
+          }
+          const lockedStore = await client.query<{ config_version: number }>(
+            `select config_version from stores
+              where sandbox_id = $1 and id = $2 for update`,
+            [input.sandboxId, input.storeId],
+          );
+          if (!lockedStore.rows[0]) {
+            throw new ManagerStoreConfigurationConflictError("cross-store");
+          }
+          if (lockedStore.rows[0].config_version !== input.expectedVersion) {
+            throw new ManagerStoreConfigurationConflictError(
+              "version-conflict",
+            );
+          }
+          const businessHoursId = randomUUID();
+          await client.query(
+            `insert into store_business_hours_versions (
+               id, sandbox_id, store_id, day_set, opens_at, closes_at,
+               closes_next_day, is_open_24_hours, effective_from,
+               created_by_persona_id, created_at
+             ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            [
+              businessHoursId,
+              input.sandboxId,
+              input.storeId,
+              input.daySet,
+              input.isOpen24Hours ? "00:00" : input.opensAt,
+              input.isOpen24Hours ? "00:00" : input.closesAt,
+              input.isOpen24Hours ? false : input.closesNextDay,
+              input.isOpen24Hours,
+              input.effectiveFrom,
+              input.personaId,
+              wallTime,
+            ],
+          );
+          const updated = await client.query<{ config_version: number }>(
+            `update stores set config_version = config_version + 1
+              where sandbox_id = $1 and id = $2 returning config_version`,
+            [input.sandboxId, input.storeId],
+          );
+          const version = updated.rows[0]!.config_version;
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'manager',
+               'store.business-hours.schedule', 'store_business_hours', $5,
+               'allowed', null, $6, null, $7::jsonb, $8, $9)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.storeId,
+              input.personaId,
+              businessHoursId,
+              input.requestId,
+              JSON.stringify({
+                closesAt: input.isOpen24Hours ? "00:00" : input.closesAt,
+                closesNextDay: input.isOpen24Hours
+                  ? false
+                  : input.closesNextDay,
+                daySet: input.daySet,
+                effectiveFrom: input.effectiveFrom.toISOString(),
+                isOpen24Hours: input.isOpen24Hours,
+                opensAt: input.isOpen24Hours ? "00:00" : input.opensAt,
+                version,
+              }),
+              currentTime,
+              wallTime,
+            ],
+          );
+          const stored: DatabaseManagerStoreConfigurationCommand = {
+            action: input.action,
+            objectId: businessHoursId,
+            replayed: false,
+            version,
+          };
+          await client.query(
+            `insert into store_config_command_requests (
+               sandbox_id, actor_persona_id, store_id, command_type,
+               idempotency_key_hash, payload_hash, result_data, created_at
+             ) values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+            [
+              input.sandboxId,
+              input.personaId,
+              input.storeId,
+              input.action,
+              idempotencyKeyHash,
+              payloadHash,
+              JSON.stringify(stored),
+              wallTime,
+            ],
+          );
+          await client.query("commit");
+          return stored;
+        }
+        const profileValid =
+          input.displayName.trim().length >= 1 &&
+          input.displayName.trim().length <= 60 &&
+          input.fictitiousCity.trim().length >= 1 &&
+          input.fictitiousCity.trim().length <= 40 &&
+          input.fictitiousCity.includes("虚构") &&
+          input.introduction.trim().length >= 1 &&
+          input.introduction.trim().length <= 500 &&
+          isSafeManagerConfigurationText(
+            `${input.displayName}${input.fictitiousCity}${input.introduction}`,
+          );
+        if (!profileValid) {
+          throw new ManagerStoreConfigurationConflictError("invalid-profile");
+        }
+        const before = await client.query<{
+          config_version: number;
+          display_name: string;
+          fictitious_city: string;
+          introduction: string;
+        }>(
+          `select display_name, fictitious_city, introduction, config_version
+             from stores where sandbox_id = $1 and id = $2 for update`,
+          [input.sandboxId, input.storeId],
+        );
+        const beforeRow = before.rows[0];
+        if (!beforeRow) {
+          throw new ManagerStoreConfigurationConflictError("cross-store");
+        }
+        if (beforeRow.config_version !== input.expectedVersion) {
+          throw new ManagerStoreConfigurationConflictError("version-conflict");
+        }
+        const updated = await client.query<{ config_version: number }>(
+          `update stores
+              set display_name = $3, fictitious_city = $4,
+                  introduction = $5, config_version = config_version + 1
+            where sandbox_id = $1 and id = $2
+          returning config_version`,
+          [
+            input.sandboxId,
+            input.storeId,
+            input.displayName.trim(),
+            input.fictitiousCity.trim(),
+            input.introduction.trim(),
+          ],
+        );
+        const version = updated.rows[0]!.config_version;
+        await client.query(
+          `update demo_personas set scope = $3
+            where sandbox_id = $1 and store_id = $2
+              and role = any($4::text[])`,
+          [
+            input.sandboxId,
+            input.storeId,
+            input.displayName.trim(),
+            ["staff", "manager"],
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, reason, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, 'manager', 'store.profile.update',
+             'store', $3, 'allowed', null, $5, $6::jsonb, $7::jsonb, $8, $9)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            input.storeId,
+            input.personaId,
+            input.requestId,
+            JSON.stringify(beforeRow),
+            JSON.stringify({
+              displayName: input.displayName.trim(),
+              fictitiousCity: input.fictitiousCity.trim(),
+              introduction: input.introduction.trim(),
+              version,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const stored: DatabaseManagerStoreConfigurationCommand = {
+          action: input.action,
+          objectId: input.storeId,
+          replayed: false,
+          version,
+        };
+        await client.query(
+          `insert into store_config_command_requests (
+             sandbox_id, actor_persona_id, store_id, command_type,
+             idempotency_key_hash, payload_hash, result_data, created_at
+           ) values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            input.storeId,
+            input.action,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+            wallTime,
+          ],
+        );
+        await client.query("commit");
+        return stored;
+      } catch (error) {
+        if (replayedDenial) throw error;
+        if (
+          error instanceof ManagerStoreConfigurationConflictError &&
+          denialAudit
+        ) {
+          const object = (() => {
+            switch (input.action) {
+              case "update-store-profile":
+              case "schedule-business-hours":
+                return { objectId: input.storeId, objectType: "store" };
+              case "create-area":
+                return { objectId: null, objectType: "store_area" };
+              case "update-area":
+              case "delete-area":
+                return { objectId: input.areaId, objectType: "store_area" };
+              case "create-seat":
+                return { objectId: null, objectType: "seat" };
+              case "update-seat":
+              case "delete-seat":
+                return { objectId: input.seatId, objectType: "seat" };
+            }
+          })();
+          const serializedDeniedPayload = JSON.stringify(
+            denialAudit.commandPayload,
+          );
+          const deniedPayload = managerStoreConfigurationDenialSummary(
+            input,
+            hash(serializedDeniedPayload),
+          );
+          try {
+            await client.query(
+              `insert into audit_events (
+                 id, sandbox_id, store_id, persona_id, role, action,
+                 object_type, object_id, result, reason, request_id,
+                 before_data, after_data, business_occurred_at, recorded_at
+               ) values ($1, $2, $3, $4, 'manager', $5, $6, $7, 'denied',
+                 $8, $9, null, $10::jsonb, $11, $12)`,
+              [
+                randomUUID(),
+                input.sandboxId,
+                denialAudit.actorStoreId,
+                input.personaId,
+                `store-configuration.${input.action}`,
+                object.objectType,
+                object.objectId,
+                error.reason,
+                input.requestId,
+                JSON.stringify(deniedPayload),
+                denialAudit.businessTime,
+                wallTime,
+              ],
+            );
+            if (idempotencySlotAvailable && commandFingerprint) {
+              await client.query(
+                `insert into store_config_command_requests (
+                   sandbox_id, actor_persona_id, store_id, command_type,
+                   idempotency_key_hash, payload_hash, result_data, created_at
+                 ) values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+                [
+                  input.sandboxId,
+                  input.personaId,
+                  denialAudit.actorStoreId,
+                  input.action,
+                  commandFingerprint.idempotencyKeyHash,
+                  commandFingerprint.payloadHash,
+                  JSON.stringify({ denied: true, reason: error.reason }),
+                  wallTime,
+                ],
+              );
+            }
+            await client.query("commit");
+          } catch {
+            await client.query("rollback").catch(() => undefined);
+          }
+        } else {
+          await client.query("rollback").catch(() => undefined);
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async readStaffOrderDetail(input) {
       const client = await pool.connect();
       const wallTime = wallClock.now();
@@ -12190,12 +13912,22 @@ export function createPublicSandboxDatabase(
           sandboxId: input.sandboxId,
           targetBusinessTime: now,
         });
+        const hoursAt =
+          input.mode === "future" && input.requestedStartsAt
+            ? input.requestedStartsAt
+            : now;
+        const selectedHours = await businessHoursFor(client, {
+          at: hoursAt,
+          baseline: store,
+          sandboxId: input.sandboxId,
+          storeId: store.id,
+        });
         const window = resolveCustomerReservationWindow({
           businessHours: {
-            closesAt: store.closes_at.slice(0, 5),
-            closesNextDay: store.closes_next_day,
-            isOpen24Hours: store.is_open_24_hours,
-            opensAt: store.opens_at.slice(0, 5),
+            closesAt: selectedHours.closes_at.slice(0, 5),
+            closesNextDay: selectedHours.closes_next_day,
+            isOpen24Hours: selectedHours.is_open_24_hours,
+            opensAt: selectedHours.opens_at.slice(0, 5),
           },
           durationHours: input.durationHours,
           mode: input.mode,
@@ -12209,7 +13941,8 @@ export function createPublicSandboxDatabase(
         }
         const areaResult = await client.query<AreaSelectionRow>(
           `select id, code, display_name from store_areas
-            where sandbox_id = $1 and store_id = $2 and code = $3`,
+            where sandbox_id = $1 and store_id = $2 and code = $3
+              and lifecycle_status = 'active'`,
           [input.sandboxId, store.id, input.areaCode],
         );
         const area = areaResult.rows[0];
@@ -12244,6 +13977,7 @@ export function createPublicSandboxDatabase(
              from seats
             where sandbox_id = $1 and store_id = $2 and area_id = $3
               and machine_profile_id = $4 and code = $5
+              and lifecycle_status = 'active'
             for update`,
           [input.sandboxId, store.id, area.id, machine.id, input.seatCode],
         );
@@ -14059,7 +15793,8 @@ export function createPublicSandboxDatabase(
           [input.sandboxId],
         );
         const stores = await client.query<StoreRow>(
-          `select id, code, display_name, seat_count, opens_at, closes_at,
+          `select id, code, display_name, fictitious_city, introduction,
+                  seat_count, opens_at, closes_at,
                   closes_next_day, is_open_24_hours
              from stores where sandbox_id = $1`,
           [input.sandboxId],
@@ -14069,7 +15804,8 @@ export function createPublicSandboxDatabase(
                   count(seat.id)::integer as seat_count
              from store_areas area
              left join seats seat on seat.area_id = area.id
-            where area.sandbox_id = $1
+              and seat.lifecycle_status = 'active'
+            where area.sandbox_id = $1 and area.lifecycle_status = 'active'
             group by area.id, area.store_id, area.code, area.display_name,
                      area.sort_order
             order by area.sort_order`,
@@ -14087,6 +15823,7 @@ export function createPublicSandboxDatabase(
               and plan.machine_profile_id = seat.machine_profile_id
               and plan.status = 'active'
             where seat.sandbox_id = $1 and profile.archived = false
+              and seat.lifecycle_status = 'active'
             group by seat.store_id, profile.code, profile.display_name,
                      profile.experience_description`,
           [input.sandboxId],
@@ -14109,10 +15846,18 @@ export function createPublicSandboxDatabase(
         if (!city) {
           throw new Error("The customer store catalog has no operator city.");
         }
-        const result: DatabaseCustomerStoreCatalog = {
-          city,
-          currentTime: businessTimeForSandbox(sandbox, wallTime),
-          stores: orderedStores.map((store) => ({
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        const catalogStores: Array<
+          DatabaseCustomerStoreCatalog["stores"][number]
+        > = [];
+        for (const store of orderedStores) {
+          const selectedHours = await businessHoursFor(client, {
+            at: currentTime,
+            baseline: store,
+            sandboxId: input.sandboxId,
+            storeId: store.id,
+          });
+          catalogStores.push({
             areas: areas.rows
               .filter((area) => area.store_id === store.id)
               .map((area) => ({
@@ -14120,12 +15865,14 @@ export function createPublicSandboxDatabase(
                 displayName: area.display_name,
                 seatCount: area.seat_count,
               })),
-            businessHours: formatBusinessHours(store),
-            closesAt: store.closes_at.slice(0, 5),
-            closesNextDay: store.closes_next_day,
+            businessHours: formatBusinessHours(selectedHours),
+            closesAt: selectedHours.closes_at.slice(0, 5),
+            closesNextDay: selectedHours.closes_next_day,
             code: store.code,
             displayName: store.display_name,
-            isOpen24Hours: store.is_open_24_hours,
+            fictitiousCity: store.fictitious_city,
+            introduction: store.introduction,
+            isOpen24Hours: selectedHours.is_open_24_hours,
             machineProfiles: machines.rows
               .filter((machine) => machine.store_id === store.id)
               .toSorted(
@@ -14140,9 +15887,14 @@ export function createPublicSandboxDatabase(
                 experienceDescription: machine.experience_description,
                 seatCount: machine.seat_count,
               })),
-            opensAt: store.opens_at.slice(0, 5),
+            opensAt: selectedHours.opens_at.slice(0, 5),
             seatCount: store.seat_count,
-          })),
+          });
+        }
+        const result: DatabaseCustomerStoreCatalog = {
+          city,
+          currentTime,
+          stores: catalogStores,
         };
         await client.query("commit");
         return result;
@@ -14191,12 +15943,22 @@ export function createPublicSandboxDatabase(
           sandboxId: input.sandboxId,
           targetBusinessTime: now,
         });
+        const hoursAt =
+          input.mode === "future" && input.requestedStartsAt
+            ? input.requestedStartsAt
+            : now;
+        const selectedHours = await businessHoursFor(client, {
+          at: hoursAt,
+          baseline: store,
+          sandboxId: input.sandboxId,
+          storeId: store.id,
+        });
         const window = resolveCustomerReservationWindow({
           businessHours: {
-            closesAt: store.closes_at.slice(0, 5),
-            closesNextDay: store.closes_next_day,
-            isOpen24Hours: store.is_open_24_hours,
-            opensAt: store.opens_at.slice(0, 5),
+            closesAt: selectedHours.closes_at.slice(0, 5),
+            closesNextDay: selectedHours.closes_next_day,
+            isOpen24Hours: selectedHours.is_open_24_hours,
+            opensAt: selectedHours.opens_at.slice(0, 5),
           },
           durationHours: input.durationHours,
           mode: input.mode,
@@ -14210,7 +15972,8 @@ export function createPublicSandboxDatabase(
         }
         const areaResult = await client.query<AreaSelectionRow>(
           `select id, code, display_name from store_areas
-            where sandbox_id = $1 and store_id = $2 and code = $3`,
+            where sandbox_id = $1 and store_id = $2 and code = $3
+              and lifecycle_status = 'active'`,
           [input.sandboxId, store.id, input.areaCode],
         );
         const area = areaResult.rows[0];
@@ -14255,7 +16018,7 @@ export function createPublicSandboxDatabase(
           `select id, code, operational_status
              from seats
             where sandbox_id = $1 and store_id = $2 and area_id = $3
-              and machine_profile_id = $4
+              and machine_profile_id = $4 and lifecycle_status = 'active'
             order by sort_order`,
           [input.sandboxId, store.id, area.id, machine.id],
         );

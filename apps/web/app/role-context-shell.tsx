@@ -32,6 +32,7 @@ import { StoreInventory } from "./store-inventory";
 import { StaffRepairQueue } from "./staff-repair-queue";
 import { StaffShiftAttendance } from "./staff-shift-attendance";
 import { ManagerHandoverExceptions } from "./staff-handover";
+import { ManagerStoreConfiguration } from "./manager-store-configuration";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -645,6 +646,17 @@ export function RoleContextShell({
               onToast={setToast}
               refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
               role={context.role.id}
+            />
+          ) : context.role.id === "manager" && activePage === "store-config" ? (
+            <ManagerStoreConfiguration
+              csrfToken={context.csrfToken}
+              onNavigateRepairs={() => setActivePage("manager-repairs")}
+              onNavigateReservations={() => {
+                setManagerLiveMode("reservations");
+                setActivePage("live-ops");
+              }}
+              onToast={setToast}
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
             />
           ) : (context.role.id === "staff" &&
               (activePage === "workbench" || activePage === "reservations")) ||

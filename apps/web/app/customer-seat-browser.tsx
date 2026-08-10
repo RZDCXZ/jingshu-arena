@@ -3183,6 +3183,8 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                       {item.code === "prism-flagship"
                         ? "主演示门店"
                         : "固定虚构门店"}
+                      {" · "}
+                      {item.fictitiousCity}
                     </small>
                     <strong>{item.displayName}</strong>
                     <span>
@@ -3191,7 +3193,10 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                       <Armchair />
                       {item.seatCount} 座
                     </span>
-                    <em>
+                    <em className="customer-store-introduction">
+                      {item.introduction}
+                    </em>
+                    <em aria-label="门店区域">
                       {item.areas
                         .map((storeArea) => storeArea.displayName)
                         .join(" · ")}

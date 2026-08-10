@@ -69,6 +69,8 @@ export interface CustomerStoreCatalogResponse {
     readonly closesNextDay: boolean;
     readonly code: string;
     readonly displayName: string;
+    readonly fictitiousCity: string;
+    readonly introduction: string;
     readonly isOpen24Hours: boolean;
     readonly machineProfiles: ReadonlyArray<{
       readonly baseHourlyCents: number;
@@ -964,6 +966,163 @@ export interface ManagerInventoryCommandResponse {
   readonly originalMovementId: string | null;
   readonly reason: string;
   readonly replayed: boolean;
+}
+
+export type StoreAreaLifecycleStatus = "active" | "archived" | "draft";
+export type SeatLifecycleStatus = "active" | "draft" | "inactive";
+export type StoreBusinessHoursDaySet = "all" | "weekdays" | "weekends";
+
+export interface ManagerStoreConfigurationResponse {
+  readonly status: "ready";
+  readonly currentTime: string;
+  readonly store: {
+    readonly code: string;
+    readonly displayName: string;
+    readonly fictitiousCity: string;
+    readonly fixed: true;
+    readonly introduction: string;
+    readonly seatCount: number;
+    readonly storeId: string;
+    readonly version: number;
+  };
+  readonly businessHours: {
+    readonly baseline: {
+      readonly closesAt: string;
+      readonly closesNextDay: boolean;
+      readonly display: string;
+      readonly isOpen24Hours: boolean;
+      readonly opensAt: string;
+    };
+    readonly current: {
+      readonly closesAt: string;
+      readonly closesNextDay: boolean;
+      readonly display: string;
+      readonly isOpen24Hours: boolean;
+      readonly opensAt: string;
+    };
+    readonly effective: ReadonlyArray<{
+      readonly businessHoursId: string;
+      readonly closesAt: string;
+      readonly closesNextDay: boolean;
+      readonly daySet: StoreBusinessHoursDaySet;
+      readonly effectiveFrom: string;
+      readonly isOpen24Hours: boolean;
+      readonly opensAt: string;
+    }>;
+    readonly scheduled: ReadonlyArray<{
+      readonly businessHoursId: string;
+      readonly closesAt: string;
+      readonly closesNextDay: boolean;
+      readonly daySet: StoreBusinessHoursDaySet;
+      readonly effectiveFrom: string;
+      readonly isOpen24Hours: boolean;
+      readonly opensAt: string;
+    }>;
+  };
+  readonly areas: ReadonlyArray<{
+    readonly areaId: string;
+    readonly businessReferenced: boolean;
+    readonly code: string;
+    readonly displayName: string;
+    readonly lifecycleStatus: StoreAreaLifecycleStatus;
+    readonly seatCount: number;
+    readonly sortOrder: number;
+    readonly version: number;
+  }>;
+  readonly machineProfiles: ReadonlyArray<{
+    readonly archived: boolean;
+    readonly code: CustomerMachineProfileCode;
+    readonly displayName: string;
+    readonly experienceDescription: string;
+    readonly machineProfileId: string;
+  }>;
+  readonly seats: ReadonlyArray<{
+    readonly area: { readonly areaId: string; readonly displayName: string };
+    readonly businessReferenced: boolean;
+    readonly code: string;
+    readonly dependencies: {
+      readonly activeReservations: number;
+      readonly openRepairs: number;
+    };
+    readonly lifecycleStatus: SeatLifecycleStatus;
+    readonly machineProfile: {
+      readonly code: CustomerMachineProfileCode;
+      readonly displayName: string;
+      readonly machineProfileId: string;
+    };
+    readonly operationalStatus: "maintenance" | "normal";
+    readonly seatId: string;
+    readonly sortOrder: number;
+    readonly version: number;
+  }>;
+}
+
+interface ManagerStoreConfigurationCommandBase {
+  readonly expectedVersion: number;
+  readonly storeId: string;
+}
+
+export type ManagerStoreConfigurationCommandRequest =
+  ManagerStoreConfigurationCommandBase &
+    (
+      | {
+          readonly action: "update-store-profile";
+          readonly displayName: string;
+          readonly fictitiousCity: string;
+          readonly introduction: string;
+        }
+      | {
+          readonly action: "schedule-business-hours";
+          readonly closesAt: string;
+          readonly closesNextDay: boolean;
+          readonly daySet: StoreBusinessHoursDaySet;
+          readonly effectiveFrom: string;
+          readonly isOpen24Hours: boolean;
+          readonly opensAt: string;
+        }
+      | {
+          readonly action: "create-area";
+          readonly code: string;
+          readonly displayName: string;
+          readonly lifecycleStatus: Exclude<
+            StoreAreaLifecycleStatus,
+            "archived"
+          >;
+          readonly sortOrder: number;
+        }
+      | {
+          readonly action: "update-area";
+          readonly areaId: string;
+          readonly displayName: string;
+          readonly lifecycleStatus: StoreAreaLifecycleStatus;
+          readonly sortOrder: number;
+        }
+      | { readonly action: "delete-area"; readonly areaId: string }
+      | { readonly action: "delete-seat"; readonly seatId: string }
+      | {
+          readonly action: "create-seat";
+          readonly areaId: string;
+          readonly code: string;
+          readonly lifecycleStatus: Exclude<SeatLifecycleStatus, "inactive">;
+          readonly machineProfileId: string;
+          readonly sortOrder: number;
+        }
+      | {
+          readonly action: "update-seat";
+          readonly areaId: string;
+          readonly code: string;
+          readonly lifecycleStatus: SeatLifecycleStatus;
+          readonly machineProfileId: string;
+          readonly seatId: string;
+          readonly sortOrder: number;
+        }
+    );
+
+export interface ManagerStoreConfigurationCommandResponse {
+  readonly action: ManagerStoreConfigurationCommandRequest["action"];
+  readonly objectId: string;
+  readonly replayed: boolean;
+  readonly version: number;
 }
 
 export type CustomerMemberTier = "bronze" | "gold" | "silver";

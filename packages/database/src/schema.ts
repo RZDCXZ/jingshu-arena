@@ -116,15 +116,19 @@ export const stores = pgTable(
       .references(() => operators.id, { onDelete: "cascade" }),
     code: text("code").notNull(),
     displayName: text("display_name").notNull(),
+    fictitiousCity: text("fictitious_city").notNull(),
+    introduction: text("introduction").notNull(),
     seatCount: integer("seat_count").notNull(),
     opensAt: time("opens_at").notNull(),
     closesAt: time("closes_at").notNull(),
     closesNextDay: boolean("closes_next_day").default(false).notNull(),
     isOpen24Hours: boolean("is_open_24_hours").default(false).notNull(),
+    configVersion: integer("config_version").default(1).notNull(),
   },
   (table) => [
     unique("stores_sandbox_code_unique").on(table.sandboxId, table.code),
     check("stores_positive_seat_count", sql`${table.seatCount} > 0`),
+    check("stores_positive_config_version", sql`${table.configVersion} > 0`),
     pgPolicy("stores_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
@@ -279,6 +283,8 @@ export const storeAreas = pgTable(
     code: text("code").notNull(),
     displayName: text("display_name").notNull(),
     sortOrder: integer("sort_order").notNull(),
+    lifecycleStatus: text("lifecycle_status").default("active").notNull(),
+    configVersion: integer("config_version").default(1).notNull(),
   },
   (table) => [
     unique("store_areas_sandbox_store_code_unique").on(
@@ -287,6 +293,14 @@ export const storeAreas = pgTable(
       table.code,
     ),
     check("store_areas_positive_sort_order", sql`${table.sortOrder} >= 0`),
+    check(
+      "store_areas_lifecycle_status",
+      sql`${table.lifecycleStatus} IN ('active', 'archived', 'draft')`,
+    ),
+    check(
+      "store_areas_positive_config_version",
+      sql`${table.configVersion} > 0`,
+    ),
     pgPolicy("store_areas_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
@@ -313,6 +327,8 @@ export const seats = pgTable(
     code: text("code").notNull(),
     sortOrder: integer("sort_order").notNull(),
     operationalStatus: text("operational_status").default("normal").notNull(),
+    lifecycleStatus: text("lifecycle_status").default("active").notNull(),
+    configVersion: integer("config_version").default(1).notNull(),
   },
   (table) => [
     unique("seats_sandbox_store_code_unique").on(
@@ -325,7 +341,57 @@ export const seats = pgTable(
       sql`${table.operationalStatus} IN ('normal', 'maintenance')`,
     ),
     check("seats_positive_sort_order", sql`${table.sortOrder} >= 0`),
+    check(
+      "seats_lifecycle_status",
+      sql`${table.lifecycleStatus} IN ('active', 'inactive', 'draft')`,
+    ),
+    check("seats_positive_config_version", sql`${table.configVersion} > 0`),
     pgPolicy("seats_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const storeBusinessHoursVersions = pgTable(
+  "store_business_hours_versions",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    daySet: text("day_set").notNull(),
+    opensAt: time("opens_at").notNull(),
+    closesAt: time("closes_at").notNull(),
+    closesNextDay: boolean("closes_next_day").default(false).notNull(),
+    isOpen24Hours: boolean("is_open_24_hours").default(false).notNull(),
+    effectiveFrom: timestamp("effective_from", {
+      withTimezone: true,
+    }).notNull(),
+    createdByPersonaId: uuid("created_by_persona_id")
+      .notNull()
+      .references((): AnyPgColumn => demoPersonas.id, {
+        onDelete: "restrict",
+      }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("store_business_hours_scope_effective_unique").on(
+      table.sandboxId,
+      table.storeId,
+      table.daySet,
+      table.effectiveFrom,
+    ),
+    check(
+      "store_business_hours_day_set",
+      sql`${table.daySet} IN ('all', 'weekdays', 'weekends')`,
+    ),
+    pgPolicy("store_business_hours_versions_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),
@@ -405,6 +471,42 @@ export const demoPersonas = pgTable(
       sql`${table.role} IN ('customer', 'staff', 'manager', 'hq')`,
     ),
     pgPolicy("demo_personas_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const storeConfigCommandRequests = pgTable(
+  "store_config_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    actorPersonaId: uuid("actor_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    commandType: text("command_type").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.actorPersonaId,
+        table.idempotencyKeyHash,
+      ],
+      name: "store_config_command_requests_pk",
+    }),
+    pgPolicy("store_config_command_requests_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),

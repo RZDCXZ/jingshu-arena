@@ -275,6 +275,39 @@ export class ManagerInventoryConflictError extends Error {
   }
 }
 
+export type ManagerStoreConfigurationConflictReason =
+  | "cross-store"
+  | "duplicate-area-code"
+  | "duplicate-seat-code"
+  | "area-has-active-seats"
+  | "area-lifecycle-transition"
+  | "area-not-deletable"
+  | "idempotency-conflict"
+  | "invalid-area"
+  | "invalid-business-hours"
+  | "invalid-profile"
+  | "invalid-seat"
+  | "machine-profile-not-found"
+  | "area-not-found"
+  | "referenced-seat-immutable"
+  | "referenced-area-immutable"
+  | "seat-dependencies"
+  | "seat-lifecycle-transition"
+  | "seat-not-deletable"
+  | "seat-not-found"
+  | "version-conflict";
+
+export class ManagerStoreConfigurationConflictError extends Error {
+  readonly code = "MANAGER_STORE_CONFIGURATION_CONFLICT";
+  readonly reason: ManagerStoreConfigurationConflictReason;
+
+  constructor(reason: ManagerStoreConfigurationConflictReason) {
+    super(`Manager store configuration command was rejected: ${reason}.`);
+    this.name = "ManagerStoreConfigurationConflictError";
+    this.reason = reason;
+  }
+}
+
 export type RepairIntakeConflictReason =
   | "description-invalid"
   | "idempotency-conflict"
