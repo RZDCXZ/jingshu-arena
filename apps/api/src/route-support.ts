@@ -16,6 +16,7 @@ import type {
 
 import { listRoleCapabilities } from "./role-authorization.js";
 import type { readRoleSession } from "./role-session.js";
+import type { RepairImageStorage } from "./repair-image-storage.js";
 
 export const SESSION_COOKIE = "jingshu_session";
 export const SESSION_MAX_AGE_SECONDS = 24 * 60 * 60;
@@ -28,6 +29,8 @@ export interface AppServices {
   allowedOrigins: ReadonlySet<string>;
   sandboxDatabase?: PublicSandboxDatabase;
   secureCookies: boolean;
+  repairImageSigningSecret?: string;
+  repairImageStorage?: RepairImageStorage;
   sessionSecret?: string;
 }
 

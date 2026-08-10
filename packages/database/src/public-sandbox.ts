@@ -5,6 +5,7 @@ import type { PoolClient } from "pg";
 import type {
   FrontlineReservationAction,
   PublicRole,
+  RepairImageContentType,
   StaffOrderAction,
   StaffOrderStageFilter,
   StaffReservationAnomalyFilter,
@@ -22,6 +23,7 @@ import {
   deriveSeatAvailability,
   evaluateReservationCoupon,
   isSafePlainTextReason,
+  normalizeRepairDescription,
   memberTierForGrowth,
   priceCustomerOrder,
   type CustomerOrderStatus,
@@ -47,6 +49,8 @@ import {
   FrontlineReservationConflictError,
   ManagerInventoryConflictError,
   type ManagerInventoryConflictReason,
+  RepairIntakeConflictError,
+  RepairImageConflictError,
   StaffOrderConflictError,
   PublicSandboxIdempotencyConflictError,
   PublicSandboxOwnershipConflictError,
@@ -64,6 +68,16 @@ import {
 const { Pool } = pg;
 
 const SANDBOX_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const REPAIR_IMAGE_INTENT_LIFETIME_MS = 5 * 60 * 1000;
+const REPAIR_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const repairImageExtensions: Record<
+  RepairImageContentType,
+  ReadonlySet<string>
+> = {
+  "image/jpeg": new Set(["jpeg", "jpg"]),
+  "image/png": new Set(["png"]),
+  "image/webp": new Set(["webp"]),
+};
 const publicSandboxSeed = buildPublicSandboxSeed();
 
 export interface CreatePublicSandboxInput {
@@ -270,6 +284,190 @@ export interface DatabaseCustomerReservationCancellation {
   readonly status: "cancelled";
 }
 
+export interface CreateCustomerRepairInput extends CustomerBrowseContextInput {
+  readonly description: string;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+  readonly reservationId: string;
+}
+
+export interface RepairStaffContextInput extends Omit<
+  ReadRoleContextInput,
+  "role"
+> {
+  readonly role: "staff";
+}
+
+export type ReadStaffRepairIntakeInput = RepairStaffContextInput;
+
+export interface CreateStaffRepairInput extends RepairStaffContextInput {
+  readonly description: string;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+  readonly seatId: string;
+}
+
+export interface DatabaseStaffRepairIntake {
+  readonly seats: ReadonlyArray<{
+    readonly area: { readonly code: string; readonly displayName: string };
+    readonly code: string;
+    readonly existingRepair: {
+      readonly repairId: string;
+      readonly status: DatabaseRepairCreated["status"];
+    } | null;
+    readonly id: string;
+    readonly machineProfile: DatabaseRepairCreated["machineProfile"];
+    readonly operationalStatus: "maintenance" | "normal";
+    readonly store: DatabaseRepairCreated["store"];
+  }>;
+  readonly store: DatabaseRepairCreated["store"];
+}
+
+export interface DatabaseStaffRepairQueue {
+  readonly currentTime: Date;
+  readonly rows: ReadonlyArray<{
+    readonly createdAt: Date;
+    readonly description: string;
+    readonly machineProfile: DatabaseRepairCreated["machineProfile"];
+    readonly priority: DatabaseRepairCreated["priority"];
+    readonly repairId: string;
+    readonly seat: { readonly code: string };
+    readonly source: DatabaseRepairCreated["source"];
+    readonly status: DatabaseRepairCreated["status"];
+    readonly waitingMinutes: number;
+  }>;
+  readonly store: DatabaseRepairCreated["store"];
+}
+
+export interface DatabaseRepairCreated {
+  readonly createdAt: Date;
+  readonly description: string;
+  readonly duplicate: boolean;
+  readonly machineProfile: {
+    readonly code: MachineProfileCode;
+    readonly displayName: string;
+  };
+  readonly priority: "normal" | "high" | "urgent";
+  readonly repairId: string;
+  readonly reservationId: string | null;
+  readonly seat: {
+    readonly code: string;
+    readonly operationalStatus: "maintenance" | "normal";
+  };
+  readonly source: "customer" | "staff";
+  readonly status:
+    "assigned" | "closed" | "new" | "processing" | "verification";
+  readonly store: { readonly code: string; readonly displayName: string };
+}
+
+export interface RepairActorContextInput extends ReadRoleContextInput {
+  readonly repairId: string;
+}
+
+export interface CreateRepairImageIntentInput extends RepairActorContextInput {
+  readonly declaredContentType: RepairImageContentType;
+  readonly declaredSize: number;
+  readonly filenameExtension: "jpeg" | "jpg" | "png" | "webp";
+}
+
+export interface DatabaseRepairImageIntent {
+  readonly declaredContentType: RepairImageContentType;
+  readonly declaredSize: number;
+  readonly expiresAt: Date;
+  readonly filenameExtension: "jpeg" | "jpg" | "png" | "webp";
+  readonly intentId: string;
+  readonly quarantineObjectKey: string;
+  readonly repairId: string;
+  readonly sandboxId: string;
+}
+
+export interface ClaimRepairImageUploadInput {
+  readonly declaredContentType: RepairImageContentType;
+  readonly intentId: string;
+  readonly quarantineObjectKey: string;
+  readonly repairId: string;
+  readonly sandboxId: string;
+  readonly size: number;
+}
+
+export interface CompleteRepairImageUploadInput {
+  readonly intentId: string;
+  readonly sandboxId: string;
+}
+
+export interface PrepareRepairImageCompletionInput extends RepairActorContextInput {
+  readonly intentId: string;
+}
+
+export interface FailRepairImageIntentInput {
+  readonly intentId: string;
+  readonly reason: string;
+  readonly sandboxId: string;
+}
+
+export interface FinalizeRepairImageInput extends PrepareRepairImageCompletionInput {
+  readonly byteSize: number;
+  readonly contentType: RepairImageContentType;
+  readonly height: number;
+  readonly objectKey: string;
+  readonly requestId: string;
+  readonly width: number;
+}
+
+export interface DatabaseRepairImage {
+  readonly byteSize: number;
+  readonly contentType: RepairImageContentType;
+  readonly createdAt: Date;
+  readonly height: number;
+  readonly imageId: string;
+  readonly objectKey: string;
+  readonly repairId: string;
+  readonly sandboxId: string;
+  readonly source: "uploaded";
+  readonly width: number;
+}
+
+export type DatabaseRepairImageListItem =
+  DatabaseRepairImage | DatabaseRepairSampleImage;
+
+export interface EnqueueRepairImageCleanupInput {
+  readonly availableAt: Date;
+  readonly objectKey?: string;
+  readonly reason: string;
+  readonly sandboxId: string;
+  readonly targetKind: "object" | "sandbox";
+}
+
+export interface DatabaseRepairImageCleanupJob {
+  readonly attempts: number;
+  readonly jobId: string;
+  readonly objectKey: string | null;
+  readonly sandboxId: string;
+  readonly targetKind: "object" | "sandbox";
+}
+
+export interface ReadRepairImageInput extends ReadRoleContextInput {
+  readonly imageId: string;
+}
+
+export interface CreateRepairSampleImageInput extends RepairActorContextInput {
+  readonly requestId: string;
+  readonly sampleAssetId: "repair-headset-v1";
+}
+
+export interface DatabaseRepairSampleImage {
+  readonly byteSize: 925729;
+  readonly contentType: "image/png";
+  readonly createdAt: Date;
+  readonly height: 720;
+  readonly imageId: string;
+  readonly repairId: string;
+  readonly sampleAssetId: "repair-headset-v1";
+  readonly sandboxId: string;
+  readonly source: "sample";
+  readonly width: 960;
+}
+
 export interface ReadCustomerOrderCatalogInput extends CustomerBrowseContextInput {
   readonly reservationId: string;
 }
@@ -472,7 +670,11 @@ export interface DatabaseCustomerReservationDetail {
       readonly label: string;
       readonly status: CustomerOrderStatus;
     }>;
-    readonly repairs: ReadonlyArray<never>;
+    readonly repairs: ReadonlyArray<{
+      readonly id: string;
+      readonly label: string;
+      readonly status: DatabaseRepairCreated["status"];
+    }>;
   };
   readonly reservationId: string;
   readonly snapshot: DatabaseCustomerPendingReservation["snapshot"];
@@ -930,6 +1132,39 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   createCustomerPendingOrder(
     input: CreateCustomerPendingOrderInput,
   ): Promise<DatabaseCustomerPendingOrder>;
+  createCustomerRepair(
+    input: CreateCustomerRepairInput,
+  ): Promise<DatabaseRepairCreated>;
+  createStaffRepair(
+    input: CreateStaffRepairInput,
+  ): Promise<DatabaseRepairCreated>;
+  createRepairImageIntent(
+    input: CreateRepairImageIntentInput,
+  ): Promise<DatabaseRepairImageIntent>;
+  claimRepairImageUpload(input: ClaimRepairImageUploadInput): Promise<void>;
+  completeRepairImageUpload(
+    input: CompleteRepairImageUploadInput,
+  ): Promise<void>;
+  createRepairSampleImage(
+    input: CreateRepairSampleImageInput,
+  ): Promise<DatabaseRepairSampleImage>;
+  failRepairImageIntent(input: FailRepairImageIntentInput): Promise<void>;
+  finalizeRepairImage(
+    input: FinalizeRepairImageInput,
+  ): Promise<DatabaseRepairImage>;
+  enqueueRepairImageCleanup(
+    input: EnqueueRepairImageCleanupInput,
+  ): Promise<void>;
+  completeRepairImageCleanupForSandbox(sandboxId: string): Promise<void>;
+  completeRepairImageCleanupJob(jobId: string): Promise<void>;
+  readDueRepairImageCleanupJobs(
+    limit: number,
+  ): Promise<ReadonlyArray<DatabaseRepairImageCleanupJob>>;
+  retryRepairImageCleanupJob(input: {
+    readonly availableAt: Date;
+    readonly failure: string;
+    readonly jobId: string;
+  }): Promise<void>;
   simulateCustomerOrderPayment(
     input: SimulateCustomerOrderPaymentInput,
   ): Promise<DatabaseCustomerOrderPayment>;
@@ -948,6 +1183,19 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readStaffReservationWorkbench(
     input: ReadStaffReservationWorkbenchInput,
   ): Promise<DatabaseStaffReservationWorkbench>;
+  readStaffRepairIntake(
+    input: ReadStaffRepairIntakeInput,
+  ): Promise<DatabaseStaffRepairIntake>;
+  readStaffRepairQueue(
+    input: ReadStaffRepairIntakeInput,
+  ): Promise<DatabaseStaffRepairQueue>;
+  prepareRepairImageCompletion(
+    input: PrepareRepairImageCompletionInput,
+  ): Promise<DatabaseRepairImageIntent>;
+  readRepairImage(input: ReadRepairImageInput): Promise<DatabaseRepairImage>;
+  readRepairImages(
+    input: RepairActorContextInput,
+  ): Promise<ReadonlyArray<DatabaseRepairImageListItem>>;
   readStaffOrderDetail(
     input: ReadStaffOrderDetailInput,
   ): Promise<DatabaseStaffOrderDetail>;
@@ -1423,6 +1671,12 @@ interface RelatedOrderRow {
   status: CustomerOrderStatus;
 }
 
+interface RelatedRepairRow {
+  id: string;
+  label: string;
+  status: DatabaseRepairCreated["status"];
+}
+
 async function readRelatedOrders(
   client: PoolClient,
   sandboxId: string,
@@ -1435,6 +1689,23 @@ async function readRelatedOrders(
        from customer_orders orders
       where orders.sandbox_id = $1 and orders.reservation_id = $2
       order by orders.created_business_at, orders.id`,
+    [sandboxId, reservationId],
+  );
+  return result.rows;
+}
+
+async function readRelatedRepairs(
+  client: PoolClient,
+  sandboxId: string,
+  reservationId: string,
+): Promise<ReadonlyArray<RelatedRepairRow>> {
+  const result = await client.query<RelatedRepairRow>(
+    `select repair.id, repair.status,
+            concat(seat.code, ' · ', left(repair.description, 40)) as label
+       from repairs repair
+       join seats seat on seat.id = repair.seat_id
+      where repair.sandbox_id = $1 and repair.reservation_id = $2
+      order by repair.created_business_at, repair.id`,
     [sandboxId, reservationId],
   );
   return result.rows;
@@ -1546,6 +1817,187 @@ interface InventoryMovementRow {
   order_id: string | null;
   original_movement_id: string | null;
   reason: string;
+}
+
+interface CustomerRepairReservationRow {
+  id: string;
+  machine_profile_code: MachineProfileCode;
+  machine_profile_display_name: string;
+  machine_profile_id: string;
+  operational_status: "maintenance" | "normal";
+  seat_code: string;
+  seat_id: string;
+  status: ReservationStatus;
+  store_code: string;
+  store_display_name: string;
+  store_id: string;
+}
+
+interface StaffRepairSeatRow {
+  area_code: string;
+  area_display_name: string;
+  machine_profile_code: MachineProfileCode;
+  machine_profile_display_name: string;
+  machine_profile_id: string;
+  operational_status: "maintenance" | "normal";
+  seat_code: string;
+  seat_id: string;
+  store_code: string;
+  store_display_name: string;
+  store_id: string;
+}
+
+interface StaffRepairIntakeRow extends StaffRepairSeatRow {
+  existing_repair_id: string | null;
+  existing_repair_status: DatabaseRepairCreated["status"] | null;
+}
+
+interface RepairRow {
+  created_at: Date;
+  description: string;
+  machine_profile_code: MachineProfileCode;
+  machine_profile_display_name: string;
+  operational_status: "maintenance" | "normal";
+  priority: "high" | "normal" | "urgent";
+  repair_id: string;
+  reservation_id: string | null;
+  seat_code: string;
+  source: "customer" | "staff";
+  status: "assigned" | "closed" | "new" | "processing" | "verification";
+  store_code: string;
+  store_display_name: string;
+}
+
+interface RepairCommandRow {
+  payload_hash: string;
+  result_data: Omit<DatabaseRepairCreated, "createdAt" | "duplicate"> & {
+    createdAt: string;
+    duplicate: boolean;
+  };
+}
+
+interface RepairAuthorizationRow {
+  customer_persona_id: string | null;
+  repair_id: string;
+  store_id: string;
+}
+
+interface RepairImageIntentRow {
+  actor_persona_id: string;
+  declared_content_type: RepairImageContentType;
+  declared_size: number;
+  expires_at: Date;
+  filename_extension: "jpeg" | "jpg" | "png" | "webp";
+  intent_id: string;
+  quarantine_object_key: string;
+  repair_id: string;
+  sandbox_id: string;
+  status: "consumed" | "failed" | "issued" | "uploaded" | "uploading";
+}
+
+interface RepairImageRow {
+  byte_size: number;
+  content_type: RepairImageContentType;
+  created_at: Date;
+  customer_persona_id: string | null;
+  height: number;
+  image_id: string;
+  object_key: string | null;
+  repair_id: string;
+  sample_asset_id: "repair-headset-v1" | null;
+  sandbox_id: string;
+  source: "sample" | "uploaded";
+  store_id: string;
+  width: number;
+}
+
+function repairCreatedFromStored(
+  value: RepairCommandRow["result_data"],
+  duplicate = value.duplicate,
+): DatabaseRepairCreated {
+  return { ...value, createdAt: new Date(value.createdAt), duplicate };
+}
+
+function repairCreatedFromRow(
+  row: RepairRow,
+  duplicate: boolean,
+): DatabaseRepairCreated {
+  return {
+    createdAt: row.created_at,
+    description: row.description,
+    duplicate,
+    machineProfile: {
+      code: row.machine_profile_code,
+      displayName: row.machine_profile_display_name,
+    },
+    priority: row.priority,
+    repairId: row.repair_id,
+    reservationId: row.reservation_id,
+    seat: {
+      code: row.seat_code,
+      operationalStatus: row.operational_status,
+    },
+    source: row.source,
+    status: row.status,
+    store: {
+      code: row.store_code,
+      displayName: row.store_display_name,
+    },
+  };
+}
+
+function repairImageIntentFromRow(
+  row: RepairImageIntentRow,
+): DatabaseRepairImageIntent {
+  return {
+    declaredContentType: row.declared_content_type,
+    declaredSize: row.declared_size,
+    expiresAt: row.expires_at,
+    filenameExtension: row.filename_extension,
+    intentId: row.intent_id,
+    quarantineObjectKey: row.quarantine_object_key,
+    repairId: row.repair_id,
+    sandboxId: row.sandbox_id,
+  };
+}
+
+function repairImageFromRow(row: RepairImageRow): DatabaseRepairImage {
+  if (row.source !== "uploaded" || !row.object_key) {
+    throw new RepairImageConflictError("not-found");
+  }
+  return {
+    byteSize: row.byte_size,
+    contentType: row.content_type,
+    createdAt: row.created_at,
+    height: row.height,
+    imageId: row.image_id,
+    objectKey: row.object_key,
+    repairId: row.repair_id,
+    sandboxId: row.sandbox_id,
+    source: "uploaded",
+    width: row.width,
+  };
+}
+
+function repairImageListItemFromRow(
+  row: RepairImageRow,
+): DatabaseRepairImageListItem {
+  if (row.source === "uploaded") return repairImageFromRow(row);
+  if (row.sample_asset_id !== "repair-headset-v1") {
+    throw new RepairImageConflictError("not-found");
+  }
+  return {
+    byteSize: 925729,
+    contentType: "image/png",
+    createdAt: row.created_at,
+    height: 720,
+    imageId: row.image_id,
+    repairId: row.repair_id,
+    sampleAssetId: "repair-headset-v1",
+    sandboxId: row.sandbox_id,
+    source: "sample",
+    width: 960,
+  };
 }
 
 function pendingOrderFromStored(
@@ -2104,6 +2556,11 @@ async function readCustomerReservationDetailWithClient(
     input.sandboxId,
     input.reservationId,
   );
+  const relatedRepairs = await readRelatedRepairs(
+    client,
+    input.sandboxId,
+    input.reservationId,
+  );
   const pendingIsLive =
     row.status === "pending-confirmation" &&
     row.hold_expires_at !== null &&
@@ -2153,7 +2610,7 @@ async function readCustomerReservationDetailWithClient(
             simulated: true,
           }
         : null,
-    related: { orders: relatedOrders, repairs: [] },
+    related: { orders: relatedOrders, repairs: relatedRepairs },
     reservationId: row.id,
     snapshot,
     status: row.status,
@@ -2832,6 +3289,74 @@ async function assertFrontlineContext(
   return { actorStoreId, sandbox: sandboxRow };
 }
 
+async function assertRepairActorContext(
+  client: PoolClient,
+  input: ReadRoleContextInput,
+  wallTime: Date,
+) {
+  const sandbox = await client.query<SandboxRow>(
+    `select ${SANDBOX_ROW_COLUMNS} from sandboxes where id = $1`,
+    [input.sandboxId],
+  );
+  const sandboxRow = sandbox.rows[0];
+  if (
+    !sandboxRow ||
+    sandboxRow.invalidated_at !== null ||
+    sandboxRow.expires_at.getTime() <= wallTime.getTime()
+  ) {
+    throw new RoleContextUnavailableError();
+  }
+  if (
+    sandboxRow.role_context_role !== input.role ||
+    sandboxRow.role_context_version !== input.contextVersion
+  ) {
+    throw new RoleContextStaleError();
+  }
+  const persona = await client.query<{ store_id: string | null }>(
+    `select store_id from demo_personas
+      where sandbox_id = $1 and id = $2 and role = $3 and protected = true`,
+    [input.sandboxId, input.personaId, input.role],
+  );
+  const personaRow = persona.rows[0];
+  if (!personaRow) throw new RoleContextUnavailableError();
+  return { sandbox: sandboxRow, storeId: personaRow.store_id };
+}
+
+function canAccessRepair(
+  repair: RepairAuthorizationRow,
+  input: ReadRoleContextInput,
+  actorStoreId: string | null,
+  access: "read" | "upload",
+) {
+  if (input.role === "customer") {
+    return repair.customer_persona_id === input.personaId;
+  }
+  if (input.role === "staff") return repair.store_id === actorStoreId;
+  if (access === "read" && input.role === "manager") {
+    return repair.store_id === actorStoreId;
+  }
+  return access === "read" && input.role === "hq";
+}
+
+async function readAuthorizedRepair(
+  client: PoolClient,
+  input: RepairActorContextInput,
+  wallTime: Date,
+  access: "read" | "upload",
+) {
+  const actor = await assertRepairActorContext(client, input, wallTime);
+  const repair = await client.query<RepairAuthorizationRow>(
+    `select id as repair_id, store_id, customer_persona_id
+       from repairs where sandbox_id = $1 and id = $2`,
+    [input.sandboxId, input.repairId],
+  );
+  const row = repair.rows[0];
+  if (!row || !canAccessRepair(row, input, actor.storeId, access)) {
+    throw new RepairImageConflictError("not-found");
+  }
+  return { actor, repair: row };
+}
+
 async function readStaffReservationRows(
   client: PoolClient,
   input: {
@@ -2953,6 +3478,11 @@ async function staffReservationDetailFromRow(
     [row.sandbox_id, row.id],
   );
   const relatedOrders = await readRelatedOrders(client, row.sandbox_id, row.id);
+  const relatedRepairs = await readRelatedRepairs(
+    client,
+    row.sandbox_id,
+    row.id,
+  );
   return {
     actions: {
       canCancel: canFrontlineCancel(row, currentTime),
@@ -2979,7 +3509,7 @@ async function staffReservationDetailFromRow(
             simulated: true,
           }
         : null,
-    related: { orders: relatedOrders, repairs: [] },
+    related: { orders: relatedOrders, repairs: relatedRepairs },
     reservation: staffReservationSummary(row),
     snapshot: reservationSnapshot(row.price_snapshot),
     startedAt: row.started_business_at,
@@ -4645,6 +5175,1139 @@ export function createPublicSandboxDatabase(
 
   return {
     ...demoToolMethods,
+    async enqueueRepairImageCleanup(input) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query(
+          `insert into repair_image_cleanup_jobs (
+             id, sandbox_id, target_kind, object_key, reason, available_at
+           ) values ($1, $2, $3, $4, $5, $6)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            input.targetKind,
+            input.objectKey ?? null,
+            input.reason,
+            input.availableAt,
+          ],
+        );
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async completeRepairImageCleanupForSandbox(sandboxId) {
+      await pool.query(
+        `update repair_image_cleanup_jobs
+            set status = 'completed', completed_at = $2, last_failure = null
+          where sandbox_id = $1 and target_kind = 'sandbox'
+            and status = 'pending'`,
+        [sandboxId, wallClock.now()],
+      );
+    },
+    async completeRepairImageCleanupJob(jobId) {
+      await pool.query(
+        `update repair_image_cleanup_jobs
+            set status = 'completed', completed_at = $2, last_failure = null
+          where id = $1 and status = 'pending'`,
+        [jobId, wallClock.now()],
+      );
+    },
+    async readDueRepairImageCleanupJobs(limit) {
+      const jobs = await pool.query<{
+        attempts: number;
+        id: string;
+        object_key: string | null;
+        sandbox_id: string;
+        target_kind: "object" | "sandbox";
+      }>(
+        `select id, sandbox_id, target_kind, object_key, attempts
+           from repair_image_cleanup_jobs
+          where status = 'pending' and available_at <= $1
+          order by available_at, created_at
+          limit $2`,
+        [wallClock.now(), Math.max(1, Math.min(100, limit))],
+      );
+      return jobs.rows.map((job) => ({
+        attempts: job.attempts,
+        jobId: job.id,
+        objectKey: job.object_key,
+        sandboxId: job.sandbox_id,
+        targetKind: job.target_kind,
+      }));
+    },
+    async retryRepairImageCleanupJob(input) {
+      await pool.query(
+        `update repair_image_cleanup_jobs
+            set attempts = attempts + 1, available_at = $2,
+                last_failure = $3
+          where id = $1 and status = 'pending'`,
+        [input.jobId, input.availableAt, input.failure.slice(0, 500)],
+      );
+    },
+    async createRepairSampleImage(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const authorized = await readAuthorizedRepair(
+          client,
+          input,
+          wallTime,
+          "upload",
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${input.sandboxId}:repair-images:${input.repairId}`],
+        );
+        const existing = await client.query<{
+          created_at: Date;
+          image_id: string;
+        }>(
+          `select id as image_id, created_at
+             from repair_images
+            where sandbox_id = $1 and repair_id = $2
+              and source = 'sample' and sample_asset_id = $3
+            order by created_at desc
+            limit 1`,
+          [input.sandboxId, input.repairId, input.sampleAssetId],
+        );
+        const existingRow = existing.rows[0];
+        if (existingRow) {
+          await client.query("commit");
+          return {
+            byteSize: 925729,
+            contentType: "image/png",
+            createdAt: existingRow.created_at,
+            height: 720,
+            imageId: existingRow.image_id,
+            repairId: input.repairId,
+            sampleAssetId: input.sampleAssetId,
+            sandboxId: input.sandboxId,
+            source: "sample",
+            width: 960,
+          };
+        }
+        const count = await client.query<{ count: number }>(
+          `select count(*)::integer as count from repair_images
+            where sandbox_id = $1 and repair_id = $2`,
+          [input.sandboxId, input.repairId],
+        );
+        if ((count.rows[0]?.count ?? 0) >= 3) {
+          throw new RepairImageConflictError("max-images");
+        }
+        const imageId = randomUUID();
+        await client.query(
+          `insert into repair_images (
+             id, sandbox_id, repair_id, created_by_persona_id, source,
+             content_type, object_key, sample_asset_id, byte_size, width,
+             height, created_at
+           ) values ($1, $2, $3, $4, 'sample', 'image/png', null, $5,
+             925729, 960, 720, $6)`,
+          [
+            imageId,
+            input.sandboxId,
+            input.repairId,
+            input.personaId,
+            input.sampleAssetId,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action,
+             object_type, object_id, result, request_id, after_data,
+             business_occurred_at, recorded_at
+          ) values ($1, $2, $3, $4, $5, 'repair.sample-image-saved',
+             'repair', $6, 'allowed', $7, $8::jsonb, $9, $10)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            authorized.repair.store_id,
+            input.personaId,
+            input.role,
+            input.repairId,
+            input.requestId,
+            JSON.stringify({ imageId, sampleAssetId: input.sampleAssetId }),
+            businessTimeForSandbox(authorized.actor.sandbox, wallTime),
+            wallTime,
+          ],
+        );
+        await client.query("commit");
+        return {
+          byteSize: 925729,
+          contentType: "image/png",
+          createdAt: wallTime,
+          height: 720,
+          imageId,
+          repairId: input.repairId,
+          sampleAssetId: input.sampleAssetId,
+          sandboxId: input.sandboxId,
+          source: "sample",
+          width: 960,
+        };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async createRepairImageIntent(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        await readAuthorizedRepair(client, input, wallTime, "upload");
+        if (
+          !Number.isInteger(input.declaredSize) ||
+          input.declaredSize < 1 ||
+          input.declaredSize > REPAIR_IMAGE_MAX_BYTES ||
+          !repairImageExtensions[input.declaredContentType].has(
+            input.filenameExtension,
+          )
+        ) {
+          throw new RepairImageConflictError("image-invalid");
+        }
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${input.sandboxId}:repair-images:${input.repairId}`],
+        );
+        const count = await client.query<{ count: number }>(
+          `select (
+             (select count(*) from repair_images
+               where sandbox_id = $1 and repair_id = $2) +
+             (select count(*) from repair_upload_intents
+               where sandbox_id = $1 and repair_id = $2
+                 and status in ('issued', 'uploading', 'uploaded') and expires_at > $3)
+           )::integer as count`,
+          [input.sandboxId, input.repairId, wallTime],
+        );
+        if ((count.rows[0]?.count ?? 0) >= 3) {
+          throw new RepairImageConflictError("max-images");
+        }
+        const intentId = randomUUID();
+        const expiresAt = new Date(
+          wallTime.getTime() + REPAIR_IMAGE_INTENT_LIFETIME_MS,
+        );
+        const quarantineObjectKey = `quarantine/${input.sandboxId}/${randomUUID()}`;
+        await client.query(
+          `insert into repair_upload_intents (
+             id, sandbox_id, repair_id, actor_persona_id,
+             filename_extension, declared_content_type, declared_size,
+             quarantine_object_key, status, expires_at, created_at
+           ) values ($1, $2, $3, $4, $5, $6, $7, $8, 'issued', $9, $10)`,
+          [
+            intentId,
+            input.sandboxId,
+            input.repairId,
+            input.personaId,
+            input.filenameExtension,
+            input.declaredContentType,
+            input.declaredSize,
+            quarantineObjectKey,
+            expiresAt,
+            wallTime,
+          ],
+        );
+        await client.query("commit");
+        return {
+          declaredContentType: input.declaredContentType,
+          declaredSize: input.declaredSize,
+          expiresAt,
+          filenameExtension: input.filenameExtension,
+          intentId,
+          quarantineObjectKey,
+          repairId: input.repairId,
+          sandboxId: input.sandboxId,
+        };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async claimRepairImageUpload(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const intent = await client.query<RepairImageIntentRow>(
+          `select id as intent_id, sandbox_id, repair_id, actor_persona_id,
+                  filename_extension, declared_content_type, declared_size,
+                  quarantine_object_key, status, expires_at
+             from repair_upload_intents
+            where sandbox_id = $1 and id = $2
+            for update`,
+          [input.sandboxId, input.intentId],
+        );
+        const row = intent.rows[0];
+        if (
+          !row ||
+          row.repair_id !== input.repairId ||
+          row.quarantine_object_key !== input.quarantineObjectKey
+        ) {
+          throw new RepairImageConflictError("intent-invalid");
+        }
+        if (row.status !== "issued") {
+          throw new RepairImageConflictError("intent-replay");
+        }
+        if (row.expires_at.getTime() <= wallTime.getTime()) {
+          throw new RepairImageConflictError("intent-expired");
+        }
+        if (
+          row.declared_content_type !== input.declaredContentType ||
+          row.declared_size !== input.size
+        ) {
+          throw new RepairImageConflictError("content-type-mismatch");
+        }
+        await client.query(
+          `update repair_upload_intents set status = 'uploading'
+            where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, input.intentId],
+        );
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async completeRepairImageUpload(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const updated = await client.query(
+          `update repair_upload_intents
+              set status = 'uploaded', uploaded_at = $3
+            where sandbox_id = $1 and id = $2 and status = 'uploading'`,
+          [input.sandboxId, input.intentId, wallTime],
+        );
+        if (updated.rowCount !== 1) {
+          throw new RepairImageConflictError("intent-replay");
+        }
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async prepareRepairImageCompletion(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        await readAuthorizedRepair(client, input, wallTime, "upload");
+        const intent = await client.query<RepairImageIntentRow>(
+          `select id as intent_id, sandbox_id, repair_id, actor_persona_id,
+                  filename_extension, declared_content_type, declared_size,
+                  quarantine_object_key, status, expires_at
+             from repair_upload_intents
+            where sandbox_id = $1 and id = $2 and repair_id = $3
+              and actor_persona_id = $4`,
+          [input.sandboxId, input.intentId, input.repairId, input.personaId],
+        );
+        const row = intent.rows[0];
+        if (!row) throw new RepairImageConflictError("intent-invalid");
+        if (row.status === "consumed" || row.status === "failed") {
+          throw new RepairImageConflictError("intent-replay");
+        }
+        if (row.expires_at.getTime() <= wallTime.getTime()) {
+          throw new RepairImageConflictError("intent-expired");
+        }
+        if (row.status !== "uploaded") {
+          throw new RepairImageConflictError("upload-not-staged");
+        }
+        await client.query("commit");
+        return repairImageIntentFromRow(row);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async failRepairImageIntent(input) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        await client.query(
+          `update repair_upload_intents
+              set status = 'failed', failure_reason = $3
+            where sandbox_id = $1 and id = $2
+              and status in ('issued', 'uploading', 'uploaded')`,
+          [input.sandboxId, input.intentId, input.reason.slice(0, 80)],
+        );
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async finalizeRepairImage(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const authorized = await readAuthorizedRepair(
+          client,
+          input,
+          wallTime,
+          "upload",
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${input.sandboxId}:repair-images:${input.repairId}`],
+        );
+        const intent = await client.query<RepairImageIntentRow>(
+          `select id as intent_id, sandbox_id, repair_id, actor_persona_id,
+                  filename_extension, declared_content_type, declared_size,
+                  quarantine_object_key, status, expires_at
+             from repair_upload_intents
+            where sandbox_id = $1 and id = $2 and repair_id = $3
+              and actor_persona_id = $4
+            for update`,
+          [input.sandboxId, input.intentId, input.repairId, input.personaId],
+        );
+        const intentRow = intent.rows[0];
+        if (!intentRow) throw new RepairImageConflictError("intent-invalid");
+        if (intentRow.status !== "uploaded") {
+          throw new RepairImageConflictError("intent-replay");
+        }
+        if (intentRow.expires_at.getTime() <= wallTime.getTime()) {
+          throw new RepairImageConflictError("intent-expired");
+        }
+        const count = await client.query<{ count: number }>(
+          `select count(*)::integer as count from repair_images
+            where sandbox_id = $1 and repair_id = $2`,
+          [input.sandboxId, input.repairId],
+        );
+        if ((count.rows[0]?.count ?? 0) >= 3) {
+          throw new RepairImageConflictError("max-images");
+        }
+        const imageId = randomUUID();
+        await client.query(
+          `insert into repair_images (
+             id, sandbox_id, repair_id, created_by_persona_id, source,
+             content_type, object_key, sample_asset_id, byte_size, width,
+             height, created_at
+           ) values ($1, $2, $3, $4, 'uploaded', $5, $6, null, $7, $8, $9,
+             $10)`,
+          [
+            imageId,
+            input.sandboxId,
+            input.repairId,
+            input.personaId,
+            input.contentType,
+            input.objectKey,
+            input.byteSize,
+            input.width,
+            input.height,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `update repair_upload_intents
+              set status = 'consumed', consumed_at = $3
+            where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, input.intentId, wallTime],
+        );
+        await client.query(
+          `delete from repair_image_cleanup_jobs
+            where sandbox_id = $1 and target_kind = 'object'
+              and object_key = $2 and status = 'pending'`,
+          [input.sandboxId, input.objectKey],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action,
+             object_type, object_id, result, request_id, after_data,
+             business_occurred_at, recorded_at
+          ) values ($1, $2, $3, $4, $5, 'repair.image-saved',
+             'repair', $6, 'allowed', $7, $8::jsonb, $9, $10)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            authorized.repair.store_id,
+            input.personaId,
+            input.role,
+            input.repairId,
+            input.requestId,
+            JSON.stringify({
+              byteSize: input.byteSize,
+              contentType: input.contentType,
+              height: input.height,
+              imageId,
+              width: input.width,
+            }),
+            businessTimeForSandbox(authorized.actor.sandbox, wallTime),
+            wallTime,
+          ],
+        );
+        await client.query("commit");
+        return {
+          byteSize: input.byteSize,
+          contentType: input.contentType,
+          createdAt: wallTime,
+          height: input.height,
+          imageId,
+          objectKey: input.objectKey,
+          repairId: input.repairId,
+          sandboxId: input.sandboxId,
+          source: "uploaded",
+          width: input.width,
+        };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readRepairImage(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const actor = await assertRepairActorContext(client, input, wallTime);
+        const image = await client.query<RepairImageRow>(
+          `select image.id as image_id, image.sandbox_id, image.repair_id,
+                  image.source, image.content_type, image.object_key,
+                  image.sample_asset_id,
+                  image.byte_size, image.width, image.height,
+                  image.created_at, repair.store_id,
+                  repair.customer_persona_id
+             from repair_images image
+             join repairs repair on repair.id = image.repair_id
+            where image.sandbox_id = $1 and image.id = $2`,
+          [input.sandboxId, input.imageId],
+        );
+        const row = image.rows[0];
+        if (
+          !row ||
+          !canAccessRepair(
+            {
+              customer_persona_id: row.customer_persona_id,
+              repair_id: row.repair_id,
+              store_id: row.store_id,
+            },
+            input,
+            actor.storeId,
+            "read",
+          )
+        ) {
+          throw new RepairImageConflictError("not-found");
+        }
+        const result = repairImageFromRow(row);
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readRepairImages(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        await readAuthorizedRepair(client, input, wallTime, "read");
+        const images = await client.query<RepairImageRow>(
+          `select image.id as image_id, image.sandbox_id, image.repair_id,
+                  image.source, image.content_type, image.object_key,
+                  image.sample_asset_id, image.byte_size, image.width,
+                  image.height, image.created_at, repair.store_id,
+                  repair.customer_persona_id
+             from repair_images image
+             join repairs repair on repair.id = image.repair_id
+            where image.sandbox_id = $1 and image.repair_id = $2
+            order by image.created_at, image.id`,
+          [input.sandboxId, input.repairId],
+        );
+        const result = images.rows.map(repairImageListItemFromRow);
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readStaffRepairQueue(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const store = await client.query<{
+          code: string;
+          display_name: string;
+        }>(
+          `select code, display_name from stores
+            where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const storeRow = store.rows[0];
+        if (!storeRow) throw new RoleContextUnavailableError();
+        const repairs = await client.query<{
+          created_at: Date;
+          created_business_at: Date;
+          description: string;
+          machine_profile_code: MachineProfileCode;
+          machine_profile_display_name: string;
+          priority: DatabaseRepairCreated["priority"];
+          repair_id: string;
+          seat_code: string;
+          source: DatabaseRepairCreated["source"];
+          status: DatabaseRepairCreated["status"];
+        }>(
+          `select repair.id as repair_id, repair.description, repair.priority,
+                  repair.status, repair.source, repair.created_at,
+                  repair.created_business_at, seat.code as seat_code,
+                  profile.code as machine_profile_code,
+                  profile.display_name as machine_profile_display_name
+             from repairs repair
+             join seats seat on seat.id = repair.seat_id
+             join machine_profiles profile on profile.id = repair.machine_profile_id
+            where repair.sandbox_id = $1 and repair.store_id = $2
+            order by case repair.priority
+                       when 'urgent' then 0 when 'high' then 1 else 2 end,
+                     repair.created_business_at, repair.id`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        await client.query("commit");
+        return {
+          currentTime,
+          rows: repairs.rows.map((row) => ({
+            createdAt: row.created_at,
+            description: row.description,
+            machineProfile: {
+              code: row.machine_profile_code,
+              displayName: row.machine_profile_display_name,
+            },
+            priority: row.priority,
+            repairId: row.repair_id,
+            seat: { code: row.seat_code },
+            source: row.source,
+            status: row.status,
+            waitingMinutes: Math.max(
+              0,
+              Math.floor(
+                (currentTime.getTime() - row.created_business_at.getTime()) /
+                  60_000,
+              ),
+            ),
+          })),
+          store: {
+            code: storeRow.code,
+            displayName: storeRow.display_name,
+          },
+        } satisfies DatabaseStaffRepairQueue;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readStaffRepairIntake(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const rows = await client.query<StaffRepairIntakeRow>(
+          `select seat.id as seat_id, seat.code as seat_code,
+                  seat.operational_status, seat.machine_profile_id,
+                  area.code as area_code,
+                  area.display_name as area_display_name,
+                  profile.code as machine_profile_code,
+                  profile.display_name as machine_profile_display_name,
+                  store.id as store_id, store.code as store_code,
+                  store.display_name as store_display_name,
+                  repair.id as existing_repair_id,
+                  repair.status as existing_repair_status
+             from seats seat
+             join store_areas area on area.id = seat.area_id
+             join machine_profiles profile on profile.id = seat.machine_profile_id
+             join stores store on store.id = seat.store_id
+             left join repairs repair on repair.sandbox_id = seat.sandbox_id
+              and repair.seat_id = seat.id and repair.status <> 'closed'
+            where seat.sandbox_id = $1 and seat.store_id = $2
+            order by area.sort_order, seat.sort_order`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const first = rows.rows[0];
+        if (!first) throw new RepairIntakeConflictError("seat-not-found");
+        const result: DatabaseStaffRepairIntake = {
+          seats: rows.rows.map((row) => ({
+            area: {
+              code: row.area_code,
+              displayName: row.area_display_name,
+            },
+            code: row.seat_code,
+            existingRepair:
+              row.existing_repair_id && row.existing_repair_status
+                ? {
+                    repairId: row.existing_repair_id,
+                    status: row.existing_repair_status,
+                  }
+                : null,
+            id: row.seat_id,
+            machineProfile: {
+              code: row.machine_profile_code,
+              displayName: row.machine_profile_display_name,
+            },
+            operationalStatus: row.operational_status,
+            store: {
+              code: row.store_code,
+              displayName: row.store_display_name,
+            },
+          })),
+          store: {
+            code: first.store_code,
+            displayName: first.store_display_name,
+          },
+        };
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async createStaffRepair(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const businessTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const description = normalizeRepairDescription(input.description);
+        if (!description) {
+          throw new RepairIntakeConflictError("description-invalid");
+        }
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({ description, seatId: input.seatId }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:repair:${idempotencyKeyHash}`,
+          ],
+        );
+        const previous = await client.query<RepairCommandRow>(
+          `select payload_hash, result_data
+             from repair_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const previousRow = previous.rows[0];
+        if (previousRow) {
+          if (previousRow.payload_hash !== payloadHash) {
+            throw new RepairIntakeConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return repairCreatedFromStored(previousRow.result_data);
+        }
+        const seat = await client.query<StaffRepairSeatRow>(
+          `select seat.id as seat_id, seat.code as seat_code,
+                  seat.operational_status, seat.machine_profile_id,
+                  area.code as area_code,
+                  area.display_name as area_display_name,
+                  profile.code as machine_profile_code,
+                  profile.display_name as machine_profile_display_name,
+                  store.id as store_id, store.code as store_code,
+                  store.display_name as store_display_name
+             from seats seat
+             join store_areas area on area.id = seat.area_id
+             join machine_profiles profile on profile.id = seat.machine_profile_id
+             join stores store on store.id = seat.store_id
+            where seat.sandbox_id = $1 and seat.store_id = $2
+              and seat.id = $3
+            for update of seat`,
+          [input.sandboxId, context.actorStoreId, input.seatId],
+        );
+        const seatRow = seat.rows[0];
+        if (!seatRow) throw new RepairIntakeConflictError("seat-not-found");
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${input.sandboxId}:repair-seat:${seatRow.seat_id}`],
+        );
+        const selectRepair = `select repair.id as repair_id,
+                  repair.reservation_id, repair.source, repair.description,
+                  repair.priority, repair.status, repair.created_at,
+                  seat.code as seat_code, seat.operational_status,
+                  profile.code as machine_profile_code,
+                  profile.display_name as machine_profile_display_name,
+                  store.code as store_code,
+                  store.display_name as store_display_name
+             from repairs repair
+             join seats seat on seat.id = repair.seat_id
+             join machine_profiles profile on profile.id = repair.machine_profile_id
+             join stores store on store.id = repair.store_id`;
+        const existing = await client.query<RepairRow>(
+          `${selectRepair}
+            where repair.sandbox_id = $1 and repair.seat_id = $2
+              and repair.status <> 'closed'
+            limit 1`,
+          [input.sandboxId, seatRow.seat_id],
+        );
+        let result: DatabaseRepairCreated;
+        if (existing.rows[0]) {
+          result = repairCreatedFromRow(existing.rows[0], true);
+        } else {
+          const repairId = randomUUID();
+          await client.query(
+            `insert into repairs (
+               id, sandbox_id, store_id, seat_id, machine_profile_id,
+               reservation_id, customer_persona_id, created_by_persona_id,
+               source, description, priority, status, created_business_at,
+               created_at
+             ) values ($1, $2, $3, $4, $5, null, null, $6, 'staff', $7,
+               'normal', 'new', $8, $9)`,
+            [
+              repairId,
+              input.sandboxId,
+              seatRow.store_id,
+              seatRow.seat_id,
+              seatRow.machine_profile_id,
+              input.personaId,
+              description,
+              businessTime,
+              wallTime,
+            ],
+          );
+          await client.query(
+            `insert into repair_business_events (
+               id, sandbox_id, repair_id, event_type, event_data,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, 'repair.created', $4::jsonb, $5, $6)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              repairId,
+              JSON.stringify({ source: "staff" }),
+              businessTime,
+              wallTime,
+            ],
+          );
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, request_id, after_data,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'staff', 'repair.create',
+               'repair', $5, 'allowed', $6, $7::jsonb, $8, $9)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              seatRow.store_id,
+              input.personaId,
+              repairId,
+              input.requestId,
+              JSON.stringify({ status: "new" }),
+              businessTime,
+              wallTime,
+            ],
+          );
+          const inserted = await client.query<RepairRow>(
+            `${selectRepair} where repair.sandbox_id = $1 and repair.id = $2`,
+            [input.sandboxId, repairId],
+          );
+          const insertedRow = inserted.rows[0];
+          if (!insertedRow) {
+            throw new Error("The created repair could not be read back.");
+          }
+          result = repairCreatedFromRow(insertedRow, false);
+        }
+        const storedResult = {
+          ...result,
+          createdAt: result.createdAt.toISOString(),
+        } satisfies RepairCommandRow["result_data"];
+        await client.query(
+          `insert into repair_command_requests (
+             sandbox_id, actor_persona_id, idempotency_key_hash, payload_hash,
+             repair_id, result_data
+           ) values ($1, $2, $3, $4, $5, $6::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            idempotencyKeyHash,
+            payloadHash,
+            result.repairId,
+            JSON.stringify(storedResult),
+          ],
+        );
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async createCustomerRepair(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const businessTime = businessTimeForSandbox(sandbox, wallTime);
+        const description = normalizeRepairDescription(input.description);
+        if (!description) {
+          throw new RepairIntakeConflictError("description-invalid");
+        }
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({ description, reservationId: input.reservationId }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:repair:${idempotencyKeyHash}`,
+          ],
+        );
+        const previous = await client.query<RepairCommandRow>(
+          `select payload_hash, result_data
+             from repair_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const previousRow = previous.rows[0];
+        if (previousRow) {
+          if (previousRow.payload_hash !== payloadHash) {
+            throw new RepairIntakeConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return repairCreatedFromStored(previousRow.result_data);
+        }
+        const reservation = await client.query<CustomerRepairReservationRow>(
+          `select reservation.id, reservation.status, reservation.store_id,
+                  reservation.seat_id, seat.machine_profile_id,
+                  seat.code as seat_code,
+                  seat.operational_status,
+                  profile.code as machine_profile_code,
+                  profile.display_name as machine_profile_display_name,
+                  store.code as store_code,
+                  store.display_name as store_display_name
+             from reservations reservation
+             join seats seat on seat.id = reservation.seat_id
+             join machine_profiles profile on profile.id = seat.machine_profile_id
+             join stores store on store.id = reservation.store_id
+            where reservation.sandbox_id = $1
+              and reservation.customer_persona_id = $2
+              and reservation.id = $3
+            for update of reservation`,
+          [input.sandboxId, input.personaId, input.reservationId],
+        );
+        const reservationRow = reservation.rows[0];
+        if (!reservationRow) {
+          throw new RepairIntakeConflictError("reservation-not-found");
+        }
+        if (reservationRow.status !== "in-use") {
+          throw new RepairIntakeConflictError("reservation-ineligible");
+        }
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${input.sandboxId}:repair-seat:${reservationRow.seat_id}`],
+        );
+        const selectRepair = `select repair.id as repair_id,
+                  repair.reservation_id, repair.source, repair.description,
+                  repair.priority, repair.status, repair.created_at,
+                  seat.code as seat_code, seat.operational_status,
+                  profile.code as machine_profile_code,
+                  profile.display_name as machine_profile_display_name,
+                  store.code as store_code,
+                  store.display_name as store_display_name
+             from repairs repair
+             join seats seat on seat.id = repair.seat_id
+             join machine_profiles profile on profile.id = repair.machine_profile_id
+             join stores store on store.id = repair.store_id`;
+        const existing = await client.query<RepairRow>(
+          `${selectRepair}
+            where repair.sandbox_id = $1 and repair.seat_id = $2
+              and repair.status <> 'closed'
+            limit 1`,
+          [input.sandboxId, reservationRow.seat_id],
+        );
+        let result: DatabaseRepairCreated;
+        if (existing.rows[0]) {
+          result = repairCreatedFromRow(existing.rows[0], true);
+        } else {
+          const repairId = randomUUID();
+          await client.query(
+            `insert into repairs (
+               id, sandbox_id, store_id, seat_id, machine_profile_id,
+               reservation_id, customer_persona_id, created_by_persona_id,
+               source, description, priority, status, created_business_at,
+               created_at
+             ) values ($1, $2, $3, $4, $5, $6, $7, $7, 'customer', $8,
+               'normal', 'new', $9, $10)`,
+            [
+              repairId,
+              input.sandboxId,
+              reservationRow.store_id,
+              reservationRow.seat_id,
+              reservationRow.machine_profile_id,
+              reservationRow.id,
+              input.personaId,
+              description,
+              businessTime,
+              wallTime,
+            ],
+          );
+          await client.query(
+            `insert into repair_business_events (
+               id, sandbox_id, repair_id, event_type, event_data,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, 'repair.created', $4::jsonb, $5, $6)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              repairId,
+              JSON.stringify({
+                reservationId: reservationRow.id,
+                source: "customer",
+              }),
+              businessTime,
+              wallTime,
+            ],
+          );
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, request_id, after_data,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'customer', 'repair.create',
+               'repair', $5, 'allowed', $6, $7::jsonb, $8, $9)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              reservationRow.store_id,
+              input.personaId,
+              repairId,
+              input.requestId,
+              JSON.stringify({ status: "new" }),
+              businessTime,
+              wallTime,
+            ],
+          );
+          const inserted = await client.query<RepairRow>(
+            `${selectRepair} where repair.sandbox_id = $1 and repair.id = $2`,
+            [input.sandboxId, repairId],
+          );
+          const insertedRow = inserted.rows[0];
+          if (!insertedRow) {
+            throw new Error("The created repair could not be read back.");
+          }
+          result = repairCreatedFromRow(insertedRow, false);
+        }
+        const storedResult = {
+          ...result,
+          createdAt: result.createdAt.toISOString(),
+        } satisfies RepairCommandRow["result_data"];
+        await client.query(
+          `insert into repair_command_requests (
+             sandbox_id, actor_persona_id, idempotency_key_hash, payload_hash,
+             repair_id, result_data
+           ) values ($1, $2, $3, $4, $5, $6::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            idempotencyKeyHash,
+            payloadHash,
+            result.repairId,
+            JSON.stringify(storedResult),
+          ],
+        );
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async readStaffReservationWorkbench(input) {
       const client = await pool.connect();
       const wallTime = wallClock.now();
@@ -7961,6 +9624,11 @@ export function createPublicSandboxDatabase(
             input.sandboxId,
             row.id,
           );
+          const relatedRepairs = await readRelatedRepairs(
+            client,
+            input.sandboxId,
+            row.id,
+          );
           const item: DatabaseCustomerJourneyReservation = {
             area: snapshot.area,
             coupon: snapshot.coupon
@@ -7985,7 +9653,7 @@ export function createPublicSandboxDatabase(
                     reason: row.refund_reason,
                   }
                 : null,
-            related: { orders: relatedOrders, repairs: [] },
+            related: { orders: relatedOrders, repairs: relatedRepairs },
             reservationId: row.id,
             seat: snapshot.seat,
             status: row.status,

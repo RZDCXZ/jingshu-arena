@@ -581,6 +581,265 @@ export const reservations = pgTable(
   ],
 ).enableRLS();
 
+export const repairs = pgTable(
+  "repairs",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    seatId: uuid("seat_id")
+      .notNull()
+      .references(() => seats.id, { onDelete: "restrict" }),
+    machineProfileId: uuid("machine_profile_id")
+      .notNull()
+      .references(() => machineProfiles.id, { onDelete: "restrict" }),
+    reservationId: uuid("reservation_id").references(() => reservations.id, {
+      onDelete: "restrict",
+    }),
+    customerPersonaId: uuid("customer_persona_id").references(
+      () => demoPersonas.id,
+      { onDelete: "restrict" },
+    ),
+    createdByPersonaId: uuid("created_by_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "restrict" }),
+    source: text("source").notNull(),
+    description: text("description").notNull(),
+    priority: text("priority").default("normal").notNull(),
+    status: text("status").default("new").notNull(),
+    createdBusinessAt: timestamp("created_business_at", {
+      withTimezone: true,
+    }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    check("repairs_source", sql`${table.source} IN ('customer', 'staff')`),
+    check(
+      "repairs_priority",
+      sql`${table.priority} IN ('normal', 'high', 'urgent')`,
+    ),
+    check(
+      "repairs_status",
+      sql`${table.status} IN ('new', 'assigned', 'processing', 'verification', 'closed')`,
+    ),
+    check(
+      "repairs_customer_source",
+      sql`(${table.source} = 'customer' AND ${table.customerPersonaId} IS NOT NULL AND ${table.reservationId} IS NOT NULL) OR (${table.source} = 'staff' AND ${table.customerPersonaId} IS NULL)`,
+    ),
+    uniqueIndex("repairs_one_open_per_seat_unique")
+      .on(table.sandboxId, table.seatId)
+      .where(sql`${table.status} <> 'closed'`),
+    pgPolicy("repairs_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const repairBusinessEvents = pgTable(
+  "repair_business_events",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    repairId: uuid("repair_id")
+      .notNull()
+      .references(() => repairs.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    eventData: jsonb("event_data").notNull(),
+    sequence: bigserial("sequence", { mode: "number" }).notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    pgPolicy("repair_business_events_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const repairCommandRequests = pgTable(
+  "repair_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    actorPersonaId: uuid("actor_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    repairId: uuid("repair_id")
+      .notNull()
+      .references(() => repairs.id, { onDelete: "cascade" }),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.actorPersonaId,
+        table.idempotencyKeyHash,
+      ],
+      name: "repair_command_requests_pk",
+    }),
+    pgPolicy("repair_command_requests_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const repairUploadIntents = pgTable(
+  "repair_upload_intents",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    repairId: uuid("repair_id")
+      .notNull()
+      .references(() => repairs.id, { onDelete: "cascade" }),
+    actorPersonaId: uuid("actor_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    filenameExtension: text("filename_extension").notNull(),
+    declaredContentType: text("declared_content_type").notNull(),
+    declaredSize: integer("declared_size").notNull(),
+    quarantineObjectKey: text("quarantine_object_key").notNull(),
+    status: text("status").default("issued").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    uploadedAt: timestamp("uploaded_at", { withTimezone: true }),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    failureReason: text("failure_reason"),
+  },
+  (table) => [
+    unique("repair_upload_intents_quarantine_key_unique").on(
+      table.quarantineObjectKey,
+    ),
+    check(
+      "repair_upload_intents_extension",
+      sql`${table.filenameExtension} IN ('jpg', 'jpeg', 'png', 'webp')`,
+    ),
+    check(
+      "repair_upload_intents_content_type",
+      sql`${table.declaredContentType} IN ('image/jpeg', 'image/png', 'image/webp')`,
+    ),
+    check(
+      "repair_upload_intents_size",
+      sql`${table.declaredSize} > 0 AND ${table.declaredSize} <= 5242880`,
+    ),
+    check(
+      "repair_upload_intents_status",
+      sql`${table.status} IN ('issued', 'uploading', 'uploaded', 'consumed', 'failed')`,
+    ),
+    pgPolicy("repair_upload_intents_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const repairImages = pgTable(
+  "repair_images",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    repairId: uuid("repair_id")
+      .notNull()
+      .references(() => repairs.id, { onDelete: "cascade" }),
+    createdByPersonaId: uuid("created_by_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "restrict" }),
+    source: text("source").notNull(),
+    contentType: text("content_type").notNull(),
+    objectKey: text("object_key"),
+    sampleAssetId: text("sample_asset_id"),
+    byteSize: integer("byte_size").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("repair_images_object_key_unique").on(table.objectKey),
+    check(
+      "repair_images_source",
+      sql`${table.source} IN ('uploaded', 'sample')`,
+    ),
+    check(
+      "repair_images_storage_source",
+      sql`(${table.source} = 'uploaded' AND ${table.objectKey} IS NOT NULL AND ${table.sampleAssetId} IS NULL) OR (${table.source} = 'sample' AND ${table.objectKey} IS NULL AND ${table.sampleAssetId} IS NOT NULL)`,
+    ),
+    check(
+      "repair_images_content_type",
+      sql`${table.contentType} IN ('image/jpeg', 'image/png', 'image/webp')`,
+    ),
+    check(
+      "repair_images_dimensions",
+      sql`${table.byteSize} > 0 AND ${table.byteSize} <= 5242880 AND ${table.width} > 0 AND ${table.width} <= 4096 AND ${table.height} > 0 AND ${table.height} <= 4096 AND (${table.width}::bigint * ${table.height}::bigint) <= 16000000`,
+    ),
+    pgPolicy("repair_images_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const repairImageCleanupJobs = pgTable(
+  "repair_image_cleanup_jobs",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id").notNull(),
+    targetKind: text("target_kind").notNull(),
+    objectKey: text("object_key"),
+    reason: text("reason").notNull(),
+    status: text("status").default("pending").notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+    availableAt: timestamp("available_at", { withTimezone: true }).notNull(),
+    lastFailure: text("last_failure"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    check(
+      "repair_image_cleanup_jobs_target",
+      sql`(${table.targetKind} = 'object' AND ${table.objectKey} IS NOT NULL) OR (${table.targetKind} = 'sandbox' AND ${table.objectKey} IS NULL)`,
+    ),
+    check(
+      "repair_image_cleanup_jobs_status",
+      sql`${table.status} IN ('pending', 'completed')`,
+    ),
+    index("repair_image_cleanup_jobs_due_idx").on(
+      table.status,
+      table.availableAt,
+    ),
+  ],
+);
+
 export const customerOrders = pgTable(
   "customer_orders",
   {

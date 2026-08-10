@@ -2,8 +2,16 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-10
-- 已验证契约版本：`product-ui/management-system/prod.md` 1.5
-- 验证范围：[`13 — 店长库存、盘点、入库、补偿与告警`](../../../.scratch/jingshu-basic-rc/issues/13-manager-inventory.md)；保留 ticket 12 店员商品履约和更早结论
+- 已验证契约版本：`product-ui/management-system/prod.md` 1.6
+- 验证范围：[`14 — 顾客与店员创建座位报修及私有图片`](../../../.scratch/jingshu-basic-rc/issues/14-repair-intake-private-images.md)；保留 ticket 13 店长库存和更早结论
+
+## Ticket 14 `WEB-S06` 对照目标与结论
+
+- 视觉源：`design/reference/selected-night-operations-console.png` 及正式店员报修创建状态。生产继续使用夜间高密度壳层、海军蓝表面、青色反馈、青柠唯一主动作、正式品牌资产和 Phosphor 图标。
+- 应用内浏览器在真实 Web → Hono → 临时 PostgreSQL 路径以精确 `1440 × 1024 CSS px` 打开 `WEB-S06` 新建报修弹窗。`design/source-ticket14-web-s06-repair-modal-1440x1024.jpg` 与 `design/implementation-ticket14-staff-repair-modal-1440x1024.jpg` 保留同一页面状态、同一视口的两侧证据，`design/qa-ticket14-staff-repair-modal-comparison-2880x1024.jpg` 将两者置于同一比较输入。
+- 弹窗实测座位下拉只包含棱镜旗舰店座位，选择 `A-18` 后区域与竞技型自动派生；500 字计数、个人信息提示、图片预览/删除、权限拒绝说明、内置样例和单图代理提交均可操作。
+- 新建后队列立即出现权威报修行且 `A-18` 仍为正常运营状态；再次选择同一座位提交会打开现有报修，不增加重复行。图片失败与净化失败使用独立错误反馈，不阻塞文字记录。
+- 正式源的创建态只表达优先级与说明，生产按已批准契约扩展为座位、自动机型、说明和私有图片恢复区；两侧的壳层密度、分隔线、圆角、标题层级、弹窗焦点、遮罩层和底部动作区一致。生产创建态的必要扩展没有改变 `WEB-S06` 的信息层级，控制台 warning/error 为 0。最终没有仍需处理的 P0、P1 或 P2 差异。
 
 ## Ticket 13 `WEB-S08/WEB-M06` 对照目标与规范化
 

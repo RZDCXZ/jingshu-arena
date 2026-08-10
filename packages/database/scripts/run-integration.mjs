@@ -109,6 +109,7 @@ async function main() {
         "apps/api/src/customer-membership.integration.test.ts",
         "apps/api/src/customer-order.integration.test.ts",
         "apps/api/src/manager-inventory.integration.test.ts",
+        "apps/api/src/repair-intake.integration.test.ts",
         "apps/api/src/role-context.integration.test.ts",
         "apps/api/src/demo-tools.integration.test.ts",
       ];

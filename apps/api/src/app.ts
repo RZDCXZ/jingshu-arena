@@ -13,10 +13,14 @@ import { registerCustomerOrderRoutes } from "./customer-order-routes.js";
 import { registerStaffReservationRoutes } from "./staff-reservation-routes.js";
 import { registerStaffOrderRoutes } from "./staff-order-routes.js";
 import { registerManagerInventoryRoutes } from "./manager-inventory-routes.js";
+import { registerRepairIntakeRoutes } from "./repair-intake-routes.js";
+import type { RepairImageStorage } from "./repair-image-storage.js";
 
 interface AppOptions {
   allowedOrigins?: ReadonlyArray<string>;
   sandboxDatabase?: PublicSandboxDatabase;
+  repairImageSigningSecret?: string;
+  repairImageStorage?: RepairImageStorage;
   sessionSecret?: string;
   secureCookies?: boolean;
 }
@@ -35,6 +39,12 @@ export function createApp(options: AppOptions = {}) {
       : {}),
     secureCookies:
       options.secureCookies ?? process.env.NODE_ENV === "production",
+    ...(options.repairImageSigningSecret
+      ? { repairImageSigningSecret: options.repairImageSigningSecret }
+      : {}),
+    ...(options.repairImageStorage
+      ? { repairImageStorage: options.repairImageStorage }
+      : {}),
     ...(options.sessionSecret ? { sessionSecret: options.sessionSecret } : {}),
   };
 
@@ -53,6 +63,7 @@ export function createApp(options: AppOptions = {}) {
   registerStaffReservationRoutes(app, services);
   registerStaffOrderRoutes(app, services);
   registerManagerInventoryRoutes(app, services);
+  registerRepairIntakeRoutes(app, services);
   registerPublicSandboxRoutes(app, services);
 
   return app;

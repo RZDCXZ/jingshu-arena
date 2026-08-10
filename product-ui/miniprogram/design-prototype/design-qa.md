@@ -2,8 +2,16 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-10
-- 已验证契约版本：`product-ui/miniprogram/prod.md` 1.1
-- 验证范围：[`10 — 会员成长、体验券与统一行程`](../../../.scratch/jingshu-basic-rc/issues/10-membership-journey.md)；保留 ticket 02 的跨端视觉基线结论
+- 已验证契约版本：`product-ui/miniprogram/prod.md` 1.2
+- 验证范围：[`14 — 顾客与店员创建座位报修及私有图片`](../../../.scratch/jingshu-basic-rc/issues/14-repair-intake-private-images.md)；保留 ticket 10 与 ticket 02 的跨端视觉基线结论
+
+## Ticket 14 `MP-13/MP-14/MP-15` Web H5 复核
+
+- 应用内浏览器在真实 Web → Hono → 临时 PostgreSQL 路径以 `360 × 800 CSS px` 完成“使用中预约 → 创建报修 → 权限拒绝说明 → 内置样例 → 提交 → 关联预约 → 打开现有报修”；页面实测 `scrollWidth = clientWidth = 360px`，控制台 warning/error 为 0。
+- 描述输入显示 `0/500` 动态计数和个人信息提示；座位 `A-05`、竞技型与棱镜旗舰店来自权威预约。图片选择、预览、删除、内置样例和独立失败状态均可操作，文字提交不依赖相册或相机权限。
+- 正式 `MP-13` 创建态和生产 Web H5 创建态均在精确 `360 × 800 CSS px` 截取：`design/source-ticket14-mp13-repair-create-360x800.jpg`、`design/implementation-ticket14-customer-repair-create-360x800.jpg`；`design/qa-ticket14-customer-repair-create-comparison-720x800.jpg` 把同一页面状态、同一视口的两侧证据置于同一输入。复核后深海军蓝表面、青色眉题、青柠主动作、卡片圆角、座位/机型层级、隐私提示和图片恢复区一致。
+- 受控差异：正式小程序参考包含原生设备框、本地演示条与底栏，生产 Web 使用共享沙箱工具栏并把本地图片改为服务端私有净化链路；外壳来源不同，但 `MP-13` 创建职责、输入顺序、视觉语言和恢复动作一致。`MP-14/15` 的权限拒绝、重试、样例图、重复报修和重新签发读取地址在真实旅程中另行操作验证。
+- 键盘安全区通过单列表单、末尾提交区和移动端安全区留白保持可用；实际输入、样例和结果页无横向溢出。最终没有仍需处理的 P0、P1 或 P2 差异。
 
 ## Ticket 10 `MP-16/MP-17` 正式参考复核
 

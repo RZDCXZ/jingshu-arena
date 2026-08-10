@@ -210,7 +210,11 @@ export interface CustomerReservationDetailResponse {
       readonly label: string;
       readonly status: CustomerOrderStatus;
     }>;
-    readonly repairs: ReadonlyArray<never>;
+    readonly repairs: ReadonlyArray<{
+      readonly id: string;
+      readonly label: string;
+      readonly status: RepairStatus;
+    }>;
   };
   readonly reservationId: string;
   readonly snapshot: CustomerPendingReservationResponse["snapshot"];
@@ -251,6 +255,150 @@ export interface CustomerReservationCancellationResponse {
   readonly replayed: boolean;
   readonly reservationId: string;
   readonly status: "cancelled";
+}
+
+export const REPAIR_STATUSES = [
+  "new",
+  "assigned",
+  "processing",
+  "verification",
+  "closed",
+] as const;
+
+export type RepairStatus = (typeof REPAIR_STATUSES)[number];
+
+export interface CreateCustomerRepairRequest {
+  readonly description: string;
+  readonly reservationId: string;
+}
+
+export interface CreateStaffRepairRequest {
+  readonly description: string;
+  readonly seatId: string;
+}
+
+export interface StaffRepairIntakeResponse {
+  readonly seats: ReadonlyArray<{
+    readonly area: { readonly code: string; readonly displayName: string };
+    readonly code: string;
+    readonly existingRepair: {
+      readonly repairId: string;
+      readonly status: RepairStatus;
+    } | null;
+    readonly id: string;
+    readonly machineProfile: {
+      readonly code: CustomerMachineProfileCode;
+      readonly displayName: string;
+    };
+    readonly operationalStatus: "maintenance" | "normal";
+    readonly store: { readonly code: string; readonly displayName: string };
+  }>;
+  readonly status: "ready";
+  readonly store: { readonly code: string; readonly displayName: string };
+}
+
+export const REPAIR_IMAGE_CONTENT_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+] as const;
+
+export type RepairImageContentType =
+  (typeof REPAIR_IMAGE_CONTENT_TYPES)[number];
+
+export interface CreateRepairImageIntentRequest {
+  readonly declaredContentType: RepairImageContentType;
+  readonly filename: string;
+  readonly size: number;
+}
+
+export interface RepairImageIntentResponse {
+  readonly completeUrl: string;
+  readonly expiresAt: string;
+  readonly intentId: string;
+  readonly uploadMethod: "PUT";
+  readonly uploadUrl: string;
+}
+
+export interface RepairUploadedImageSaved {
+  readonly byteSize: number;
+  readonly contentType: RepairImageContentType;
+  readonly createdAt: string;
+  readonly height: number;
+  readonly imageId: string;
+  readonly readUrl: string;
+  readonly source: "uploaded";
+  readonly status: "saved";
+  readonly width: number;
+}
+
+export interface RepairSampleImageSaved {
+  readonly byteSize: number;
+  readonly contentType: "image/png";
+  readonly createdAt: string;
+  readonly height: 720;
+  readonly imageId: string;
+  readonly sampleAssetId: "repair-headset-v1";
+  readonly source: "sample";
+  readonly status: "saved";
+  readonly width: 960;
+}
+
+export type RepairImageSaved =
+  RepairSampleImageSaved | RepairUploadedImageSaved;
+
+export interface RepairImageCompletionResponse {
+  readonly image: RepairUploadedImageSaved;
+  readonly intentStatus: "consumed";
+}
+
+export interface RepairSampleImageResponse {
+  readonly image: RepairSampleImageSaved;
+}
+
+export interface RepairImageListResponse {
+  readonly images: ReadonlyArray<RepairImageSaved>;
+  readonly status: "ready";
+}
+
+export interface RepairCreatedResponse {
+  readonly createdAt: string;
+  readonly description: string;
+  readonly duplicate: boolean;
+  readonly machineProfile: {
+    readonly code: CustomerMachineProfileCode;
+    readonly displayName: string;
+  };
+  readonly priority: "normal" | "high" | "urgent";
+  readonly repairId: string;
+  readonly reservationId: string | null;
+  readonly seat: {
+    readonly code: string;
+    readonly operationalStatus: "maintenance" | "normal";
+  };
+  readonly source: "customer" | "staff";
+  readonly status: RepairStatus;
+  readonly store: { readonly code: string; readonly displayName: string };
+}
+
+export interface StaffRepairQueueResponse {
+  readonly currentTime: string;
+  readonly rows: ReadonlyArray<{
+    readonly createdAt: string;
+    readonly description: string;
+    readonly machineProfile: {
+      readonly code: CustomerMachineProfileCode;
+      readonly displayName: string;
+    };
+    readonly priority: "normal" | "high" | "urgent";
+    readonly repairId: string;
+    readonly seat: { readonly code: string };
+    readonly source: "customer" | "staff";
+    readonly status: RepairStatus;
+    readonly waitingMinutes: number;
+  }>;
+  readonly status: "ready";
+  readonly store: { readonly code: string; readonly displayName: string };
 }
 
 export interface CustomerOrderCatalogResponse {
@@ -817,7 +965,11 @@ export interface StaffReservationDetailResponse {
       readonly label: string;
       readonly status: CustomerOrderStatus;
     }>;
-    readonly repairs: ReadonlyArray<never>;
+    readonly repairs: ReadonlyArray<{
+      readonly id: string;
+      readonly label: string;
+      readonly status: RepairStatus;
+    }>;
   };
   readonly reservation: StaffReservationSummary;
   readonly snapshot: CustomerPendingReservationResponse["snapshot"];

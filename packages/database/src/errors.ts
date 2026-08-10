@@ -227,4 +227,44 @@ export class ManagerInventoryConflictError extends Error {
     this.reason = reason;
   }
 }
+
+export type RepairIntakeConflictReason =
+  | "description-invalid"
+  | "idempotency-conflict"
+  | "reservation-ineligible"
+  | "reservation-not-found"
+  | "seat-not-found";
+
+export class RepairIntakeConflictError extends Error {
+  readonly code = "REPAIR_INTAKE_CONFLICT";
+  readonly reason: RepairIntakeConflictReason;
+
+  constructor(reason: RepairIntakeConflictReason) {
+    super(`Repair intake was rejected: ${reason}.`);
+    this.name = "RepairIntakeConflictError";
+    this.reason = reason;
+  }
+}
+
+export type RepairImageConflictReason =
+  | "content-type-mismatch"
+  | "image-invalid"
+  | "image-too-large"
+  | "intent-expired"
+  | "intent-invalid"
+  | "intent-replay"
+  | "max-images"
+  | "not-found"
+  | "upload-not-staged";
+
+export class RepairImageConflictError extends Error {
+  readonly code = "REPAIR_IMAGE_CONFLICT";
+  readonly reason: RepairImageConflictReason;
+
+  constructor(reason: RepairImageConflictReason) {
+    super(`Repair image operation was rejected: ${reason}.`);
+    this.name = "RepairImageConflictError";
+    this.reason = reason;
+  }
+}
 import type { ReservationStatus } from "@jingshu/domain";

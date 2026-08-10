@@ -385,6 +385,16 @@ export function registerDemoToolsRoutes(app: Hono, services: AppServices) {
         role: session.role,
         sandboxId: session.sandboxId,
       });
+      if (services.repairImageStorage) {
+        await services.repairImageStorage
+          .deleteSandbox(session.sandboxId)
+          .then(() =>
+            services.sandboxDatabase?.completeRepairImageCleanupForSandbox(
+              session.sandboxId,
+            ),
+          )
+          .catch(() => undefined);
+      }
       const nextSession = issueRoleSession(
         result.roleContext,
         services.sessionSecret,

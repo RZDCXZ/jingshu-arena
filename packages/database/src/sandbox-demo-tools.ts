@@ -759,6 +759,13 @@ export function createSandboxDemoToolMethods(
         if (invalidated.rowCount !== 1) throw new RoleContextStaleError();
 
         await client.query(
+          `insert into repair_image_cleanup_jobs (
+             id, sandbox_id, target_kind, object_key, reason, available_at
+           ) values ($1, $2, 'sandbox', null, 'sandbox-reset', $3)`,
+          [randomUUID(), input.sandboxId, wallTime],
+        );
+
+        await client.query(
           `insert into audit_events (
              id, sandbox_id, store_id, persona_id, role, action, object_type,
              object_id, result, reason, request_id, before_data, after_data,

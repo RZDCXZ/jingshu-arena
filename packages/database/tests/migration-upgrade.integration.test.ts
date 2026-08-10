@@ -319,5 +319,32 @@ describe("role-context expand migration", () => {
       rollingMovementId,
     ]);
     expect(rollingMovement.rows).toEqual([{ movement_kind: null }]);
+
+    await applyMigration("0016_repair_intake_private_images.sql");
+    const repairMetadata = await client.query<{ value: string }>(
+      "select value from jingshu_schema_metadata where key = 'schema_version'",
+    );
+    expect(repairMetadata.rows).toEqual([{ value: "13" }]);
+    const repairStructures = await client.query<{
+      force_rls: boolean;
+      image_table: string | null;
+      intent_table: string | null;
+      repair_table: string | null;
+    }>(
+      `select
+         to_regclass('public.repairs')::text as repair_table,
+         to_regclass('public.repair_upload_intents')::text as intent_table,
+         to_regclass('public.repair_images')::text as image_table,
+         (select relforcerowsecurity from pg_class
+           where oid = 'public.repair_images'::regclass) as force_rls`,
+    );
+    expect(repairStructures.rows).toEqual([
+      {
+        force_rls: true,
+        image_table: "repair_images",
+        intent_table: "repair_upload_intents",
+        repair_table: "repairs",
+      },
+    ]);
   });
 });

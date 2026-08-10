@@ -4,6 +4,7 @@ import {
   Armchair,
   ArrowClockwise,
   CalendarBlank,
+  Camera,
   CaretDown,
   CaretLeft,
   CaretRight,
@@ -16,6 +17,7 @@ import {
   House,
   Hourglass,
   Info,
+  ImageSquare,
   Lightning,
   Lock,
   MagnifyingGlass,
@@ -30,6 +32,7 @@ import {
   Storefront,
   Ticket,
   Timer,
+  Trash,
   TrendUp,
   User,
   Warning,
@@ -59,7 +62,15 @@ import type {
   CustomerReservationPaymentResponse,
   CustomerReservationStatus,
   CustomerStoreCatalogResponse,
+  RepairCreatedResponse,
+  RepairImageCompletionResponse,
+  RepairImageSaved,
+  RepairImageIntentResponse,
+  RepairImageListResponse,
+  RepairSampleImageResponse,
 } from "@jingshu/contracts";
+
+import repairSample from "../../../product-ui/miniprogram/design-prototype/public/assets/repair-headset-sample.png";
 
 const profileIcons = {
   competitive: GameController,
@@ -172,7 +183,15 @@ type CustomerView =
   | "order-detail"
   | "order-payment"
   | "payment"
+  | "repair-create"
+  | "repair-detail"
   | "seats";
+
+interface CustomerRepairFile {
+  readonly file: File;
+  readonly id: string;
+  readonly previewUrl: string;
+}
 
 type JourneyGroup = "current" | "future" | "history";
 
@@ -490,6 +509,22 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
   const [orderCancelLoading, setOrderCancelLoading] = useState(false);
   const [orderCancelFailure, setOrderCancelFailure] = useState("");
   const orderCancelKeyRef = useRef<string | null>(null);
+  const [repairDescription, setRepairDescription] = useState("");
+  const [repairFiles, setRepairFiles] = useState<
+    ReadonlyArray<CustomerRepairFile>
+  >([]);
+  const [repairSampleSelected, setRepairSampleSelected] = useState(false);
+  const [repairPermissionNotice, setRepairPermissionNotice] = useState("");
+  const [repairSubmitting, setRepairSubmitting] = useState(false);
+  const [repairImageRetrying, setRepairImageRetrying] = useState(false);
+  const [repairFailure, setRepairFailure] = useState("");
+  const [repairUploadNotice, setRepairUploadNotice] = useState("");
+  const [createdRepair, setCreatedRepair] =
+    useState<RepairCreatedResponse | null>(null);
+  const [savedRepairImages, setSavedRepairImages] = useState<
+    ReadonlyArray<RepairImageSaved>
+  >([]);
+  const repairKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     orderPaymentKeyRef.current = null;
@@ -506,6 +541,8 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
         "order-confirm",
         "order-detail",
         "order-payment",
+        "repair-create",
+        "repair-detail",
         "seats",
       ].includes(view)
     ) {
@@ -1244,6 +1281,343 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     }
   }
 
+  function openRepairCreate() {
+    setRepairDescription("");
+    repairFiles.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    setRepairFiles([]);
+    setRepairSampleSelected(false);
+    setRepairPermissionNotice("");
+    setRepairFailure("");
+    setRepairUploadNotice("");
+    setCreatedRepair(null);
+    setSavedRepairImages([]);
+    repairKeyRef.current = null;
+    setView("repair-create");
+  }
+
+  async function readRepairImages(repairId: string) {
+    const response = await fetch(`/api/v1/repairs/${repairId}/images`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    const payload = (await response.json()) as
+      ApiErrorResponse | RepairImageListResponse;
+    if (!response.ok) {
+      throw new Error(
+        "error" in payload ? payload.error.message : "报修图片暂时无法读取。",
+      );
+    }
+    const images = (payload as RepairImageListResponse).images;
+    setSavedRepairImages(images);
+    return images;
+  }
+
+  function openExistingRepair(
+    repair: CustomerReservationDetailResponse["related"]["repairs"][number],
+  ) {
+    if (!reservationDetail) return;
+    setCreatedRepair({
+      createdAt: reservationDetail.currentTime,
+      description: repair.label.split(" · ").slice(1).join(" · "),
+      duplicate: true,
+      machineProfile: {
+        code: reservationDetail.snapshot.machineProfile.code,
+        displayName: reservationDetail.snapshot.machineProfile.displayName,
+      },
+      priority: "normal",
+      repairId: repair.id,
+      reservationId: reservationDetail.reservationId,
+      seat: {
+        code: reservationDetail.snapshot.seat.code,
+        operationalStatus: "normal",
+      },
+      source: "customer",
+      status: repair.status,
+      store: reservationDetail.snapshot.store,
+    });
+    repairFiles.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    setRepairFiles([]);
+    setRepairSampleSelected(false);
+    setSavedRepairImages([]);
+    setRepairUploadNotice("正在重新签发私有图片读取地址…");
+    setView("repair-detail");
+    void readRepairImages(repair.id)
+      .then((images) => {
+        setRepairUploadNotice(
+          images.length > 0
+            ? `已打开现有报修，并重新授权读取 ${images.length} 张私有图片。`
+            : "已打开该座位现有的未关闭报修，没有创建重复记录。",
+        );
+      })
+      .catch((error) => {
+        setRepairUploadNotice(
+          error instanceof Error ? error.message : "报修图片暂时无法读取。",
+        );
+      });
+  }
+
+  function chooseRepairFiles(files: FileList | null) {
+    if (!files) return;
+    const remaining =
+      3 -
+      savedRepairImages.length -
+      repairFiles.length -
+      (repairSampleSelected ? 1 : 0);
+    const candidates = Array.from(files).slice(0, Math.max(0, remaining));
+    const accepted = candidates.filter(
+      (file) =>
+        ["image/jpeg", "image/png", "image/webp"].includes(file.type) &&
+        file.size > 0 &&
+        file.size <= 5 * 1024 * 1024,
+    );
+    if (accepted.length !== candidates.length || files.length > remaining) {
+      setRepairPermissionNotice(
+        "仅接受最多 3 张 JPEG、PNG 或 WebP，且每张不超过 5 MB。无效文件未加入。",
+      );
+    } else {
+      setRepairPermissionNotice("");
+    }
+    setRepairFiles((current) => [
+      ...current,
+      ...accepted.map((file) => ({
+        file,
+        id: crypto.randomUUID(),
+        previewUrl: URL.createObjectURL(file),
+      })),
+    ]);
+  }
+
+  function removeRepairFile(id: string) {
+    setRepairFiles((current) => {
+      const removed = current.find((item) => item.id === id);
+      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      return current.filter((item) => item.id !== id);
+    });
+  }
+
+  async function uploadRepairFile(repairId: string, file: File) {
+    const intentResponse = await fetch(
+      `/api/v1/repairs/${repairId}/images/intents`,
+      {
+        body: JSON.stringify({
+          declaredContentType: file.type,
+          filename: file.name,
+          size: file.size,
+        }),
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken,
+        },
+        method: "POST",
+      },
+    );
+    const intentPayload = (await intentResponse.json()) as
+      ApiErrorResponse | RepairImageIntentResponse;
+    if (!intentResponse.ok) {
+      throw new Error(
+        "error" in intentPayload
+          ? intentPayload.error.message
+          : "图片上传意图创建失败。",
+      );
+    }
+    const intent = intentPayload as RepairImageIntentResponse;
+    const uploadResponse = await fetch(intent.uploadUrl, {
+      body: file,
+      cache: "no-store",
+      headers: { "Content-Type": file.type },
+      method: "PUT",
+    });
+    if (!uploadResponse.ok) {
+      const failure = (await uploadResponse.json()) as ApiErrorResponse;
+      throw new Error(failure.error.message);
+    }
+    const completionResponse = await fetch(intent.completeUrl, {
+      body: "{}",
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      method: "POST",
+    });
+    const completion = (await completionResponse.json()) as
+      ApiErrorResponse | RepairImageCompletionResponse;
+    if (!completionResponse.ok) {
+      throw new Error(
+        "error" in completion ? completion.error.message : "图片净化未完成。",
+      );
+    }
+    return (completion as RepairImageCompletionResponse).image;
+  }
+
+  async function saveRepairSample(repairId: string) {
+    const response = await fetch(`/api/v1/repairs/${repairId}/images/sample`, {
+      body: JSON.stringify({ sampleAssetId: "repair-headset-v1" }),
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      method: "POST",
+    });
+    const payload = (await response.json()) as
+      ApiErrorResponse | RepairSampleImageResponse;
+    if (!response.ok) {
+      throw new Error(
+        "error" in payload ? payload.error.message : "样例图未保存。",
+      );
+    }
+    return (payload as RepairSampleImageResponse).image;
+  }
+
+  async function retryRepairEvidence(useSampleFallback = false) {
+    if (!createdRepair || repairImageRetrying) return;
+    setRepairImageRetrying(true);
+    const saved: RepairImageSaved[] = [];
+    const failedFiles: CustomerRepairFile[] = [];
+    const failures: string[] = [];
+    if (!useSampleFallback) {
+      for (const item of repairFiles) {
+        try {
+          saved.push(await uploadRepairFile(createdRepair.repairId, item.file));
+          URL.revokeObjectURL(item.previewUrl);
+        } catch (error) {
+          failedFiles.push(item);
+          failures.push(
+            error instanceof Error ? error.message : "图片净化未完成。",
+          );
+        }
+      }
+    }
+    const shouldSaveSample = useSampleFallback || repairSampleSelected;
+    let sampleFailed = false;
+    if (shouldSaveSample) {
+      try {
+        saved.push(await saveRepairSample(createdRepair.repairId));
+        if (useSampleFallback) {
+          repairFiles.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+        }
+      } catch (error) {
+        sampleFailed = true;
+        if (useSampleFallback) failedFiles.push(...repairFiles);
+        failures.push(
+          error instanceof Error ? error.message : "样例图未保存。",
+        );
+      }
+    }
+    setRepairFiles(failedFiles);
+    setRepairSampleSelected(sampleFailed);
+    setSavedRepairImages((current) => [
+      ...current,
+      ...saved.filter(
+        (image) => !current.some((item) => item.imageId === image.imageId),
+      ),
+    ]);
+    setRepairUploadNotice(
+      failures.length > 0
+        ? `${failures[0]} 文字报修和既有净化图片不受影响。`
+        : saved.length > 0
+          ? `新增 ${saved.length} 张安全图片已保存。`
+          : "没有待保存的图片。",
+    );
+    setRepairImageRetrying(false);
+  }
+
+  async function createRepair() {
+    if (
+      !activeReservationId ||
+      repairSubmitting ||
+      repairDescription.trim().length < 1
+    ) {
+      return;
+    }
+    const idempotencyKey = repairKeyRef.current ?? crypto.randomUUID();
+    repairKeyRef.current = idempotencyKey;
+    setRepairSubmitting(true);
+    setRepairFailure("");
+    setRepairUploadNotice("");
+    try {
+      const response = await fetch("/api/v1/customer/repairs", {
+        body: JSON.stringify({
+          description: repairDescription,
+          reservationId: activeReservationId,
+        }),
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+          "X-CSRF-Token": csrfToken,
+        },
+        method: "POST",
+      });
+      const payload = (await response.json()) as
+        ApiErrorResponse | RepairCreatedResponse;
+      if (!response.ok) {
+        throw new Error(
+          "error" in payload ? payload.error.message : "文字报修暂时无法保存。",
+        );
+      }
+      const repair = payload as RepairCreatedResponse;
+      setCreatedRepair(repair);
+      const saved: RepairImageSaved[] = [];
+      const failures: string[] = [];
+      const failedFiles: CustomerRepairFile[] = [];
+      for (const item of repairFiles) {
+        try {
+          saved.push(await uploadRepairFile(repair.repairId, item.file));
+          URL.revokeObjectURL(item.previewUrl);
+        } catch (error) {
+          failedFiles.push(item);
+          failures.push(
+            error instanceof Error ? error.message : "图片净化未完成。",
+          );
+        }
+      }
+      let sampleFailed = false;
+      if (repairSampleSelected) {
+        try {
+          saved.push(await saveRepairSample(repair.repairId));
+        } catch (error) {
+          sampleFailed = true;
+          failures.push(
+            error instanceof Error ? error.message : "样例图未保存。",
+          );
+        }
+      }
+      setRepairFiles(failedFiles);
+      setRepairSampleSelected(sampleFailed);
+      const existingImages = repair.duplicate
+        ? await readRepairImages(repair.repairId).catch(() => saved)
+        : [];
+      setSavedRepairImages(repair.duplicate ? existingImages : saved);
+      setRepairUploadNotice(
+        repair.duplicate
+          ? `该座位已有未关闭报修，已打开记录并读取 ${existingImages.length} 张安全图片。`
+          : failures.length > 0
+            ? `文字报修已保存；${failures[0]} 未净化的原文件不会显示或保留。`
+            : saved.length > 0
+              ? `文字报修与 ${saved.length} 张净化图片已保存。`
+              : "文字报修已保存；图片为可选项。",
+      );
+      setView("repair-detail");
+      await readReservationDetail(activeReservationId);
+      setJourneyAttempt((attempt) => attempt + 1);
+    } catch (error) {
+      setRepairFailure(
+        error instanceof Error
+          ? error.message
+          : "文字报修暂时无法保存；已保留输入。",
+      );
+    } finally {
+      setRepairSubmitting(false);
+    }
+  }
+
   function restartReservation() {
     setView("conditions");
     setCreatedReservation(null);
@@ -1399,11 +1773,13 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
           <span>
             {view === "payment"
               ? "WEB-C02 / MP-08"
-              : view.startsWith("order-")
-                ? "WEB-C04 / MP-10 · MP-12"
-                : view === "journey" || view === "membership"
-                  ? "WEB-C03 / MP-16 · MP-17"
-                  : "WEB-C00 / C02"}
+              : view.startsWith("repair-")
+                ? "WEB-C02 / MP-13 · MP-15"
+                : view.startsWith("order-")
+                  ? "WEB-C04 / MP-10 · MP-12"
+                  : view === "journey" || view === "membership"
+                    ? "WEB-C03 / MP-16 · MP-17"
+                    : "WEB-C00 / C02"}
           </span>
           <strong>
             {view === "seats"
@@ -1416,25 +1792,342 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                     ? "模拟支付"
                     : view === "detail"
                       ? "预约详情"
-                      : view === "order-catalog"
-                        ? "柜台商品"
-                        : view === "order-confirm"
-                          ? "确认订单"
-                          : view === "order-detail"
-                            ? "商品订单"
-                            : view === "order-payment"
-                              ? "模拟支付结果"
-                              : view === "journey"
-                                ? "统一行程"
-                                : view === "membership"
-                                  ? "会员与体验券"
-                                  : "预约座位"}
+                      : view === "repair-create"
+                        ? "创建报修"
+                        : view === "repair-detail"
+                          ? "报修详情"
+                          : view === "order-catalog"
+                            ? "柜台商品"
+                            : view === "order-confirm"
+                              ? "确认订单"
+                              : view === "order-detail"
+                                ? "商品订单"
+                                : view === "order-payment"
+                                  ? "模拟支付结果"
+                                  : view === "journey"
+                                    ? "统一行程"
+                                    : view === "membership"
+                                      ? "会员与体验券"
+                                      : "预约座位"}
           </strong>
         </div>
         <span className="customer-demo-badge">演示数据</span>
       </header>
 
-      {view === "order-catalog" ? (
+      {view === "repair-create" && reservationDetail ? (
+        <div className="customer-scroll-content customer-repair-page has-repair-action">
+          <button
+            className="customer-back-button"
+            onClick={() => setView("detail")}
+            type="button"
+          >
+            <CaretLeft />
+            返回预约详情
+          </button>
+          <section className="customer-repair-context-card">
+            <Wrench weight="duotone" />
+            <span>
+              <small>当前座位 · 机型自动带出</small>
+              <strong>
+                {reservationDetail.snapshot.seat.code} ·{" "}
+                {reservationDetail.snapshot.machineProfile.displayName}
+              </strong>
+              <em>{reservationDetail.snapshot.store.displayName}</em>
+            </span>
+          </section>
+          <section className="customer-repair-heading">
+            <span className="customer-eyebrow">REPAIR INTAKE</span>
+            <h1>描述设备故障</h1>
+            <p>提交只会创建新报修，不会立即把座位改为维护中。</p>
+          </section>
+          <label className="customer-repair-description">
+            <span>
+              <strong>故障描述</strong>
+              <small>{repairDescription.length} / 500</small>
+            </span>
+            <textarea
+              autoFocus
+              maxLength={500}
+              onChange={(event) => {
+                setRepairDescription(event.target.value);
+                repairKeyRef.current = null;
+                setRepairFailure("");
+              }}
+              placeholder="例如：耳机右声道无声"
+              rows={5}
+              value={repairDescription}
+            />
+            <em>
+              <Lock /> 请勿填写真实姓名、手机号、住址或其他个人信息
+            </em>
+          </label>
+          <section className="customer-repair-images">
+            <div className="customer-section-title">
+              <div>
+                <span>OPTIONAL EVIDENCE</span>
+                <h2>故障图片（可选）</h2>
+              </div>
+              <ImageSquare />
+            </div>
+            <p>最多 3 张，每张不超过 5 MB；保存前会重新编码并移除元数据。</p>
+            {repairFiles.length > 0 || repairSampleSelected ? (
+              <div className="customer-repair-previews">
+                {repairFiles.map((item) => (
+                  <figure key={item.id}>
+                    <img alt="待净化故障图片预览" src={item.previewUrl} />
+                    <button
+                      aria-label="删除这张待上传图片"
+                      onClick={() => removeRepairFile(item.id)}
+                      type="button"
+                    >
+                      <Trash />
+                    </button>
+                    <figcaption>待安全净化</figcaption>
+                  </figure>
+                ))}
+                {repairSampleSelected ? (
+                  <figure>
+                    <img alt="耳机故障内置样例图" src={repairSample.src} />
+                    <button
+                      aria-label="删除内置样例图"
+                      onClick={() => setRepairSampleSelected(false)}
+                      type="button"
+                    >
+                      <Trash />
+                    </button>
+                    <figcaption>内置虚构样例</figcaption>
+                  </figure>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="customer-repair-image-actions">
+              <label
+                className={
+                  repairFiles.length + (repairSampleSelected ? 1 : 0) >= 3
+                    ? "is-disabled"
+                    : ""
+                }
+              >
+                <Camera />
+                选择单张图片
+                <input
+                  accept="image/jpeg,image/png,image/webp"
+                  disabled={
+                    repairFiles.length + (repairSampleSelected ? 1 : 0) >= 3
+                  }
+                  multiple
+                  onChange={(event) => {
+                    chooseRepairFiles(event.target.files);
+                    event.target.value = "";
+                  }}
+                  type="file"
+                />
+              </label>
+              <button
+                disabled={
+                  repairSampleSelected ||
+                  repairFiles.length + (repairSampleSelected ? 1 : 0) >= 3
+                }
+                onClick={() => {
+                  setRepairSampleSelected(true);
+                  setRepairPermissionNotice(
+                    "已使用内置虚构样例；相册或相机权限不是提交报修的前提。",
+                  );
+                }}
+                type="button"
+              >
+                <ImageSquare />
+                使用内置样例图
+              </button>
+            </div>
+            <button
+              className="customer-repair-permission-link"
+              onClick={() =>
+                setRepairPermissionNotice(
+                  "图片权限被拒绝也没关系：可继续提交文字，或选择内置虚构样例图。",
+                )
+              }
+              type="button"
+            >
+              相册或相机权限被拒绝？
+            </button>
+            {repairPermissionNotice ? (
+              <div className="customer-repair-image-notice" role="status">
+                <Info /> {repairPermissionNotice}
+              </div>
+            ) : null}
+          </section>
+          {repairFailure ? (
+            <section className="customer-feedback is-error" role="alert">
+              <Warning />
+              <span>
+                <strong>文字报修尚未保存</strong>
+                {repairFailure}
+              </span>
+            </section>
+          ) : null}
+          <div className="customer-repair-submit-bar">
+            <span>图片失败不会阻塞文字报修</span>
+            <button
+              className="customer-primary-button"
+              disabled={repairSubmitting || repairDescription.trim().length < 1}
+              onClick={() => void createRepair()}
+              type="button"
+            >
+              <Wrench />
+              {repairSubmitting ? "正在保存报修…" : "提交报修"}
+            </button>
+          </div>
+        </div>
+      ) : view === "repair-detail" && createdRepair ? (
+        <div className="customer-scroll-content customer-repair-page customer-repair-result">
+          <button
+            className="customer-back-button"
+            onClick={() => setView("detail")}
+            type="button"
+          >
+            <CaretLeft />
+            返回预约详情
+          </button>
+          <section className="customer-repair-result-hero">
+            <div>
+              <CheckCircle weight="fill" />
+            </div>
+            <span className="customer-eyebrow">REPAIR CREATED</span>
+            <h1>{createdRepair.duplicate ? "已打开现有报修" : "报修已创建"}</h1>
+            <p>{repairUploadNotice}</p>
+          </section>
+          <section className="customer-repair-ticket-card">
+            <div>
+              <span className="is-active">新建</span>
+              <small>报修单 {createdRepair.repairId.slice(0, 8)}</small>
+            </div>
+            <h2>{createdRepair.description}</h2>
+            <dl>
+              <div>
+                <dt>座位</dt>
+                <dd>{createdRepair.seat.code}</dd>
+              </div>
+              <div>
+                <dt>机型</dt>
+                <dd>{createdRepair.machineProfile.displayName}</dd>
+              </div>
+              <div>
+                <dt>座位状态</dt>
+                <dd>正常 · 尚未进入维护</dd>
+              </div>
+            </dl>
+          </section>
+          {savedRepairImages.length > 0 ? (
+            <section className="customer-repair-saved-images">
+              <div className="customer-section-title">
+                <div>
+                  <span>SANITIZED IMAGES</span>
+                  <h2>已安全保存的图片</h2>
+                </div>
+                <ShieldCheck />
+              </div>
+              <div>
+                {savedRepairImages.map((image) => (
+                  <figure key={image.imageId}>
+                    <img
+                      alt={
+                        image.source === "sample"
+                          ? "内置耳机故障样例图"
+                          : "已净化故障图片"
+                      }
+                      src={
+                        image.source === "sample"
+                          ? repairSample.src
+                          : image.readUrl
+                      }
+                    />
+                    <figcaption>
+                      <ShieldCheck />
+                      {image.source === "sample" ? "内置样例" : "已移除元数据"}
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {savedRepairImages.length < 3 ? (
+            <section className="customer-repair-evidence-recovery">
+              <div>
+                <ShieldCheck />
+                <span>
+                  <strong>补充或恢复故障图片</strong>
+                  <small>
+                    可重试失败单图，或改用内置样例；文字报修不会重复创建。
+                  </small>
+                </span>
+              </div>
+              {repairFiles.length > 0 || repairSampleSelected ? (
+                <p>
+                  待保存 {repairFiles.length + (repairSampleSelected ? 1 : 0)}
+                  张；失败原文件只保留在当前页面内存中。
+                </p>
+              ) : null}
+              <div>
+                <label>
+                  <Camera /> 选择单张图片
+                  <input
+                    accept="image/jpeg,image/png,image/webp"
+                    disabled={repairImageRetrying}
+                    onChange={(event) => {
+                      chooseRepairFiles(event.target.files);
+                      event.target.value = "";
+                    }}
+                    type="file"
+                  />
+                </label>
+                <button
+                  disabled={repairImageRetrying}
+                  onClick={() => void retryRepairEvidence(true)}
+                  type="button"
+                >
+                  <ImageSquare /> 改用内置样例
+                </button>
+              </div>
+              {repairFiles.length > 0 || repairSampleSelected ? (
+                <button
+                  className="customer-secondary-button"
+                  disabled={repairImageRetrying}
+                  onClick={() => void retryRepairEvidence()}
+                  type="button"
+                >
+                  {repairImageRetrying ? "正在安全净化…" : "保存所选图片"}
+                </button>
+              ) : null}
+            </section>
+          ) : null}
+          <section className="customer-lifecycle-card">
+            <div className="customer-section-title">
+              <div>
+                <span>PUBLIC TIMELINE</span>
+                <h2>公开处理动态</h2>
+              </div>
+              <Clock />
+            </div>
+            <ol className="customer-lifecycle-timeline">
+              <li>
+                <i />
+                <span>
+                  <strong>报修已创建，等待门店确认</strong>
+                  <small>{formatWindow(createdRepair.createdAt)}</small>
+                </span>
+              </li>
+            </ol>
+          </section>
+          <button
+            className="customer-primary-button"
+            onClick={() => setView("detail")}
+            type="button"
+          >
+            查看关联预约 <CaretRight />
+          </button>
+        </div>
+      ) : view === "order-catalog" ? (
         <div className="customer-scroll-content customer-order-page has-order-action">
           <button
             className="customer-back-button"
@@ -3294,6 +3987,22 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                       <CaretRight />
                     </button>
                   ))}
+                  {reservationDetail.related.repairs.map((repair) => (
+                    <button
+                      key={repair.id}
+                      onClick={() => openExistingRepair(repair)}
+                      type="button"
+                    >
+                      <Wrench />
+                      <span>
+                        <strong>{repair.label}</strong>
+                        <small>
+                          {repair.status === "new" ? "新建" : repair.status}
+                        </small>
+                      </span>
+                      <CaretRight />
+                    </button>
+                  ))}
                 </section>
               ) : (
                 <section className="customer-related-empty">
@@ -3314,6 +4023,22 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                 </section>
               ) : null}
               <div className="customer-lifecycle-actions">
+                {reservationDetail.status === "in-use" ? (
+                  <button
+                    className="customer-primary-button"
+                    onClick={() => {
+                      const existing = reservationDetail.related.repairs[0];
+                      if (existing) openExistingRepair(existing);
+                      else openRepairCreate();
+                    }}
+                    type="button"
+                  >
+                    <Wrench />
+                    {reservationDetail.related.repairs.length > 0
+                      ? "查看现有报修"
+                      : "为当前座位报修"}
+                  </button>
+                ) : null}
                 {reservationDetail.status === "arrived" ||
                 reservationDetail.status === "in-use" ? (
                   <button

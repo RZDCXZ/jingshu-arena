@@ -1,5 +1,5 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "11";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.6";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "13";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.7";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -15,6 +15,11 @@ export function isSafePlainTextReason(value: string, maxLength = 200) {
       );
     })
   );
+}
+
+export function normalizeRepairDescription(value: string) {
+  const normalized = value.normalize("NFC").replace(/\s+/gu, " ").trim();
+  return isSafePlainTextReason(normalized, 500) ? normalized : null;
 }
 
 const HALF_HOUR_MS = 30 * 60 * 1_000;
