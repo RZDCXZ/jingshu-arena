@@ -92,6 +92,13 @@
       "when": 1786304400000,
       "tag": "0012_membership_journey",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1786330800000,
+      "tag": "0013_customer_order_inventory",
+      "breakpoints": true
     }
   ]
 }

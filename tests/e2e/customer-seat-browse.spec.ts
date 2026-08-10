@@ -3,6 +3,10 @@ import type { Page, Route } from "@playwright/test";
 
 import type {
   CustomerMachineProfileCode,
+  CustomerOrderCatalogResponse,
+  CustomerOrderDetailResponse,
+  CustomerOrderStatus,
+  CustomerPendingOrderResponse,
   CustomerJourneyResponse,
   CustomerMembershipResponse,
   CustomerPendingReservationResponse,
@@ -34,8 +38,8 @@ const customerContext: RoleContextReadyResponse = {
       timeZone: "Asia/Shanghai",
     },
     expiresAt: "2026-08-11T11:47:23.000Z",
-    schemaVersion: "9",
-    seedVersion: "2026-08-10.4",
+    schemaVersion: "10",
+    seedVersion: "2026-08-10.5",
   },
   status: "ready",
   storeScope: {
@@ -507,6 +511,7 @@ async function openCustomerH5(
     conflict?: boolean;
     detailStatuses?: ReadonlyArray<CustomerReservationStatus>;
     paymentFailures?: number;
+    orderShortages?: number;
     transformAvailability?: (
       value: CustomerSeatAvailabilityResponse,
     ) => CustomerSeatAvailabilityResponse;
@@ -516,6 +521,9 @@ async function openCustomerH5(
     options.detailStatuses?.[0] ?? "pending-confirmation";
   let detailStatusIndex = 0;
   let remainingPaymentFailures = options.paymentFailures ?? 0;
+  let remainingOrderShortages = options.orderShortages ?? 0;
+  let orderStatus: CustomerOrderStatus = "pending-simulated-payment";
+  let activeOrder: CustomerPendingOrderResponse | null = null;
   let activeSnapshot: CustomerPendingReservationResponse["snapshot"] | null =
     null;
   let paymentOccurredAt: string | null = null;
@@ -773,6 +781,247 @@ async function openCustomerH5(
           replayed: false,
           reservationId: "00000000-0000-4000-8000-000000000708",
           status: "cancelled",
+        },
+        status: 200,
+      });
+    },
+  );
+  const orderCatalog: CustomerOrderCatalogResponse = {
+    coupons: [
+      {
+        code: "order-five",
+        discountCents: 500,
+        displayName: "商品立减体验券",
+        eligibility: { status: "eligible" },
+        id: "00000000-0000-4000-8000-000000000741",
+        minimumSpendCents: 1_500,
+        validUntil: "2026-08-31T00:00:00.000Z",
+      },
+    ],
+    currentTime: businessTime,
+    products: [
+      [
+        "00000000-0000-4000-8000-000000000751",
+        "脉冲气泡水",
+        "低糖 · 冰柜取用",
+        "drink",
+        800,
+        18,
+      ],
+      [
+        "00000000-0000-4000-8000-000000000752",
+        "夜航薯片",
+        "海盐味 · 柜台取货",
+        "snack",
+        1_000,
+        7,
+      ],
+      [
+        "00000000-0000-4000-8000-000000000753",
+        "热浪杯面",
+        "微辣 · 柜台冲泡",
+        "meal",
+        1_200,
+        9,
+      ],
+      [
+        "00000000-0000-4000-8000-000000000754",
+        "跃迁能量棒",
+        "可可味 · 独立包装",
+        "snack",
+        900,
+        3,
+      ],
+      [
+        "00000000-0000-4000-8000-000000000755",
+        "外设清洁湿巾",
+        "单片装 · 无香型",
+        "supply",
+        600,
+        12,
+      ],
+      [
+        "00000000-0000-4000-8000-000000000756",
+        "清醒薄荷糖",
+        "小盒装 · 无糖",
+        "supply",
+        500,
+        20,
+      ],
+    ].map(([id, name, description, category, unitPriceCents, quantity]) => ({
+      availableQuantity: Number(quantity),
+      category:
+        category as CustomerOrderCatalogResponse["products"][number]["category"],
+      description: String(description),
+      id: String(id),
+      lowStock: Number(quantity) <= 3,
+      name: String(name),
+      onHandQuantity: Number(quantity),
+      reservedQuantity: 0,
+      unitPriceCents: Number(unitPriceCents),
+    })),
+    reservation: {
+      reservationId: currentStoryReservationId,
+      seat: { code: "A-18" },
+      status: "arrived",
+      store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+    },
+    status: "ready",
+  };
+  await page.route("**/api/v1/customer/reservations/*/products", (route) =>
+    serveJson(route, orderCatalog),
+  );
+  await page.route("**/api/v1/customer/orders", async (route) => {
+    if (remainingOrderShortages > 0) {
+      remainingOrderShortages -= 1;
+      await route.fulfill({
+        json: {
+          error: {
+            code: "CUSTOMER_ORDER_INSUFFICIENT_INVENTORY",
+            message: "整单库存不足，订单未创建；购物车内容已保留，请调整数量。",
+            requestId: crypto.randomUUID(),
+          },
+        },
+        status: 409,
+      });
+      return;
+    }
+    const body = route.request().postDataJSON() as {
+      couponId: string | null;
+      lines: Array<{ productId: string; quantity: number }>;
+      reservationId: string;
+    };
+    const lines = body.lines.map((line) => {
+      const product = orderCatalog.products.find(
+        (candidate) => candidate.id === line.productId,
+      )!;
+      return {
+        lineTotalCents: product.unitPriceCents * line.quantity,
+        productId: product.id,
+        productName: product.name,
+        quantity: line.quantity,
+        unitPriceCents: product.unitPriceCents,
+      };
+    });
+    const subtotalCents = lines.reduce(
+      (total, line) => total + line.lineTotalCents,
+      0,
+    );
+    const discountCents = body.couponId ? Math.min(500, subtotalCents) : 0;
+    orderStatus = "pending-simulated-payment";
+    activeOrder = {
+      holdExpiresAt: "2026-08-10T11:57:23.000Z",
+      orderId: "00000000-0000-4000-8000-000000000760",
+      replayed: false,
+      snapshot: {
+        coupon: body.couponId
+          ? {
+              code: "order-five",
+              discountCents,
+              displayName: "商品立减体验券",
+            }
+          : null,
+        discountCents,
+        lines,
+        payableCents: subtotalCents - discountCents,
+        reservation: {
+          reservationId: body.reservationId,
+          seatCode: "A-18",
+          storeCode: "prism-flagship",
+          storeDisplayName: "棱镜旗舰店",
+        },
+        subtotalCents,
+      },
+      status: "pending-simulated-payment",
+    };
+    await route.fulfill({ json: activeOrder, status: 201 });
+  });
+  await page.route(/\/api\/v1\/customer\/orders\/[^/]+$/u, async (route) => {
+    if (!activeOrder) {
+      await route.fulfill({ status: 404 });
+      return;
+    }
+    const detail: CustomerOrderDetailResponse = {
+      actions: {
+        canCancel: orderStatus === "pending-simulated-payment",
+        canSimulatePayment: orderStatus === "pending-simulated-payment",
+      },
+      cancelledAt: null,
+      coupon: activeOrder.snapshot.coupon
+        ? {
+            ...activeOrder.snapshot.coupon,
+            status: orderStatus === "simulated-paid" ? "redeemed" : "reserved",
+          }
+        : null,
+      currentTime: businessTime,
+      expiredAt: null,
+      holdExpiresAt: activeOrder.holdExpiresAt,
+      inventory: activeOrder.snapshot.lines.map((line) => {
+        const product = orderCatalog.products.find(
+          (candidate) => candidate.id === line.productId,
+        )!;
+        return {
+          availableQuantity: product.availableQuantity - line.quantity,
+          onHandQuantity: product.onHandQuantity,
+          productId: line.productId,
+          reservedForOrderQuantity: line.quantity,
+          reservedQuantity: line.quantity,
+        };
+      }),
+      orderId: activeOrder.orderId,
+      payment:
+        orderStatus === "simulated-paid"
+          ? {
+              amountCents: activeOrder.snapshot.payableCents,
+              doesNotCharge: true,
+              occurredAt: "2026-08-10T11:49:00.000Z",
+              simulated: true,
+            }
+          : null,
+      snapshot: activeOrder.snapshot,
+      status: orderStatus,
+      terminalReason: null,
+      timeline: [
+        {
+          data: {
+            inventoryReservationCount: activeOrder.snapshot.lines.length,
+          },
+          occurredAt: businessTime,
+          type: "order.pending-created",
+        },
+        ...(orderStatus === "simulated-paid"
+          ? [
+              {
+                data: { doesNotCharge: true },
+                occurredAt: "2026-08-10T11:49:00.000Z",
+                type: "order.simulated-payment-succeeded",
+              },
+            ]
+          : []),
+      ],
+    };
+    await serveJson(route, detail);
+  });
+  await page.route(
+    "**/api/v1/customer/orders/*/simulated-payment",
+    async (route) => {
+      if (!activeOrder) {
+        await route.fulfill({ status: 404 });
+        return;
+      }
+      orderStatus = "simulated-paid";
+      await route.fulfill({
+        json: {
+          notice: "模拟支付，不会扣款，也不需要真实支付凭证。",
+          orderId: activeOrder.orderId,
+          payment: {
+            amountCents: activeOrder.snapshot.payableCents,
+            doesNotCharge: true,
+            occurredAt: "2026-08-10T11:49:00.000Z",
+            simulated: true,
+          },
+          replayed: false,
+          status: "simulated-paid",
         },
         status: 200,
       });
@@ -1268,4 +1517,59 @@ test("WEB-C03 operates journey tabs, reservation jumps and actionable history fi
         .filter((button) => button.height < 44 || button.width < 44),
     );
   expect(undersizedControls).toEqual([]);
+});
+
+test("WEB-C04 completes the arrived-reservation whole-cart and no-charge order flow at 360px", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  await openCustomerH5(page, {
+    detailStatuses: ["arrived"],
+    orderShortages: 1,
+  });
+  await page.getByRole("button", { name: "行程", exact: true }).click();
+  await page.locator(".customer-journey-main").first().click();
+  await page.getByRole("button", { name: "购买柜台商品" }).click();
+
+  await expect(page.getByRole("heading", { name: "柜台商品" })).toBeVisible();
+  await expect(page.getByText("0 件商品")).toBeVisible();
+  await expect(page.getByRole("button", { name: "确认购物车" })).toBeDisabled();
+  await expect(page.getByText("仅余 3")).toBeVisible();
+  await page.getByRole("button", { name: "增加脉冲气泡水" }).click();
+  await page.getByRole("button", { name: "增加夜航薯片" }).click();
+  await expect(page.getByText("2 件商品")).toBeVisible();
+  await expect(page.getByText("¥18.00", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "确认购物车" }).click();
+  await expect(
+    page.getByRole("heading", { name: "确认商品订单" }),
+  ).toBeVisible();
+  await expect(page.getByText("应付模拟金额")).toBeVisible();
+  const orderCouponToggle = page.getByRole("button", {
+    name: /商品立减体验券/u,
+  });
+  await expect(orderCouponToggle).toHaveAttribute("aria-pressed", "true");
+  await orderCouponToggle.click();
+  await expect(orderCouponToggle).toHaveAttribute("aria-pressed", "false");
+  await expect(orderCouponToggle).toContainText("未使用");
+  await orderCouponToggle.click();
+  await expect(orderCouponToggle).toHaveAttribute("aria-pressed", "true");
+  await expect(orderCouponToggle).toContainText("已使用");
+  await page.getByRole("button", { name: "创建待模拟支付订单" }).click();
+  await expect(page.getByText("整单库存不足")).toBeVisible();
+  await expect(page.getByText("脉冲气泡水 × 1")).toBeVisible();
+  await page.getByRole("button", { name: "创建待模拟支付订单" }).click();
+
+  await expect(page.getByText("待模拟支付", { exact: true })).toBeVisible();
+  await expect(page.getByText(/库存保留倒计时/u)).toBeVisible();
+  await page.getByRole("button", { name: "确认模拟支付（不扣款）" }).click();
+  await expect(
+    page.getByRole("heading", { name: "模拟支付成功" }),
+  ).toBeVisible();
+  await expect(page.getByText("全程没有扣款")).toBeVisible();
+
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
 });

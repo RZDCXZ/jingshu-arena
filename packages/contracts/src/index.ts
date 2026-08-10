@@ -205,7 +205,11 @@ export interface CustomerReservationDetailResponse {
     readonly simulated: true;
   } | null;
   readonly related: {
-    readonly orders: ReadonlyArray<never>;
+    readonly orders: ReadonlyArray<{
+      readonly id: string;
+      readonly label: string;
+      readonly status: CustomerOrderStatus;
+    }>;
     readonly repairs: ReadonlyArray<never>;
   };
   readonly reservationId: string;
@@ -246,6 +250,154 @@ export interface CustomerReservationCancellationResponse {
   } | null;
   readonly replayed: boolean;
   readonly reservationId: string;
+  readonly status: "cancelled";
+}
+
+export interface CustomerOrderCatalogResponse {
+  readonly status: "ready";
+  readonly currentTime: string;
+  readonly reservation: {
+    readonly reservationId: string;
+    readonly seat: { readonly code: string };
+    readonly status: "arrived" | "in-use";
+    readonly store: { readonly code: string; readonly displayName: string };
+  };
+  readonly products: ReadonlyArray<{
+    readonly availableQuantity: number;
+    readonly category: "drink" | "meal" | "snack" | "supply";
+    readonly description: string;
+    readonly id: string;
+    readonly lowStock: boolean;
+    readonly name: string;
+    readonly onHandQuantity: number;
+    readonly reservedQuantity: number;
+    readonly unitPriceCents: number;
+  }>;
+  readonly coupons: ReadonlyArray<{
+    readonly code: string;
+    readonly discountCents: number;
+    readonly displayName: string;
+    readonly eligibility:
+      | { readonly status: "eligible" }
+      | {
+          readonly reason: "minimum-spend" | "time-window" | "unavailable";
+          readonly status: "ineligible";
+        };
+    readonly id: string;
+    readonly minimumSpendCents: number;
+    readonly validUntil: string;
+  }>;
+}
+
+export interface CreateCustomerPendingOrderRequest {
+  readonly couponId: string | null;
+  readonly lines: ReadonlyArray<{
+    readonly productId: string;
+    readonly quantity: number;
+  }>;
+  readonly reservationId: string;
+}
+
+export interface CustomerOrderSnapshotResponse {
+  readonly coupon: {
+    readonly code: string;
+    readonly discountCents: number;
+    readonly displayName: string;
+  } | null;
+  readonly discountCents: number;
+  readonly lines: ReadonlyArray<{
+    readonly lineTotalCents: number;
+    readonly productId: string;
+    readonly productName: string;
+    readonly quantity: number;
+    readonly unitPriceCents: number;
+  }>;
+  readonly payableCents: number;
+  readonly reservation: {
+    readonly reservationId: string;
+    readonly seatCode: string;
+    readonly storeCode: string;
+    readonly storeDisplayName: string;
+  };
+  readonly subtotalCents: number;
+}
+
+export interface CustomerPendingOrderResponse {
+  readonly holdExpiresAt: string;
+  readonly orderId: string;
+  readonly replayed: boolean;
+  readonly snapshot: CustomerOrderSnapshotResponse;
+  readonly status: "pending-simulated-payment";
+}
+
+export const CUSTOMER_ORDER_STATUSES = [
+  "pending-simulated-payment",
+  "simulated-paid",
+  "cancelled",
+  "expired",
+] as const;
+export type CustomerOrderStatus = (typeof CUSTOMER_ORDER_STATUSES)[number];
+
+export interface CustomerOrderDetailResponse {
+  readonly actions: {
+    readonly canCancel: boolean;
+    readonly canSimulatePayment: boolean;
+  };
+  readonly cancelledAt: string | null;
+  readonly coupon:
+    | (NonNullable<CustomerOrderSnapshotResponse["coupon"]> & {
+        readonly status: CustomerExperienceCouponStatus;
+      })
+    | null;
+  readonly currentTime: string;
+  readonly expiredAt: string | null;
+  readonly holdExpiresAt: string;
+  readonly inventory: ReadonlyArray<{
+    readonly availableQuantity: number;
+    readonly onHandQuantity: number;
+    readonly productId: string;
+    readonly reservedForOrderQuantity: number;
+    readonly reservedQuantity: number;
+  }>;
+  readonly orderId: string;
+  readonly payment: {
+    readonly amountCents: number;
+    readonly doesNotCharge: true;
+    readonly occurredAt: string;
+    readonly simulated: true;
+  } | null;
+  readonly snapshot: CustomerOrderSnapshotResponse;
+  readonly status: CustomerOrderStatus;
+  readonly terminalReason: string | null;
+  readonly timeline: ReadonlyArray<{
+    readonly data: unknown;
+    readonly occurredAt: string;
+    readonly type: string;
+  }>;
+}
+
+export interface CustomerOrderPaymentResponse {
+  readonly notice: "模拟支付，不会扣款，也不需要真实支付凭证。";
+  readonly orderId: string;
+  readonly payment: {
+    readonly amountCents: number;
+    readonly doesNotCharge: true;
+    readonly occurredAt: string;
+    readonly simulated: true;
+  };
+  readonly replayed: boolean;
+  readonly status: "simulated-paid";
+}
+
+export interface CancelCustomerOrderRequest {
+  readonly reason: string;
+}
+
+export interface CustomerOrderCancellationResponse {
+  readonly cancelledAt: string;
+  readonly couponRestored: boolean;
+  readonly orderId: string;
+  readonly replayed: boolean;
   readonly status: "cancelled";
 }
 
@@ -455,7 +607,11 @@ export interface StaffReservationDetailResponse {
   readonly arrivedAt: string | null;
   readonly refund: CustomerReservationDetailResponse["refund"];
   readonly related: {
-    readonly orders: ReadonlyArray<never>;
+    readonly orders: ReadonlyArray<{
+      readonly id: string;
+      readonly label: string;
+      readonly status: CustomerOrderStatus;
+    }>;
     readonly repairs: ReadonlyArray<never>;
   };
   readonly reservation: StaffReservationSummary;

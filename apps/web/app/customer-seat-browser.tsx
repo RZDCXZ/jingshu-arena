@@ -38,12 +38,18 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ApiErrorResponse,
+  CreateCustomerPendingOrderRequest,
   CreateCustomerPendingReservationRequest,
   CustomerExperienceCouponStatus,
   CustomerJourneyReservation,
   CustomerJourneyResponse,
   CustomerMachineProfileCode,
   CustomerMembershipResponse,
+  CustomerOrderCancellationResponse,
+  CustomerOrderCatalogResponse,
+  CustomerOrderDetailResponse,
+  CustomerOrderPaymentResponse,
+  CustomerPendingOrderResponse,
   CustomerSeatAvailability,
   CustomerSeatAvailabilityResponse,
   CustomerPendingReservationResponse,
@@ -160,6 +166,10 @@ type CustomerView =
   | "held"
   | "journey"
   | "membership"
+  | "order-catalog"
+  | "order-confirm"
+  | "order-detail"
+  | "order-payment"
   | "payment"
   | "seats";
 
@@ -199,6 +209,20 @@ const lifecycleProgressSteps = [
   { label: "已到店", status: "arrived" },
   { label: "使用中", status: "in-use" },
 ] as const;
+
+const orderStatusLabels = {
+  cancelled: "已取消",
+  expired: "已过期",
+  "pending-simulated-payment": "待模拟支付",
+  "simulated-paid": "模拟支付成功",
+} as const;
+
+const orderTimelineLabels: Record<string, string> = {
+  "order.cancelled": "商品订单已取消，库存与体验券已释放",
+  "order.expired": "十分钟库存保留已到期",
+  "order.pending-created": "整单库存已排他保留",
+  "order.simulated-payment-succeeded": "模拟支付成功（未扣款）",
+};
 
 const journeyGroupLabels: Record<JourneyGroup, string> = {
   current: "当前",
@@ -407,9 +431,53 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
   const [journeyAttempt, setJourneyAttempt] = useState(0);
   const [journeyGroup, setJourneyGroup] = useState<JourneyGroup>("current");
   const [historyFilter, setHistoryFilter] = useState<"all" | "refunds">("all");
+  const [orderCatalog, setOrderCatalog] =
+    useState<CustomerOrderCatalogResponse | null>(null);
+  const [orderCatalogLoading, setOrderCatalogLoading] = useState(false);
+  const [orderCatalogFailure, setOrderCatalogFailure] = useState("");
+  const [orderCategory, setOrderCategory] = useState<
+    "all" | CustomerOrderCatalogResponse["products"][number]["category"]
+  >("all");
+  const [orderCart, setOrderCart] = useState<Record<string, number>>({});
+  const [selectedOrderCouponId, setSelectedOrderCouponId] = useState<
+    string | null
+  >(null);
+  const [orderSubmitting, setOrderSubmitting] = useState(false);
+  const [orderSubmissionFailure, setOrderSubmissionFailure] = useState("");
+  const orderCreateKeyRef = useRef<string | null>(null);
+  const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
+  const [orderDetail, setOrderDetail] =
+    useState<CustomerOrderDetailResponse | null>(null);
+  const [orderDetailLoading, setOrderDetailLoading] = useState(false);
+  const [orderDetailFailure, setOrderDetailFailure] = useState("");
+  const [orderObservedAt, setOrderObservedAt] = useState(0);
+  const [orderPaymentResult, setOrderPaymentResult] =
+    useState<CustomerOrderPaymentResponse | null>(null);
+  const [orderPaymentLoading, setOrderPaymentLoading] = useState(false);
+  const [orderPaymentFailure, setOrderPaymentFailure] = useState("");
+  const orderPaymentKeyRef = useRef<string | null>(null);
+  const [orderCancelLoading, setOrderCancelLoading] = useState(false);
+  const [orderCancelFailure, setOrderCancelFailure] = useState("");
+  const orderCancelKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!["conditions", "journey", "membership", "seats"].includes(view)) {
+    orderPaymentKeyRef.current = null;
+    orderCancelKeyRef.current = null;
+  }, [activeOrderId]);
+
+  useEffect(() => {
+    if (
+      ![
+        "conditions",
+        "journey",
+        "membership",
+        "order-catalog",
+        "order-confirm",
+        "order-detail",
+        "order-payment",
+        "seats",
+      ].includes(view)
+    ) {
       return;
     }
     customerRootRef.current?.parentElement?.scrollTo({
@@ -419,10 +487,12 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
   }, [view]);
 
   useEffect(() => {
-    if (
-      view !== "detail" ||
-      reservationDetail?.status !== "pending-confirmation"
-    ) {
+    if (!(
+      (view === "detail" &&
+        reservationDetail?.status === "pending-confirmation") ||
+      (view === "order-detail" &&
+        orderDetail?.status === "pending-simulated-payment")
+    )) {
       return;
     }
     const timer = window.setInterval(
@@ -430,7 +500,7 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
       1_000,
     );
     return () => window.clearInterval(timer);
-  }, [reservationDetail?.status, view]);
+  }, [orderDetail?.status, reservationDetail?.status, view]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -887,6 +957,262 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     }
   }
 
+  async function openOrderCatalog(reservationId: string) {
+    setOrderCatalog(null);
+    setOrderCatalogLoading(true);
+    setOrderCatalogFailure("");
+    setOrderSubmissionFailure("");
+    setOrderCart({});
+    setOrderCategory("all");
+    setSelectedOrderCouponId(null);
+    orderCreateKeyRef.current = null;
+    setView("order-catalog");
+    try {
+      const response = await fetch(
+        `/api/v1/customer/reservations/${reservationId}/products`,
+        { cache: "no-store", credentials: "same-origin" },
+      );
+      const payload = (await response.json()) as
+        ApiErrorResponse | CustomerOrderCatalogResponse;
+      if (!response.ok) {
+        throw new Error(
+          "error" in payload ? payload.error.message : "柜台商品暂时无法读取。",
+        );
+      }
+      const result = payload as CustomerOrderCatalogResponse;
+      setOrderCatalog(result);
+      setSelectedOrderCouponId(
+        result.coupons.find(
+          (coupon) => coupon.eligibility.status === "eligible",
+        )?.id ?? null,
+      );
+    } catch (error) {
+      setOrderCatalogFailure(
+        error instanceof Error ? error.message : "柜台商品暂时无法读取。",
+      );
+    } finally {
+      setOrderCatalogLoading(false);
+    }
+  }
+
+  function changeOrderQuantity(productId: string, delta: number) {
+    const product = orderCatalog?.products.find(
+      (candidate) => candidate.id === productId,
+    );
+    if (!product) return;
+    setOrderCart((current) => {
+      const quantity = Math.max(
+        0,
+        Math.min(product.availableQuantity, (current[productId] ?? 0) + delta),
+      );
+      if (quantity === 0) {
+        const next = { ...current };
+        delete next[productId];
+        return next;
+      }
+      return { ...current, [productId]: quantity };
+    });
+    setOrderSubmissionFailure("");
+    orderCreateKeyRef.current = null;
+  }
+
+  async function readOrderDetail(orderId: string) {
+    setActiveOrderId(orderId);
+    setOrderDetailLoading(true);
+    setOrderDetailFailure("");
+    try {
+      const response = await fetch(`/api/v1/customer/orders/${orderId}`, {
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      const payload = (await response.json()) as
+        ApiErrorResponse | CustomerOrderDetailResponse;
+      if (!response.ok) {
+        throw new Error(
+          "error" in payload ? payload.error.message : "商品订单暂时无法读取。",
+        );
+      }
+      setOrderDetail(payload as CustomerOrderDetailResponse);
+      setOrderObservedAt(Date.now());
+      return payload as CustomerOrderDetailResponse;
+    } catch (error) {
+      setOrderDetailFailure(
+        error instanceof Error ? error.message : "商品订单暂时无法读取。",
+      );
+      return null;
+    } finally {
+      setOrderDetailLoading(false);
+    }
+  }
+
+  function openRelatedOrder(orderId: string) {
+    setOrderDetail(null);
+    setOrderPaymentResult(null);
+    setOrderPaymentFailure("");
+    setOrderCancelFailure("");
+    setActiveOrderId(orderId);
+    setView("order-detail");
+    void readOrderDetail(orderId);
+  }
+
+  async function createOrder() {
+    if (!orderCatalog || orderSubmitting) return;
+    const lines = orderCatalog.products.flatMap((product) => {
+      const quantity = orderCart[product.id] ?? 0;
+      return quantity > 0 ? [{ productId: product.id, quantity }] : [];
+    });
+    if (lines.length === 0) return;
+    const subtotalCents = lines.reduce((total, line) => {
+      const product = orderCatalog.products.find(
+        (candidate) => candidate.id === line.productId,
+      );
+      return total + (product?.unitPriceCents ?? 0) * line.quantity;
+    }, 0);
+    const coupon = orderCatalog.coupons.find(
+      (candidate) => candidate.id === selectedOrderCouponId,
+    );
+    const couponId =
+      coupon?.eligibility.status === "eligible" &&
+      subtotalCents >= coupon.minimumSpendCents
+        ? coupon.id
+        : null;
+    const request: CreateCustomerPendingOrderRequest = {
+      couponId,
+      lines,
+      reservationId: orderCatalog.reservation.reservationId,
+    };
+    const idempotencyKey = orderCreateKeyRef.current ?? crypto.randomUUID();
+    orderCreateKeyRef.current = idempotencyKey;
+    setOrderSubmitting(true);
+    setOrderSubmissionFailure("");
+    try {
+      const response = await fetch("/api/v1/customer/orders", {
+        body: JSON.stringify(request),
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+          "X-CSRF-Token": csrfToken,
+        },
+        method: "POST",
+      });
+      const payload = (await response.json()) as
+        ApiErrorResponse | CustomerPendingOrderResponse;
+      if (!response.ok) {
+        throw new Error(
+          "error" in payload
+            ? payload.error.message
+            : "商品订单未创建，购物车内容已保留。",
+        );
+      }
+      const created = payload as CustomerPendingOrderResponse;
+      setActiveOrderId(created.orderId);
+      setOrderDetail(null);
+      setOrderPaymentResult(null);
+      setOrderPaymentFailure("");
+      setOrderCancelFailure("");
+      setView("order-detail");
+      await readOrderDetail(created.orderId);
+      setJourneyAttempt((attempt) => attempt + 1);
+      setMembershipAttempt((attempt) => attempt + 1);
+    } catch (error) {
+      setOrderSubmissionFailure(
+        error instanceof Error
+          ? error.message
+          : "商品订单未创建，整单库存不会被部分占用。",
+      );
+    } finally {
+      setOrderSubmitting(false);
+    }
+  }
+
+  async function simulateOrderPayment() {
+    if (!activeOrderId || orderPaymentLoading) return;
+    const idempotencyKey = orderPaymentKeyRef.current ?? crypto.randomUUID();
+    orderPaymentKeyRef.current = idempotencyKey;
+    setOrderPaymentLoading(true);
+    setOrderPaymentFailure("");
+    try {
+      const response = await fetch(
+        `/api/v1/customer/orders/${activeOrderId}/simulated-payment`,
+        {
+          body: JSON.stringify({}),
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+            "X-CSRF-Token": csrfToken,
+          },
+          method: "POST",
+        },
+      );
+      const payload = (await response.json()) as
+        ApiErrorResponse | CustomerOrderPaymentResponse;
+      if (!response.ok) {
+        throw new Error(
+          "error" in payload
+            ? payload.error.message
+            : "模拟支付未完成；不会产生真实扣款。",
+        );
+      }
+      setOrderPaymentResult(payload as CustomerOrderPaymentResponse);
+      await readOrderDetail(activeOrderId);
+      setJourneyAttempt((attempt) => attempt + 1);
+      setMembershipAttempt((attempt) => attempt + 1);
+      setView("order-payment");
+    } catch (error) {
+      setOrderPaymentFailure(
+        error instanceof Error
+          ? error.message
+          : "模拟支付未完成；不会产生真实扣款。",
+      );
+    } finally {
+      setOrderPaymentLoading(false);
+    }
+  }
+
+  async function cancelOrder() {
+    if (!activeOrderId || orderCancelLoading) return;
+    const idempotencyKey = orderCancelKeyRef.current ?? crypto.randomUUID();
+    orderCancelKeyRef.current = idempotencyKey;
+    setOrderCancelLoading(true);
+    setOrderCancelFailure("");
+    try {
+      const response = await fetch(
+        `/api/v1/customer/orders/${activeOrderId}/cancel`,
+        {
+          body: JSON.stringify({ reason: "顾客在模拟支付前取消商品订单" }),
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+            "X-CSRF-Token": csrfToken,
+          },
+          method: "POST",
+        },
+      );
+      const payload = (await response.json()) as
+        ApiErrorResponse | CustomerOrderCancellationResponse;
+      if (!response.ok) {
+        throw new Error(
+          "error" in payload ? payload.error.message : "商品订单取消未完成。",
+        );
+      }
+      await readOrderDetail(activeOrderId);
+      setJourneyAttempt((attempt) => attempt + 1);
+      setMembershipAttempt((attempt) => attempt + 1);
+    } catch (error) {
+      setOrderCancelFailure(
+        error instanceof Error ? error.message : "商品订单取消未完成。",
+      );
+    } finally {
+      setOrderCancelLoading(false);
+    }
+  }
+
   function restartReservation() {
     setView("conditions");
     setCreatedReservation(null);
@@ -971,6 +1297,51 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
       : createdReservation?.reservationId === activeReservationId
         ? createdReservation.snapshot
         : null;
+  const orderCartLines =
+    orderCatalog?.products.flatMap((product) => {
+      const quantity = orderCart[product.id] ?? 0;
+      return quantity > 0 ? [{ product, quantity }] : [];
+    }) ?? [];
+  const visibleOrderProducts =
+    orderCatalog?.products.filter(
+      (product) =>
+        orderCategory === "all" || product.category === orderCategory,
+    ) ?? [];
+  const orderCartCount = orderCartLines.reduce(
+    (total, line) => total + line.quantity,
+    0,
+  );
+  const orderSubtotalCents = orderCartLines.reduce(
+    (total, line) => total + line.product.unitPriceCents * line.quantity,
+    0,
+  );
+  const selectedOrderCoupon =
+    orderCatalog?.coupons.find(
+      (coupon) => coupon.id === selectedOrderCouponId,
+    ) ?? null;
+  const orderCouponApplies =
+    selectedOrderCoupon?.eligibility.status === "eligible" &&
+    orderSubtotalCents >= selectedOrderCoupon.minimumSpendCents;
+  const orderDiscountCents = orderCouponApplies
+    ? Math.min(selectedOrderCoupon.discountCents, orderSubtotalCents)
+    : 0;
+  const orderPayableCents = orderSubtotalCents - orderDiscountCents;
+  const orderRemainingSeconds =
+    orderDetail?.status === "pending-simulated-payment"
+      ? Math.max(
+          0,
+          Math.ceil(
+            (Date.parse(orderDetail.holdExpiresAt) -
+              Date.parse(orderDetail.currentTime) -
+              Math.max(0, Date.now() - orderObservedAt)) /
+              1_000,
+          ),
+        )
+      : null;
+  const orderCountdown =
+    orderRemainingSeconds === null
+      ? "—"
+      : `${String(Math.floor(orderRemainingSeconds / 60)).padStart(2, "0")}:${String(orderRemainingSeconds % 60).padStart(2, "0")}`;
   const journeyItems =
     journeyGroup === "history" && historyFilter === "refunds"
       ? (journey?.groups.history.filter((item) => item.refund !== null) ?? [])
@@ -997,9 +1368,11 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
           <span>
             {view === "payment"
               ? "WEB-C02 / MP-08"
-              : view === "journey" || view === "membership"
-                ? "WEB-C03 / MP-16 · MP-17"
-                : "WEB-C00 / C02"}
+              : view.startsWith("order-")
+                ? "WEB-C04 / MP-10 · MP-12"
+                : view === "journey" || view === "membership"
+                  ? "WEB-C03 / MP-16 · MP-17"
+                  : "WEB-C00 / C02"}
           </span>
           <strong>
             {view === "seats"
@@ -1012,17 +1385,490 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                     ? "模拟支付"
                     : view === "detail"
                       ? "预约详情"
-                      : view === "journey"
-                        ? "统一行程"
-                        : view === "membership"
-                          ? "会员与体验券"
-                          : "预约座位"}
+                      : view === "order-catalog"
+                        ? "柜台商品"
+                        : view === "order-confirm"
+                          ? "确认订单"
+                          : view === "order-detail"
+                            ? "商品订单"
+                            : view === "order-payment"
+                              ? "模拟支付结果"
+                              : view === "journey"
+                                ? "统一行程"
+                                : view === "membership"
+                                  ? "会员与体验券"
+                                  : "预约座位"}
           </strong>
         </div>
         <span className="customer-demo-badge">演示数据</span>
       </header>
 
-      {view === "journey" ? (
+      {view === "order-catalog" ? (
+        <div className="customer-scroll-content customer-order-page has-order-action">
+          <button
+            className="customer-back-button"
+            onClick={() => setView("detail")}
+            type="button"
+          >
+            <CaretLeft />
+            返回预约详情
+          </button>
+          {orderCatalogLoading ? (
+            <section className="customer-lifecycle-loading" aria-live="polite">
+              <ArrowClockwise />
+              <strong>正在读取柜台商品</strong>
+              <span>只展示当前门店可售商品与服务端库存。</span>
+            </section>
+          ) : orderCatalog ? (
+            <>
+              <section className="customer-order-link-card">
+                <Storefront weight="duotone" />
+                <span>
+                  <strong>关联座位 {orderCatalog.reservation.seat.code}</strong>
+                  {orderCatalog.reservation.store.displayName} ·
+                  到店后专属柜台目录
+                </span>
+              </section>
+              <section className="customer-order-heading">
+                <span className="customer-eyebrow">STORE CATALOG</span>
+                <h1>柜台商品</h1>
+                <p>库存与门店价均由服务端确认，整单提交才会排他保留。</p>
+              </section>
+              <div
+                aria-label="商品分类"
+                className="customer-order-categories"
+                role="tablist"
+              >
+                {[
+                  ["all", "全部"],
+                  ["drink", "饮品"],
+                  ["snack", "零食"],
+                  ["meal", "餐食"],
+                  ["supply", "便利用品"],
+                ].map(([value, label]) => (
+                  <button
+                    aria-selected={orderCategory === value}
+                    className={orderCategory === value ? "is-active" : ""}
+                    key={value}
+                    onClick={() =>
+                      setOrderCategory(value as typeof orderCategory)
+                    }
+                    role="tab"
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="customer-order-products">
+                {visibleOrderProducts.map((product) => {
+                  const quantity = orderCart[product.id] ?? 0;
+                  return (
+                    <article
+                      className="customer-order-product"
+                      key={product.id}
+                    >
+                      <div className="customer-order-product-icon">
+                        <Package weight="duotone" />
+                      </div>
+                      <span>
+                        <strong>{product.name}</strong>
+                        <small>{product.description}</small>
+                        <em className={product.lowStock ? "is-low" : ""}>
+                          {product.lowStock
+                            ? `仅余 ${product.availableQuantity}`
+                            : `可售 ${product.availableQuantity}`}
+                        </em>
+                      </span>
+                      <div className="customer-order-product-controls">
+                        <strong>{formatMoney(product.unitPriceCents)}</strong>
+                        <div>
+                          <button
+                            aria-label={`减少${product.name}`}
+                            disabled={quantity === 0}
+                            onClick={() => changeOrderQuantity(product.id, -1)}
+                            type="button"
+                          >
+                            <Minus />
+                          </button>
+                          <span>{quantity}</span>
+                          <button
+                            aria-label={`增加${product.name}`}
+                            disabled={quantity >= product.availableQuantity}
+                            onClick={() => changeOrderQuantity(product.id, 1)}
+                            type="button"
+                          >
+                            <Plus />
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <section className="customer-lifecycle-loading is-error">
+              <Warning />
+              <strong>柜台商品暂时不可用</strong>
+              <span>{orderCatalogFailure}</span>
+              {activeReservationId ? (
+                <button
+                  className="customer-primary-button"
+                  onClick={() => void openOrderCatalog(activeReservationId)}
+                  type="button"
+                >
+                  重新读取
+                </button>
+              ) : null}
+            </section>
+          )}
+          <div className="customer-order-action-bar">
+            <span>
+              <small>{orderCartCount} 件商品</small>
+              <strong>{formatMoney(orderSubtotalCents)}</strong>
+            </span>
+            <button
+              disabled={orderCartCount === 0}
+              onClick={() => {
+                setOrderSubmissionFailure("");
+                setView("order-confirm");
+              }}
+              type="button"
+            >
+              确认购物车
+            </button>
+          </div>
+        </div>
+      ) : view === "order-confirm" && orderCatalog ? (
+        <div className="customer-scroll-content customer-order-page has-order-action">
+          <button
+            className="customer-back-button"
+            onClick={() => setView("order-catalog")}
+            type="button"
+          >
+            <CaretLeft />
+            返回商品目录
+          </button>
+          <section className="customer-order-heading">
+            <span className="customer-eyebrow">CONFIRM ORDER</span>
+            <h1>确认商品订单</h1>
+            <p>
+              {orderCatalog.reservation.store.displayName} · 座位
+              {orderCatalog.reservation.seat.code}
+            </p>
+          </section>
+          <section className="customer-order-confirm-card">
+            <div className="customer-section-title">
+              <div>
+                <span>WHOLE CART</span>
+                <h2>商品明细</h2>
+              </div>
+              <Receipt />
+            </div>
+            <div className="customer-order-confirm-lines">
+              {orderCartLines.map(({ product, quantity }) => (
+                <span key={product.id}>
+                  <strong>
+                    {product.name} × {quantity}
+                  </strong>
+                  <small>
+                    {formatMoney(product.unitPriceCents)} × {quantity}
+                  </small>
+                  <em>{formatMoney(product.unitPriceCents * quantity)}</em>
+                </span>
+              ))}
+            </div>
+          </section>
+          {orderCatalog.coupons.map((coupon) => {
+            const selected = selectedOrderCouponId === coupon.id;
+            const applies =
+              selected &&
+              coupon.eligibility.status === "eligible" &&
+              orderSubtotalCents >= coupon.minimumSpendCents;
+            return (
+              <button
+                aria-pressed={selected}
+                className={`customer-order-coupon ${
+                  applies ? "is-applied" : ""
+                }`}
+                key={coupon.id}
+                onClick={() => {
+                  setSelectedOrderCouponId((current) =>
+                    current === coupon.id ? null : coupon.id,
+                  );
+                  setOrderSubmissionFailure("");
+                  orderCreateKeyRef.current = null;
+                }}
+                type="button"
+              >
+                <Ticket weight="duotone" />
+                <span>
+                  <strong>{coupon.displayName}</strong>
+                  <small>
+                    满 {formatMoney(coupon.minimumSpendCents)} 减{" "}
+                    {formatMoney(coupon.discountCents)}
+                  </small>
+                </span>
+                <em>
+                  {!selected ? "未使用" : applies ? "已使用" : "未达门槛"}
+                </em>
+              </button>
+            );
+          })}
+          <section className="customer-order-price-card">
+            <span>
+              商品小计<strong>{formatMoney(orderSubtotalCents)}</strong>
+            </span>
+            <span>
+              体验券
+              <strong>−{formatMoney(orderDiscountCents)}</strong>
+            </span>
+            <span>
+              应付模拟金额<strong>{formatMoney(orderPayableCents)}</strong>
+            </span>
+            <small>模拟支付，不会扣款，也不需要真实支付凭证。</small>
+          </section>
+          {orderSubmissionFailure ? (
+            <section className="customer-feedback is-error" role="alert">
+              <Warning />
+              <span>
+                <strong>整单库存不足</strong>
+                {orderSubmissionFailure}
+              </span>
+            </section>
+          ) : null}
+          <section className="customer-order-atomic-note">
+            <ShieldCheck />
+            <span>
+              <strong>整单原子保留</strong>
+              任一商品不足都会回滚全部库存；购物车内容仍会保留。
+            </span>
+          </section>
+          <div className="customer-order-action-bar">
+            <span>
+              <small>本单模拟应付</small>
+              <strong>{formatMoney(orderPayableCents)}</strong>
+            </span>
+            <button
+              disabled={orderCartCount === 0 || orderSubmitting}
+              onClick={() => void createOrder()}
+              type="button"
+            >
+              {orderSubmitting ? "正在保留库存…" : "创建待模拟支付订单"}
+            </button>
+          </div>
+        </div>
+      ) : view === "order-detail" && activeOrderId ? (
+        <div className="customer-scroll-content customer-order-page">
+          <button
+            className="customer-back-button"
+            onClick={() => {
+              if (orderCatalog?.reservation.reservationId) {
+                setView("detail");
+                void readReservationDetail(
+                  orderCatalog.reservation.reservationId,
+                );
+              } else {
+                setView("journey");
+              }
+            }}
+            type="button"
+          >
+            <CaretLeft />
+            返回预约详情
+          </button>
+          {orderDetailLoading && !orderDetail ? (
+            <section className="customer-lifecycle-loading" aria-live="polite">
+              <ArrowClockwise />
+              <strong>正在读取商品订单</strong>
+              <span>以服务端库存保留和支付结果为准。</span>
+            </section>
+          ) : orderDetail ? (
+            <>
+              <section className="customer-order-status-card">
+                <span className="customer-eyebrow">ORDER STATUS</span>
+                <div>
+                  <Package weight="duotone" />
+                  <span>
+                    <strong>{orderStatusLabels[orderDetail.status]}</strong>
+                    <small>
+                      {orderDetail.status === "pending-simulated-payment"
+                        ? `库存保留倒计时 ${orderCountdown}`
+                        : "状态已由服务端确认"}
+                    </small>
+                  </span>
+                </div>
+              </section>
+              <ol className="customer-order-progress" aria-label="商品订单进度">
+                {[
+                  ["待支付", true],
+                  ["已支付", orderDetail.status === "simulated-paid"],
+                  ["制作中", false],
+                  ["待取", false],
+                  ["完成", false],
+                ].map(([label, active], index) => (
+                  <li className={active ? "is-active" : ""} key={String(label)}>
+                    <i>{index + 1}</i>
+                    <span>{String(label)}</span>
+                  </li>
+                ))}
+              </ol>
+              <section className="customer-order-confirm-card">
+                <div className="customer-section-title">
+                  <div>
+                    <span>IMMUTABLE SNAPSHOT</span>
+                    <h2>订单快照</h2>
+                  </div>
+                  <Receipt />
+                </div>
+                <div className="customer-order-confirm-lines">
+                  {orderDetail.snapshot.lines.map((line) => (
+                    <span key={line.productId}>
+                      <strong>
+                        {line.productName} × {line.quantity}
+                      </strong>
+                      <small>单价快照 {formatMoney(line.unitPriceCents)}</small>
+                      <em>{formatMoney(line.lineTotalCents)}</em>
+                    </span>
+                  ))}
+                </div>
+                <div className="customer-order-snapshot-total">
+                  <span>优惠</span>
+                  <strong>
+                    −{formatMoney(orderDetail.snapshot.discountCents)}
+                  </strong>
+                  <span>模拟应付</span>
+                  <strong>
+                    {formatMoney(orderDetail.snapshot.payableCents)}
+                  </strong>
+                </div>
+              </section>
+              <section className="customer-order-confirm-card">
+                <div className="customer-section-title">
+                  <div>
+                    <span>IMMUTABLE TIMELINE</span>
+                    <h2>业务事件</h2>
+                  </div>
+                  <Clock />
+                </div>
+                <ol className="customer-lifecycle-timeline">
+                  {orderDetail.timeline.map((event, index) => (
+                    <li key={`${event.occurredAt}-${event.type}-${index}`}>
+                      <i />
+                      <span>
+                        <strong>
+                          {orderTimelineLabels[event.type] ?? event.type}
+                        </strong>
+                        <small>{formatWindow(event.occurredAt)}</small>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+              {orderPaymentFailure ||
+              orderCancelFailure ||
+              orderDetailFailure ? (
+                <section className="customer-feedback is-error" role="alert">
+                  <Warning />
+                  <span>
+                    <strong>当前操作未完成</strong>
+                    {orderPaymentFailure ||
+                      orderCancelFailure ||
+                      orderDetailFailure}
+                  </span>
+                </section>
+              ) : null}
+              <div className="customer-lifecycle-actions">
+                {orderDetail.actions.canSimulatePayment ? (
+                  <button
+                    className="customer-primary-button"
+                    disabled={orderPaymentLoading}
+                    onClick={() => void simulateOrderPayment()}
+                    type="button"
+                  >
+                    {orderPaymentLoading
+                      ? "正在确认模拟支付…"
+                      : "确认模拟支付（不扣款）"}
+                  </button>
+                ) : null}
+                {orderDetail.actions.canCancel ? (
+                  <button
+                    className="customer-danger-button"
+                    disabled={orderCancelLoading}
+                    onClick={() => void cancelOrder()}
+                    type="button"
+                  >
+                    {orderCancelLoading ? "正在取消…" : "取消商品订单"}
+                  </button>
+                ) : null}
+                <button
+                  className="customer-payment-secondary"
+                  disabled={orderDetailLoading}
+                  onClick={() => void readOrderDetail(activeOrderId)}
+                  type="button"
+                >
+                  <ArrowClockwise />
+                  {orderDetailLoading ? "正在刷新…" : "刷新当前状态"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <section className="customer-lifecycle-loading is-error">
+              <Warning />
+              <strong>商品订单暂时不可用</strong>
+              <span>{orderDetailFailure}</span>
+              <button
+                className="customer-primary-button"
+                onClick={() => void readOrderDetail(activeOrderId)}
+                type="button"
+              >
+                重新读取
+              </button>
+            </section>
+          )}
+        </div>
+      ) : view === "order-payment" && orderPaymentResult ? (
+        <div className="customer-scroll-content customer-order-success">
+          <div className="customer-order-success-icon">
+            <CheckCircle weight="fill" />
+          </div>
+          <span className="customer-eyebrow">SIMULATED PAID</span>
+          <h1>模拟支付成功</h1>
+          <p>订单已由服务端确认；全程没有扣款，也不需要真实支付凭证。</p>
+          <section className="customer-order-success-amount">
+            <span>模拟支付金额</span>
+            <strong>
+              {formatMoney(orderPaymentResult.payment.amountCents)}
+            </strong>
+            <small>{formatWindow(orderPaymentResult.payment.occurredAt)}</small>
+          </section>
+          <section className="customer-order-atomic-note">
+            <ShieldCheck />
+            <span>
+              <strong>库存归属订单，后续独立履约</strong>
+              即使关联预约随后结束，已支付商品订单仍保留其独立结果。
+            </span>
+          </section>
+          <button
+            className="customer-primary-button"
+            onClick={() => {
+              setView("order-detail");
+              void readOrderDetail(orderPaymentResult.orderId);
+            }}
+            type="button"
+          >
+            查看商品订单
+          </button>
+          <button
+            className="customer-payment-secondary"
+            onClick={() => setView("journey")}
+            type="button"
+          >
+            返回统一行程
+          </button>
+        </div>
+      ) : view === "journey" ? (
         <div className="customer-scroll-content customer-story-page">
           <section className="customer-demo-strip">
             <ShieldCheck weight="duotone" />
@@ -2375,13 +3221,40 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                   ))}
                 </ol>
               </section>
-              <section className="customer-related-empty">
-                <Info />
-                <span>
-                  <strong>相关单据</strong>
-                  当前没有关联订单或报修记录。
-                </span>
-              </section>
+              {reservationDetail.related.orders.length > 0 ||
+              reservationDetail.related.repairs.length > 0 ? (
+                <section className="customer-related-records">
+                  <div className="customer-section-title">
+                    <div>
+                      <span>RELATED RECORDS</span>
+                      <h2>相关单据</h2>
+                    </div>
+                    <Receipt />
+                  </div>
+                  {reservationDetail.related.orders.map((order) => (
+                    <button
+                      key={order.id}
+                      onClick={() => openRelatedOrder(order.id)}
+                      type="button"
+                    >
+                      <Package />
+                      <span>
+                        <strong>{order.label}</strong>
+                        <small>{orderStatusLabels[order.status]}</small>
+                      </span>
+                      <CaretRight />
+                    </button>
+                  ))}
+                </section>
+              ) : (
+                <section className="customer-related-empty">
+                  <Info />
+                  <span>
+                    <strong>相关单据</strong>
+                    当前没有关联订单或报修记录。
+                  </span>
+                </section>
+              )}
               {detailFailure ? (
                 <section className="customer-feedback is-error" role="alert">
                   <Warning />
@@ -2392,6 +3265,19 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                 </section>
               ) : null}
               <div className="customer-lifecycle-actions">
+                {reservationDetail.status === "arrived" ||
+                reservationDetail.status === "in-use" ? (
+                  <button
+                    className="customer-primary-button"
+                    onClick={() =>
+                      void openOrderCatalog(reservationDetail.reservationId)
+                    }
+                    type="button"
+                  >
+                    <Storefront />
+                    购买柜台商品
+                  </button>
+                ) : null}
                 {reservationDetail.actions.canSimulatePayment ? (
                   <button
                     className="customer-primary-button"

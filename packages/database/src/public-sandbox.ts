@@ -11,6 +11,7 @@ import type {
 import {
   businessDayRange,
   buildPublicSandboxSeed,
+  decideCustomerOrderLifecycle,
   type CustomerReservationMode,
   decideReservationLifecycle,
   decideFrontlineReservationLifecycle,
@@ -18,6 +19,8 @@ import {
   deriveSeatAvailability,
   evaluateReservationCoupon,
   memberTierForGrowth,
+  priceCustomerOrder,
+  type CustomerOrderStatus,
   type MachineProfileCode,
   priceReservationWindow,
   reservationGrowthAward,
@@ -32,6 +35,7 @@ import {
 } from "@jingshu/domain";
 
 import {
+  CustomerOrderConflictError,
   CustomerReservationCreateConflictError,
   CustomerReservationIdempotencyConflictError,
   CustomerReservationLifecycleConflictError,
@@ -259,6 +263,155 @@ export interface DatabaseCustomerReservationCancellation {
   readonly status: "cancelled";
 }
 
+export interface ReadCustomerOrderCatalogInput extends CustomerBrowseContextInput {
+  readonly reservationId: string;
+}
+
+export interface ReadCustomerOrderDetailInput extends CustomerBrowseContextInput {
+  readonly orderId: string;
+}
+
+export interface CreateCustomerPendingOrderInput extends ReadCustomerOrderCatalogInput {
+  readonly couponId: string | null;
+  readonly idempotencyKey: string;
+  readonly lines: ReadonlyArray<{
+    readonly productId: string;
+    readonly quantity: number;
+  }>;
+  readonly requestId: string;
+}
+
+export interface SimulateCustomerOrderPaymentInput extends ReadCustomerOrderDetailInput {
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+}
+
+export interface CancelCustomerOrderInput extends ReadCustomerOrderDetailInput {
+  readonly idempotencyKey: string;
+  readonly reason: string;
+  readonly requestId: string;
+}
+
+export interface DatabaseCustomerOrderCatalog {
+  readonly coupons: ReadonlyArray<{
+    readonly code: string;
+    readonly discountCents: number;
+    readonly displayName: string;
+    readonly eligibility:
+      | { readonly status: "eligible" }
+      | {
+          readonly reason: "minimum-spend" | "time-window" | "unavailable";
+          readonly status: "ineligible";
+        };
+    readonly id: string;
+    readonly minimumSpendCents: number;
+    readonly validUntil: Date;
+  }>;
+  readonly currentTime: Date;
+  readonly products: ReadonlyArray<{
+    readonly availableQuantity: number;
+    readonly category: "drink" | "meal" | "snack" | "supply";
+    readonly description: string;
+    readonly id: string;
+    readonly lowStock: boolean;
+    readonly name: string;
+    readonly onHandQuantity: number;
+    readonly reservedQuantity: number;
+    readonly unitPriceCents: number;
+  }>;
+  readonly reservation: {
+    readonly reservationId: string;
+    readonly seat: { readonly code: string };
+    readonly status: "arrived" | "in-use";
+    readonly store: { readonly code: string; readonly displayName: string };
+  };
+}
+
+export interface CustomerOrderSnapshot {
+  readonly coupon: {
+    readonly code: string;
+    readonly discountCents: number;
+    readonly displayName: string;
+  } | null;
+  readonly discountCents: number;
+  readonly lines: ReadonlyArray<{
+    readonly lineTotalCents: number;
+    readonly productId: string;
+    readonly productName: string;
+    readonly quantity: number;
+    readonly unitPriceCents: number;
+  }>;
+  readonly payableCents: number;
+  readonly reservation: {
+    readonly reservationId: string;
+    readonly seatCode: string;
+    readonly storeCode: string;
+    readonly storeDisplayName: string;
+  };
+  readonly subtotalCents: number;
+}
+
+export interface DatabaseCustomerPendingOrder {
+  readonly holdExpiresAt: Date;
+  readonly orderId: string;
+  readonly replayed: boolean;
+  readonly snapshot: CustomerOrderSnapshot;
+  readonly status: "pending-simulated-payment";
+}
+
+export interface DatabaseCustomerOrderPayment {
+  readonly orderId: string;
+  readonly payment: {
+    readonly amountCents: number;
+    readonly doesNotCharge: true;
+    readonly occurredAt: Date;
+    readonly simulated: true;
+  };
+  readonly replayed: boolean;
+  readonly status: "simulated-paid";
+}
+
+export interface DatabaseCustomerOrderCancellation {
+  readonly cancelledAt: Date;
+  readonly couponRestored: boolean;
+  readonly orderId: string;
+  readonly replayed: boolean;
+  readonly status: "cancelled";
+}
+
+export interface DatabaseCustomerOrderDetail {
+  readonly actions: {
+    readonly canCancel: boolean;
+    readonly canSimulatePayment: boolean;
+  };
+  readonly cancelledAt: Date | null;
+  readonly coupon:
+    | (NonNullable<CustomerOrderSnapshot["coupon"]> & {
+        readonly status: "available" | "expired" | "redeemed" | "reserved";
+      })
+    | null;
+  readonly currentTime: Date;
+  readonly events: ReadonlyArray<{
+    readonly data: unknown;
+    readonly occurredAt: Date;
+    readonly type: string;
+  }>;
+  readonly expiredAt: Date | null;
+  readonly holdExpiresAt: Date;
+  readonly inventory: ReadonlyArray<{
+    readonly availableQuantity: number;
+    readonly onHandQuantity: number;
+    readonly productId: string;
+    readonly reservedQuantity: number;
+    readonly reservedForOrderQuantity: number;
+  }>;
+  readonly orderId: string;
+  readonly payment: DatabaseCustomerOrderPayment["payment"] | null;
+  readonly snapshot: CustomerOrderSnapshot;
+  readonly status: CustomerOrderStatus;
+  readonly terminalReason: string | null;
+}
+
 export interface DatabaseCustomerReservationDetail {
   readonly actions: {
     readonly canCancel: boolean;
@@ -295,7 +448,11 @@ export interface DatabaseCustomerReservationDetail {
     readonly simulated: true;
   } | null;
   readonly related: {
-    readonly orders: ReadonlyArray<never>;
+    readonly orders: ReadonlyArray<{
+      readonly id: string;
+      readonly label: string;
+      readonly status: CustomerOrderStatus;
+    }>;
     readonly repairs: ReadonlyArray<never>;
   };
   readonly reservationId: string;
@@ -561,6 +718,9 @@ export interface DatabaseRoleContext {
 }
 
 export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
+  cancelCustomerOrder(
+    input: CancelCustomerOrderInput,
+  ): Promise<DatabaseCustomerOrderCancellation>;
   cancelCustomerReservation(
     input: CancelCustomerReservationInput,
   ): Promise<DatabaseCustomerReservationCancellation>;
@@ -571,6 +731,12 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   createCustomerPendingReservation(
     input: CreateCustomerPendingReservationInput,
   ): Promise<DatabaseCustomerPendingReservation>;
+  createCustomerPendingOrder(
+    input: CreateCustomerPendingOrderInput,
+  ): Promise<DatabaseCustomerPendingOrder>;
+  simulateCustomerOrderPayment(
+    input: SimulateCustomerOrderPaymentInput,
+  ): Promise<DatabaseCustomerOrderPayment>;
   simulateCustomerReservationPayment(
     input: SimulateCustomerReservationPaymentInput,
   ): Promise<DatabaseCustomerReservationPayment>;
@@ -592,6 +758,12 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readCustomerReservationDetail(
     input: ReadCustomerReservationDetailInput,
   ): Promise<DatabaseCustomerReservationDetail>;
+  readCustomerOrderCatalog(
+    input: ReadCustomerOrderCatalogInput,
+  ): Promise<DatabaseCustomerOrderCatalog>;
+  readCustomerOrderDetail(
+    input: ReadCustomerOrderDetailInput,
+  ): Promise<DatabaseCustomerOrderDetail>;
   readCustomerMembership(
     input: CustomerBrowseContextInput,
   ): Promise<DatabaseCustomerMembership>;
@@ -616,6 +788,80 @@ export interface PublicSandboxDatabaseOptions {
 
 const storeSeeds = publicSandboxSeed.stores;
 const personaSeeds = publicSandboxSeed.personas;
+const productSeeds = [
+  {
+    category: "drink",
+    code: "pulse-sparkling-water",
+    description: "低糖 · 冰柜取用",
+    name: "脉冲气泡水",
+  },
+  {
+    category: "snack",
+    code: "night-voyage-chips",
+    description: "海盐味 · 柜台取货",
+    name: "夜航薯片",
+  },
+  {
+    category: "meal",
+    code: "heatwave-noodles",
+    description: "微辣 · 柜台冲泡",
+    name: "热浪杯面",
+  },
+  {
+    category: "snack",
+    code: "jump-energy-bar",
+    description: "可可味 · 独立包装",
+    name: "跃迁能量棒",
+  },
+  {
+    category: "supply",
+    code: "peripheral-wipe",
+    description: "单片装 · 无香型",
+    name: "外设清洁湿巾",
+  },
+  {
+    category: "supply",
+    code: "wake-mint",
+    description: "小盒装 · 无糖",
+    name: "清醒薄荷糖",
+  },
+  {
+    category: "drink",
+    code: "midnight-iced-tea",
+    description: "无糖茶饮 · 冷藏取用",
+    name: "午夜冰茶",
+  },
+  {
+    category: "drink",
+    code: "circuit-coffee",
+    description: "轻焙咖啡 · 冷藏取用",
+    name: "回路咖啡",
+  },
+  {
+    category: "drink",
+    code: "cloud-mineral-water",
+    description: "常温或冷藏 · 瓶装",
+    name: "云端矿泉水",
+  },
+  {
+    category: "snack",
+    code: "crisp-seaweed",
+    description: "原味 · 独立包装",
+    name: "脆浪海苔",
+  },
+  {
+    category: "snack",
+    code: "star-popcorn",
+    description: "焦糖味 · 柜台取货",
+    name: "星轨爆米花",
+  },
+  {
+    category: "meal",
+    code: "orbit-rice-roll",
+    description: "菌菇风味 · 加热取用",
+    name: "轨道饭团",
+  },
+] as const;
 
 interface SandboxRow {
   id: string;
@@ -719,6 +965,10 @@ interface ExperienceCouponRow {
 }
 
 interface MembershipCouponRow extends ExperienceCouponRow {
+  order_id: string | null;
+  order_store_display_name: string | null;
+  order_status: CustomerOrderStatus | null;
+  reserved_order_id: string | null;
   reserved_reservation_id: string | null;
   reservation_id: string | null;
   reservation_status: ReservationStatus | null;
@@ -893,6 +1143,480 @@ interface CreationRequestRow {
   visitor_key_hash: string | null;
 }
 
+interface OrderReservationContextRow {
+  id: string;
+  seat_code: string;
+  seat_id: string;
+  status: ReservationStatus;
+  store_code: string;
+  store_display_name: string;
+  store_id: string;
+}
+
+interface OrderCatalogProductRow {
+  available_quantity: number;
+  category: DatabaseCustomerOrderCatalog["products"][number]["category"];
+  description: string;
+  id: string;
+  inventory_item_id: string;
+  low_stock_threshold: number;
+  name: string;
+  on_hand_quantity: number;
+  reserved_quantity: number;
+  unit_price_cents: number;
+}
+
+interface OrderCouponRow {
+  business_kind: "order" | "reservation";
+  code: string;
+  discount_cents: number;
+  display_name: string;
+  eligible_end_minutes: number;
+  eligible_start_minutes: number;
+  id: string;
+  minimum_spend_cents: number;
+  status: "available" | "expired" | "redeemed" | "reserved";
+  store_id: string | null;
+  valid_from: Date;
+  valid_until: Date;
+}
+
+interface CustomerOrderRow {
+  cancelled_business_at: Date | null;
+  coupon_status: "available" | "expired" | "redeemed" | "reserved" | null;
+  expired_business_at: Date | null;
+  hold_expires_at: Date;
+  id: string;
+  order_snapshot: CustomerOrderSnapshot;
+  paid_business_at: Date | null;
+  reservation_status: ReservationStatus;
+  simulated_payment_cents: number | null;
+  status: CustomerOrderStatus;
+  store_id: string;
+  terminal_reason: string | null;
+}
+
+interface OrderInventoryDetailRow {
+  on_hand_quantity: number;
+  product_id: string;
+  quantity: number;
+  reserved_quantity: number;
+}
+
+interface OrderEventRow {
+  business_occurred_at: Date;
+  event_data: unknown;
+  event_type: string;
+}
+
+interface RelatedOrderRow {
+  id: string;
+  label: string;
+  status: CustomerOrderStatus;
+}
+
+async function readRelatedOrders(
+  client: PoolClient,
+  sandboxId: string,
+  reservationId: string,
+): Promise<ReadonlyArray<RelatedOrderRow>> {
+  const result = await client.query<RelatedOrderRow>(
+    `select orders.id, orders.status,
+            coalesce(orders.order_snapshot->'lines'->0->>'productName',
+              '柜台商品订单') as label
+       from customer_orders orders
+      where orders.sandbox_id = $1 and orders.reservation_id = $2
+      order by orders.created_business_at, orders.id`,
+    [sandboxId, reservationId],
+  );
+  return result.rows;
+}
+
+interface OrderCommandRow {
+  payload_hash: string;
+  result_data: {
+    holdExpiresAt: string;
+    orderId: string;
+    snapshot: CustomerOrderSnapshot;
+    status: "pending-simulated-payment";
+  };
+}
+
+interface OrderPaymentCommandRow {
+  payload_hash: string;
+  result_data: {
+    orderId: string;
+    payment: {
+      amountCents: number;
+      doesNotCharge: true;
+      occurredAt: string;
+      simulated: true;
+    };
+    status: "simulated-paid";
+  };
+}
+
+interface OrderCancelCommandRow {
+  payload_hash: string;
+  result_data: {
+    cancelledAt: string;
+    couponRestored: boolean;
+    orderId: string;
+    status: "cancelled";
+  };
+}
+
+function pendingOrderFromStored(
+  value: OrderCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseCustomerPendingOrder {
+  return {
+    ...value,
+    holdExpiresAt: new Date(value.holdExpiresAt),
+    replayed,
+  };
+}
+
+function orderPaymentFromStored(
+  value: OrderPaymentCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseCustomerOrderPayment {
+  return {
+    ...value,
+    payment: {
+      ...value.payment,
+      occurredAt: new Date(value.payment.occurredAt),
+    },
+    replayed,
+  };
+}
+
+function orderCancellationFromStored(
+  value: OrderCancelCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseCustomerOrderCancellation {
+  return { ...value, cancelledAt: new Date(value.cancelledAt), replayed };
+}
+
+const orderClockFormatter = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  hourCycle: "h23",
+  minute: "2-digit",
+  timeZone: SANDBOX_BUSINESS_TIME_ZONE,
+});
+
+function orderClockMinutes(value: Date): number {
+  const parts = Object.fromEntries(
+    orderClockFormatter
+      .formatToParts(value)
+      .filter((part) => part.type === "hour" || part.type === "minute")
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  return (parts.hour ?? 0) * 60 + (parts.minute ?? 0);
+}
+
+function orderCouponAvailability(
+  coupon: OrderCouponRow,
+  input: { currentTime: Date; storeId: string; subtotalCents?: number },
+): DatabaseCustomerOrderCatalog["coupons"][number]["eligibility"] {
+  const status = deriveExperienceCouponStatus({
+    now: input.currentTime,
+    status: coupon.status,
+    validUntil: coupon.valid_until,
+  });
+  if (
+    coupon.business_kind !== "order" ||
+    status !== "available" ||
+    input.currentTime < coupon.valid_from ||
+    (coupon.store_id !== null && coupon.store_id !== input.storeId)
+  ) {
+    return { reason: "unavailable", status: "ineligible" };
+  }
+  const minutes = orderClockMinutes(input.currentTime);
+  if (
+    minutes < coupon.eligible_start_minutes ||
+    minutes >= coupon.eligible_end_minutes
+  ) {
+    return { reason: "time-window", status: "ineligible" };
+  }
+  if (
+    input.subtotalCents !== undefined &&
+    input.subtotalCents < coupon.minimum_spend_cents
+  ) {
+    return { reason: "minimum-spend", status: "ineligible" };
+  }
+  return { status: "eligible" };
+}
+
+async function readEligibleOrderReservation(
+  client: PoolClient,
+  input: ReadCustomerOrderCatalogInput,
+  lock = false,
+): Promise<OrderReservationContextRow> {
+  const result = await client.query<OrderReservationContextRow>(
+    `select reservation.id, reservation.store_id, reservation.seat_id,
+            reservation.status, store.code as store_code,
+            store.display_name as store_display_name, seat.code as seat_code
+       from reservations reservation
+       join stores store on store.id = reservation.store_id
+       join seats seat on seat.id = reservation.seat_id
+      where reservation.sandbox_id = $1
+        and reservation.customer_persona_id = $2
+        and reservation.id = $3${lock ? " for update of reservation" : ""}`,
+    [input.sandboxId, input.personaId, input.reservationId],
+  );
+  const row = result.rows[0];
+  if (!row || (row.status !== "arrived" && row.status !== "in-use")) {
+    throw new CustomerOrderConflictError("reservation-ineligible", row?.status);
+  }
+  return row;
+}
+
+async function releaseOrderHold(
+  client: PoolClient,
+  input: {
+    businessTime: Date;
+    eventType: string;
+    nextStatus: "cancelled" | "expired";
+    orderId: string;
+    reason: string;
+    recordedAt: Date;
+    sandboxId: string;
+  },
+): Promise<boolean> {
+  const released = await client.query(
+    `update inventory_items item
+        set reserved_quantity = item.reserved_quantity - hold.quantity
+       from order_inventory_reservations hold
+      where hold.sandbox_id = $1 and hold.order_id = $2
+        and hold.status = 'active' and item.id = hold.inventory_item_id`,
+    [input.sandboxId, input.orderId],
+  );
+  await client.query(
+    `update order_inventory_reservations
+        set status = 'released', released_business_at = $3
+      where sandbox_id = $1 and order_id = $2 and status = 'active'`,
+    [input.sandboxId, input.orderId, input.businessTime],
+  );
+  const coupon = await client.query(
+    `update experience_coupons
+        set status = 'available', reserved_order_id = null, reserved_until = null
+      where sandbox_id = $1 and reserved_order_id = $2
+        and status in ('reserved', 'redeemed')`,
+    [input.sandboxId, input.orderId],
+  );
+  const updated = await client.query(
+    `update customer_orders
+        set status = $3::text,
+            cancelled_business_at = case when $3::text = 'cancelled' then $4::timestamptz else null end,
+            expired_business_at = case when $3::text = 'expired' then $4::timestamptz else null end,
+            terminal_reason = $5
+      where sandbox_id = $1 and id = $2
+        and status = 'pending-simulated-payment'`,
+    [
+      input.sandboxId,
+      input.orderId,
+      input.nextStatus,
+      input.businessTime,
+      input.reason,
+    ],
+  );
+  if (updated.rowCount === 1) {
+    await client.query(
+      `insert into order_business_events (
+         id, sandbox_id, order_id, event_type, event_data,
+         business_occurred_at, recorded_at
+       ) values ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+      [
+        randomUUID(),
+        input.sandboxId,
+        input.orderId,
+        input.eventType,
+        JSON.stringify({
+          couponRestored: coupon.rowCount === 1,
+          inventoryReservationCount: released.rowCount ?? 0,
+          reason: input.reason,
+        }),
+        input.businessTime,
+        input.recordedAt,
+      ],
+    );
+  }
+  return updated.rowCount === 1;
+}
+
+async function processCustomerOrderDeadlines(
+  client: PoolClient,
+  input: {
+    orderId?: string;
+    recordedAt: Date;
+    reservationId?: string;
+    sandboxId: string;
+    targetBusinessTime: Date;
+  },
+): Promise<number> {
+  const due = await client.query<{
+    hold_expires_at: Date;
+    id: string;
+    reservation_status: ReservationStatus;
+  }>(
+    `select orders.id, orders.hold_expires_at,
+            reservation.status as reservation_status
+       from customer_orders orders
+       join reservations reservation on reservation.id = orders.reservation_id
+      where orders.sandbox_id = $1
+        and orders.status = 'pending-simulated-payment'
+        and (orders.hold_expires_at <= $2
+          or reservation.status in ('completed', 'cancelled', 'expired'))
+        and ($3::uuid is null or orders.id = $3)
+        and ($4::uuid is null or orders.reservation_id = $4)
+      order by orders.hold_expires_at, orders.id
+      for update of orders skip locked`,
+    [
+      input.sandboxId,
+      input.targetBusinessTime,
+      input.orderId ?? null,
+      input.reservationId ?? null,
+    ],
+  );
+  let processed = 0;
+  for (const order of due.rows) {
+    const reservationTerminal = ["completed", "cancelled", "expired"].includes(
+      order.reservation_status,
+    );
+    const changed = await releaseOrderHold(client, {
+      businessTime: reservationTerminal
+        ? input.targetBusinessTime
+        : order.hold_expires_at,
+      eventType: reservationTerminal
+        ? "order.cancelled-by-reservation"
+        : "order.pending-expired",
+      nextStatus: reservationTerminal ? "cancelled" : "expired",
+      orderId: order.id,
+      reason: reservationTerminal
+        ? "related-reservation-terminal-before-payment"
+        : "pending-payment-timeout",
+      recordedAt: input.recordedAt,
+      sandboxId: input.sandboxId,
+    });
+    if (changed) processed += 1;
+  }
+  return processed;
+}
+
+async function countDueCustomerOrders(
+  client: PoolClient,
+  input: {
+    currentBusinessTime: Date;
+    sandboxId: string;
+    targetBusinessTime: Date;
+  },
+): Promise<number> {
+  const result = await client.query<{ count: string }>(
+    `select count(*)::text as count from customer_orders
+      where sandbox_id = $1 and status = 'pending-simulated-payment'
+        and hold_expires_at > $2 and hold_expires_at <= $3`,
+    [input.sandboxId, input.currentBusinessTime, input.targetBusinessTime],
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
+async function nextCustomerOrderDeadline(
+  client: PoolClient,
+  input: { currentBusinessTime: Date; sandboxId: string },
+): Promise<Date | null> {
+  const result = await client.query<{ due_at: Date | null }>(
+    `select min(hold_expires_at) as due_at from customer_orders
+      where sandbox_id = $1 and status = 'pending-simulated-payment'
+        and hold_expires_at > $2`,
+    [input.sandboxId, input.currentBusinessTime],
+  );
+  return result.rows[0]?.due_at ?? null;
+}
+
+async function readCustomerOrderDetailWithClient(
+  client: PoolClient,
+  input: ReadCustomerOrderDetailInput,
+  currentTime: Date,
+  lock = false,
+): Promise<{ detail: DatabaseCustomerOrderDetail; storeId: string }> {
+  const result = await client.query<CustomerOrderRow>(
+    `select orders.id, orders.store_id, orders.status,
+            orders.hold_expires_at, orders.order_snapshot,
+            orders.simulated_payment_cents, orders.paid_business_at,
+            orders.cancelled_business_at, orders.expired_business_at,
+            orders.terminal_reason, coupon.status as coupon_status,
+            reservation.status as reservation_status
+       from customer_orders orders
+       join reservations reservation on reservation.id = orders.reservation_id
+       left join experience_coupons coupon on coupon.id = orders.coupon_id
+      where orders.sandbox_id = $1
+        and orders.customer_persona_id = $2 and orders.id = $3${lock ? " for update of orders" : ""}`,
+    [input.sandboxId, input.personaId, input.orderId],
+  );
+  const row = result.rows[0];
+  if (!row) throw new CustomerOrderConflictError("not-found");
+  const inventory = await client.query<OrderInventoryDetailRow>(
+    `select item.product_id, item.on_hand_quantity, item.reserved_quantity,
+            hold.quantity
+       from order_inventory_reservations hold
+       join inventory_items item on item.id = hold.inventory_item_id
+      where hold.sandbox_id = $1 and hold.order_id = $2
+      order by item.code`,
+    [input.sandboxId, input.orderId],
+  );
+  const events = await client.query<OrderEventRow>(
+    `select event_type, event_data, business_occurred_at
+       from order_business_events
+      where sandbox_id = $1 and order_id = $2
+      order by sequence`,
+    [input.sandboxId, input.orderId],
+  );
+  const live =
+    row.status === "pending-simulated-payment" &&
+    currentTime.getTime() < row.hold_expires_at.getTime();
+  const snapshot = row.order_snapshot;
+  return {
+    detail: {
+      actions: { canCancel: live, canSimulatePayment: live },
+      cancelledAt: row.cancelled_business_at,
+      coupon:
+        snapshot.coupon && row.coupon_status
+          ? { ...snapshot.coupon, status: row.coupon_status }
+          : null,
+      currentTime,
+      events: events.rows.map((event) => ({
+        data: event.event_data,
+        occurredAt: event.business_occurred_at,
+        type: event.event_type,
+      })),
+      expiredAt: row.expired_business_at,
+      holdExpiresAt: row.hold_expires_at,
+      inventory: inventory.rows.map((item) => ({
+        availableQuantity: item.on_hand_quantity - item.reserved_quantity,
+        onHandQuantity: item.on_hand_quantity,
+        productId: item.product_id,
+        reservedForOrderQuantity: item.quantity,
+        reservedQuantity: item.reserved_quantity,
+      })),
+      orderId: row.id,
+      payment:
+        row.simulated_payment_cents !== null && row.paid_business_at
+          ? {
+              amountCents: row.simulated_payment_cents,
+              doesNotCharge: true,
+              occurredAt: row.paid_business_at,
+              simulated: true,
+            }
+          : null,
+      snapshot,
+      status: row.status,
+      terminalReason: row.terminal_reason,
+    },
+    storeId: row.store_id,
+  };
+}
+
 function formatBusinessHours(store: StoreRow): string {
   if (store.is_open_24_hours) return "24 小时";
 
@@ -977,6 +1701,11 @@ async function readCustomerReservationDetailWithClient(
     [input.sandboxId, input.reservationId],
   );
   const snapshot = reservationSnapshot(row.price_snapshot);
+  const relatedOrders = await readRelatedOrders(
+    client,
+    input.sandboxId,
+    input.reservationId,
+  );
   const pendingIsLive =
     row.status === "pending-confirmation" &&
     row.hold_expires_at !== null &&
@@ -1026,7 +1755,7 @@ async function readCustomerReservationDetailWithClient(
             simulated: true,
           }
         : null,
-    related: { orders: [], repairs: [] },
+    related: { orders: relatedOrders, repairs: [] },
     reservationId: row.id,
     snapshot,
     status: row.status,
@@ -1274,6 +2003,12 @@ async function processDueReservationExpirations(
         definition.status,
       ],
     );
+    await processCustomerOrderDeadlines(client, {
+      recordedAt: input.recordedAt,
+      reservationId: row.id,
+      sandboxId: input.sandboxId,
+      targetBusinessTime: row.due_at,
+    });
     await client.query(
       `insert into reservation_business_events (
          id, sandbox_id, reservation_id, event_type, event_data,
@@ -1340,6 +2075,25 @@ function reservationDueHandlers(): DemoTimeDueHandlerRegistry {
       processDue: (context) =>
         processDueReservationExpirations(context.client, {
           kind: "pending",
+          recordedAt: context.recordedAt,
+          sandboxId: context.sandboxId,
+          targetBusinessTime: context.targetBusinessTime,
+        }),
+    },
+    "pending-order-expiration": {
+      nextDueAt: (context) =>
+        nextCustomerOrderDeadline(context.client, {
+          currentBusinessTime: context.currentBusinessTime,
+          sandboxId: context.sandboxId,
+        }),
+      previewDue: (context) =>
+        countDueCustomerOrders(context.client, {
+          currentBusinessTime: context.currentBusinessTime,
+          sandboxId: context.sandboxId,
+          targetBusinessTime: context.targetBusinessTime,
+        }),
+      processDue: (context) =>
+        processCustomerOrderDeadlines(context.client, {
           recordedAt: context.recordedAt,
           sandboxId: context.sandboxId,
           targetBusinessTime: context.targetBusinessTime,
@@ -1520,6 +2274,12 @@ async function processDueReservationAutoCompletions(
         where sandbox_id = $1 and id = $2 and status = 'in-use'`,
       [input.sandboxId, row.id, row.ends_at],
     );
+    await processCustomerOrderDeadlines(client, {
+      recordedAt: input.recordedAt,
+      reservationId: row.id,
+      sandboxId: input.sandboxId,
+      targetBusinessTime: row.ends_at,
+    });
     const growthPoints = await awardCompletedReservationGrowth(client, {
       businessOccurredAt: row.ends_at,
       customerPersonaId: row.customer_persona_id,
@@ -1794,6 +2554,7 @@ async function staffReservationDetailFromRow(
       order by sequence`,
     [row.sandbox_id, row.id],
   );
+  const relatedOrders = await readRelatedOrders(client, row.sandbox_id, row.id);
   return {
     actions: {
       canCancel: canFrontlineCancel(row, currentTime),
@@ -1820,7 +2581,7 @@ async function staffReservationDetailFromRow(
             simulated: true,
           }
         : null,
-    related: { orders: [], repairs: [] },
+    related: { orders: relatedOrders, repairs: [] },
     reservation: staffReservationSummary(row),
     snapshot: reservationSnapshot(row.price_snapshot),
     startedAt: row.started_business_at,
@@ -1852,6 +2613,12 @@ async function processFrontlineReservationDeadlines(
     targetBusinessTime: input.currentTime,
   });
   await processDueReservationAutoCompletions(client, {
+    recordedAt: input.recordedAt,
+    ...(input.reservationId ? { reservationId: input.reservationId } : {}),
+    sandboxId: input.sandboxId,
+    targetBusinessTime: input.currentTime,
+  });
+  await processCustomerOrderDeadlines(client, {
     recordedAt: input.recordedAt,
     ...(input.reservationId ? { reservationId: input.reservationId } : {}),
     sandboxId: input.sandboxId,
@@ -2308,6 +3075,148 @@ async function materializePublicSandbox(input: {
       seededPricePlans.map((plan) => plan.baseHourlyCents),
       seededPricePlans.map(() => priceEffectiveFrom),
       seededPricePlans.map(() => "active"),
+    ],
+  );
+
+  const seededProducts = productSeeds.map((product) => ({
+    ...product,
+    id: randomUUID(),
+  }));
+  await input.client.query(
+    `insert into products (
+       id, sandbox_id, code, name, description, category
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::text[], $6::text[]
+     )`,
+    [
+      seededProducts.map((product) => product.id),
+      seededProducts.map(() => input.sandboxId),
+      seededProducts.map((product) => product.code),
+      seededProducts.map((product) => product.name),
+      seededProducts.map((product) => product.description),
+      seededProducts.map((product) => product.category),
+    ],
+  );
+  const flagshipProductCodes = new Set(
+    productSeeds.slice(0, 6).map((product) => product.code),
+  );
+  const storeListedProducts: Readonly<Record<string, ReadonlySet<string>>> = {
+    "apex-new": new Set([
+      "pulse-sparkling-water",
+      "cloud-mineral-water",
+      "jump-energy-bar",
+      "crisp-seaweed",
+      "peripheral-wipe",
+      "wake-mint",
+    ]),
+    "prism-flagship": flagshipProductCodes,
+    "starbridge-standard": new Set([
+      "midnight-iced-tea",
+      "circuit-coffee",
+      "cloud-mineral-water",
+      "crisp-seaweed",
+      "star-popcorn",
+      "orbit-rice-roll",
+    ]),
+  };
+  const flagshipQuantities = [18, 7, 9, 3, 12, 20] as const;
+  const basePrices = [
+    800, 1_000, 1_200, 900, 600, 500, 700, 1_100, 400, 700, 900, 1_000,
+  ] as const;
+  const seededProductInventory = seededStores.flatMap((store) =>
+    seededProducts.map((product, index) => ({
+      code: product.code,
+      displayName: product.name,
+      id: randomUUID(),
+      listed: storeListedProducts[store.code]?.has(product.code) ?? false,
+      lowStockThreshold: index === 3 ? 3 : 4,
+      onHandQuantity:
+        store.code === "prism-flagship" && index < flagshipQuantities.length
+          ? (flagshipQuantities[index] ?? 8)
+          : 8 + ((index + store.code.length) % 9),
+      productId: product.id,
+      storeId: store.id,
+      unitPriceCents:
+        (basePrices[index] ?? 800) +
+        (store.code === "prism-flagship"
+          ? 0
+          : store.code === "starbridge-standard"
+            ? -100
+            : -50),
+    })),
+  );
+  const spareSeeds = seededStores.flatMap((store) =>
+    [
+      { code: "spare-headset", displayName: "维修耳机", quantity: 6 },
+      { code: "spare-key-switch", displayName: "键盘轴体", quantity: 24 },
+      { code: "spare-mouse", displayName: "维修鼠标", quantity: 5 },
+    ].map((spare) => ({
+      ...spare,
+      id: randomUUID(),
+      storeId: store.id,
+    })),
+  );
+  await input.client.query(
+    `insert into inventory_items (
+       id, sandbox_id, store_id, product_id, kind, code, display_name,
+       on_hand_quantity, reserved_quantity, low_stock_threshold
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::text[],
+       $6::text[], $7::text[], $8::integer[], $9::integer[], $10::integer[]
+     )`,
+    [
+      [
+        ...seededProductInventory.map((item) => item.id),
+        ...spareSeeds.map((item) => item.id),
+      ],
+      [...seededProductInventory, ...spareSeeds].map(() => input.sandboxId),
+      [
+        ...seededProductInventory.map((item) => item.storeId),
+        ...spareSeeds.map((item) => item.storeId),
+      ],
+      [
+        ...seededProductInventory.map((item) => item.productId),
+        ...spareSeeds.map(() => null),
+      ],
+      [
+        ...seededProductInventory.map(() => "product"),
+        ...spareSeeds.map(() => "spare"),
+      ],
+      [
+        ...seededProductInventory.map((item) => item.code),
+        ...spareSeeds.map((item) => item.code),
+      ],
+      [
+        ...seededProductInventory.map((item) => item.displayName),
+        ...spareSeeds.map((item) => item.displayName),
+      ],
+      [
+        ...seededProductInventory.map((item) => item.onHandQuantity),
+        ...spareSeeds.map((item) => item.quantity),
+      ],
+      [...seededProductInventory, ...spareSeeds].map(() => 0),
+      [
+        ...seededProductInventory.map((item) => item.lowStockThreshold),
+        ...spareSeeds.map(() => 2),
+      ],
+    ],
+  );
+  await input.client.query(
+    `insert into store_products (
+       id, sandbox_id, store_id, product_id, inventory_item_id, listed,
+       unit_price_cents
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
+       $6::boolean[], $7::integer[]
+     )`,
+    [
+      seededProductInventory.map(() => randomUUID()),
+      seededProductInventory.map(() => input.sandboxId),
+      seededProductInventory.map((item) => item.storeId),
+      seededProductInventory.map((item) => item.productId),
+      seededProductInventory.map((item) => item.id),
+      seededProductInventory.map((item) => item.listed),
+      seededProductInventory.map((item) => item.unitPriceCents),
     ],
   );
 
@@ -3462,6 +4371,14 @@ export function createPublicSandboxDatabase(
             [input.sandboxId, row.id, currentTime, input.reason, row.status],
           );
         }
+        if (input.action === "complete-early" || input.action === "cancel") {
+          await processCustomerOrderDeadlines(client, {
+            recordedAt: wallTime,
+            reservationId: row.id,
+            sandboxId: input.sandboxId,
+            targetBusinessTime: currentTime,
+          });
+        }
         const growthPoints =
           input.action === "complete-early"
             ? await awardCompletedReservationGrowth(client, {
@@ -4014,6 +4931,734 @@ export function createPublicSandboxDatabase(
         client.release();
       }
     },
+    async readCustomerOrderCatalog(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        await processCustomerOrderDeadlines(client, {
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const reservation = await readEligibleOrderReservation(client, input);
+        const products = await client.query<OrderCatalogProductRow>(
+          `select product.id, product.name, product.description,
+                  product.category, config.unit_price_cents,
+                  item.id as inventory_item_id, item.on_hand_quantity,
+                  item.reserved_quantity, item.low_stock_threshold,
+                  (item.on_hand_quantity - item.reserved_quantity)::integer
+                    as available_quantity
+             from store_products config
+             join products product on product.id = config.product_id
+             join inventory_items item on item.id = config.inventory_item_id
+            where config.sandbox_id = $1 and config.store_id = $2
+              and config.listed = true and product.archived = false
+              and item.kind = 'product'`,
+          [input.sandboxId, reservation.store_id],
+        );
+        const coupons = await client.query<OrderCouponRow>(
+          `select id, code, display_name, business_kind, discount_cents,
+                  minimum_spend_cents, eligible_start_minutes,
+                  eligible_end_minutes, valid_from, valid_until, status,
+                  store_id
+             from experience_coupons
+            where sandbox_id = $1 and customer_persona_id = $2
+              and business_kind = 'order' and status = 'available'
+            order by valid_until desc, code`,
+          [input.sandboxId, input.personaId],
+        );
+        const productByNameOrder = new Map<string, number>(
+          productSeeds.map((product, index) => [product.name, index]),
+        );
+        const result: DatabaseCustomerOrderCatalog = {
+          coupons: coupons.rows.map((coupon) => ({
+            code: coupon.code,
+            discountCents: coupon.discount_cents,
+            displayName: coupon.display_name,
+            eligibility: orderCouponAvailability(coupon, {
+              currentTime,
+              storeId: reservation.store_id,
+            }),
+            id: coupon.id,
+            minimumSpendCents: coupon.minimum_spend_cents,
+            validUntil: coupon.valid_until,
+          })),
+          currentTime,
+          products: products.rows
+            .toSorted(
+              (left, right) =>
+                (productByNameOrder.get(left.name) ?? Number.MAX_SAFE_INTEGER) -
+                (productByNameOrder.get(right.name) ?? Number.MAX_SAFE_INTEGER),
+            )
+            .map((product) => ({
+              availableQuantity: product.available_quantity,
+              category: product.category,
+              description: product.description,
+              id: product.id,
+              lowStock:
+                product.available_quantity <= product.low_stock_threshold,
+              name: product.name,
+              onHandQuantity: product.on_hand_quantity,
+              reservedQuantity: product.reserved_quantity,
+              unitPriceCents: product.unit_price_cents,
+            })),
+          reservation: {
+            reservationId: reservation.id,
+            seat: { code: reservation.seat_code },
+            status: reservation.status as "arrived" | "in-use",
+            store: {
+              code: reservation.store_code,
+              displayName: reservation.store_display_name,
+            },
+          },
+        };
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async createCustomerPendingOrder(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        const canonicalLines = [...input.lines].toSorted((left, right) =>
+          left.productId.localeCompare(right.productId),
+        );
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({
+            couponId: input.couponId,
+            lines: canonicalLines,
+            reservationId: input.reservationId,
+          }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${input.sandboxId}:${input.personaId}:order:${idempotencyKeyHash}`],
+        );
+        const existing = await client.query<OrderCommandRow>(
+          `select payload_hash, result_data from order_command_requests
+            where sandbox_id = $1 and customer_persona_id = $2
+              and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const existingRow = existing.rows[0];
+        if (existingRow) {
+          if (existingRow.payload_hash !== payloadHash) {
+            throw new CustomerOrderConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return pendingOrderFromStored(existingRow.result_data, true);
+        }
+        if (canonicalLines.length === 0) {
+          throw new CustomerOrderConflictError("empty-cart");
+        }
+        if (
+          canonicalLines.some(
+            (line, index) =>
+              !Number.isInteger(line.quantity) ||
+              line.quantity <= 0 ||
+              (index > 0 &&
+                canonicalLines[index - 1]?.productId === line.productId),
+          )
+        ) {
+          throw new CustomerOrderConflictError("invalid-quantity");
+        }
+        await processCustomerOrderDeadlines(client, {
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const reservation = await readEligibleOrderReservation(
+          client,
+          input,
+          true,
+        );
+        const products = await client.query<OrderCatalogProductRow>(
+          `select product.id, product.name, product.description,
+                  product.category, config.unit_price_cents,
+                  item.id as inventory_item_id, item.on_hand_quantity,
+                  item.reserved_quantity, item.low_stock_threshold,
+                  (item.on_hand_quantity - item.reserved_quantity)::integer
+                    as available_quantity
+             from store_products config
+             join products product on product.id = config.product_id
+             join inventory_items item on item.id = config.inventory_item_id
+            where config.sandbox_id = $1 and config.store_id = $2
+              and config.listed = true and product.archived = false
+              and item.kind = 'product' and product.id = any($3::uuid[])
+            order by item.id
+            for update of item`,
+          [
+            input.sandboxId,
+            reservation.store_id,
+            canonicalLines.map((line) => line.productId),
+          ],
+        );
+        if (products.rows.length !== canonicalLines.length) {
+          throw new CustomerOrderConflictError("product-not-listed");
+        }
+        const quantities = new Map(
+          canonicalLines.map((line) => [line.productId, line.quantity]),
+        );
+        const pricingInput = products.rows.map((product) => ({
+          availableQuantity: product.available_quantity,
+          productId: product.id,
+          productName: product.name,
+          quantity: quantities.get(product.id) ?? 0,
+          unitPriceCents: product.unit_price_cents,
+        }));
+        const basePricing = priceCustomerOrder({
+          couponDiscountCents: 0,
+          lines: pricingInput,
+        });
+        if (basePricing.status === "invalid") {
+          throw new CustomerOrderConflictError(
+            basePricing.reason === "insufficient-inventory"
+              ? "insufficient-inventory"
+              : basePricing.reason === "empty-cart"
+                ? "empty-cart"
+                : "invalid-quantity",
+          );
+        }
+        let coupon: OrderCouponRow | null = null;
+        if (input.couponId) {
+          const couponResult = await client.query<OrderCouponRow>(
+            `select id, code, display_name, business_kind, discount_cents,
+                    minimum_spend_cents, eligible_start_minutes,
+                    eligible_end_minutes, valid_from, valid_until, status,
+                    store_id
+               from experience_coupons
+              where sandbox_id = $1 and customer_persona_id = $2 and id = $3
+              for update`,
+            [input.sandboxId, input.personaId, input.couponId],
+          );
+          coupon = couponResult.rows[0] ?? null;
+          if (!coupon) throw new CustomerOrderConflictError("coupon-not-found");
+          const eligibility = orderCouponAvailability(coupon, {
+            currentTime,
+            storeId: reservation.store_id,
+            subtotalCents: basePricing.subtotalCents,
+          });
+          if (eligibility.status === "ineligible") {
+            throw new CustomerOrderConflictError(
+              eligibility.reason === "unavailable"
+                ? "coupon-unavailable"
+                : "coupon-ineligible",
+            );
+          }
+        }
+        const pricing = priceCustomerOrder({
+          couponDiscountCents: coupon?.discount_cents ?? 0,
+          lines: pricingInput,
+        });
+        if (pricing.status !== "ready") {
+          throw new CustomerOrderConflictError("insufficient-inventory");
+        }
+        const orderId = randomUUID();
+        const holdExpiresAt = new Date(currentTime.getTime() + 10 * 60 * 1_000);
+        const snapshot: CustomerOrderSnapshot = {
+          coupon: coupon
+            ? {
+                code: coupon.code,
+                discountCents: pricing.discountCents,
+                displayName: coupon.display_name,
+              }
+            : null,
+          discountCents: pricing.discountCents,
+          lines: pricing.lines,
+          payableCents: pricing.payableCents,
+          reservation: {
+            reservationId: reservation.id,
+            seatCode: reservation.seat_code,
+            storeCode: reservation.store_code,
+            storeDisplayName: reservation.store_display_name,
+          },
+          subtotalCents: pricing.subtotalCents,
+        };
+        await client.query(
+          `insert into customer_orders (
+             id, sandbox_id, store_id, customer_persona_id, reservation_id,
+             seat_id, status, hold_expires_at, created_business_at,
+             order_snapshot, coupon_id, coupon_snapshot
+           ) values ($1, $2, $3, $4, $5, $6, 'pending-simulated-payment',
+             $7, $8, $9::jsonb, $10, $11::jsonb)`,
+          [
+            orderId,
+            input.sandboxId,
+            reservation.store_id,
+            input.personaId,
+            reservation.id,
+            reservation.seat_id,
+            holdExpiresAt,
+            currentTime,
+            JSON.stringify(snapshot),
+            coupon?.id ?? null,
+            JSON.stringify(snapshot.coupon),
+          ],
+        );
+        for (const product of products.rows) {
+          const quantity = quantities.get(product.id) ?? 0;
+          const reserved = await client.query(
+            `update inventory_items
+                set reserved_quantity = reserved_quantity + $3
+              where sandbox_id = $1 and id = $2
+                and on_hand_quantity - reserved_quantity >= $3`,
+            [input.sandboxId, product.inventory_item_id, quantity],
+          );
+          if (reserved.rowCount !== 1) {
+            throw new CustomerOrderConflictError("insufficient-inventory");
+          }
+          await client.query(
+            `insert into order_inventory_reservations (
+               id, sandbox_id, order_id, inventory_item_id, quantity, status
+             ) values ($1, $2, $3, $4, $5, 'active')`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              orderId,
+              product.inventory_item_id,
+              quantity,
+            ],
+          );
+        }
+        if (coupon) {
+          const reservedCoupon = await client.query(
+            `update experience_coupons
+                set status = 'reserved', reserved_order_id = $1,
+                    reserved_until = $2
+              where sandbox_id = $3 and id = $4 and status = 'available'
+                and reserved_reservation_id is null and reserved_order_id is null`,
+            [orderId, holdExpiresAt, input.sandboxId, coupon.id],
+          );
+          if (reservedCoupon.rowCount !== 1) {
+            throw new CustomerOrderConflictError("coupon-unavailable");
+          }
+        }
+        await client.query(
+          `insert into order_business_events (
+             id, sandbox_id, order_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, 'order.pending-created', $4::jsonb, $5, $6)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            orderId,
+            JSON.stringify({
+              holdExpiresAt: holdExpiresAt.toISOString(),
+              inventoryReservationCount: products.rows.length,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, request_id, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, 'customer', 'order.create', 'order',
+             $5, 'allowed', $6, $7::jsonb, $8, $9)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            reservation.store_id,
+            input.personaId,
+            orderId,
+            input.requestId,
+            JSON.stringify({
+              holdExpiresAt: holdExpiresAt.toISOString(),
+              status: "pending-simulated-payment",
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const stored = {
+          holdExpiresAt: holdExpiresAt.toISOString(),
+          orderId,
+          snapshot,
+          status: "pending-simulated-payment",
+        } as const;
+        await client.query(
+          `insert into order_command_requests (
+             sandbox_id, customer_persona_id, idempotency_key_hash,
+             payload_hash, order_id, result_data
+           ) values ($1, $2, $3, $4, $5, $6::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            idempotencyKeyHash,
+            payloadHash,
+            orderId,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return pendingOrderFromStored(stored, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readCustomerOrderDetail(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        await processCustomerOrderDeadlines(client, {
+          orderId: input.orderId,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const result = await readCustomerOrderDetailWithClient(
+          client,
+          input,
+          currentTime,
+        );
+        await client.query("commit");
+        return result.detail;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async simulateCustomerOrderPayment(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(JSON.stringify({ orderId: input.orderId }));
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:order-payment:${idempotencyKeyHash}`,
+          ],
+        );
+        const existing = await client.query<OrderPaymentCommandRow>(
+          `select payload_hash, result_data
+             from order_lifecycle_command_requests
+            where sandbox_id = $1 and customer_persona_id = $2
+              and command_type = 'simulate-payment'
+              and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const existingRow = existing.rows[0];
+        if (existingRow) {
+          if (existingRow.payload_hash !== payloadHash) {
+            throw new CustomerOrderConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return orderPaymentFromStored(existingRow.result_data, true);
+        }
+        await processCustomerOrderDeadlines(client, {
+          orderId: input.orderId,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const { detail, storeId } = await readCustomerOrderDetailWithClient(
+          client,
+          input,
+          currentTime,
+          true,
+        );
+        const decision = decideCustomerOrderLifecycle({
+          action: "simulate-payment",
+          businessTime: currentTime,
+          holdExpiresAt: detail.holdExpiresAt,
+          status: detail.status,
+        });
+        if (decision.status !== "applied") {
+          throw new CustomerOrderConflictError(
+            decision.reason === "hold-expired"
+              ? "hold-expired"
+              : "illegal-transition",
+            detail.status,
+          );
+        }
+        if (detail.coupon) {
+          const redeemed = await client.query(
+            `update experience_coupons
+                set status = 'redeemed', reserved_until = null
+              where sandbox_id = $1 and reserved_order_id = $2
+                and status = 'reserved'`,
+            [input.sandboxId, input.orderId],
+          );
+          if (redeemed.rowCount !== 1) {
+            throw new CustomerOrderConflictError("illegal-transition");
+          }
+        }
+        await client.query(
+          `update customer_orders
+              set status = 'simulated-paid', simulated_payment_cents = $3,
+                  paid_business_at = $4
+            where sandbox_id = $1 and id = $2
+              and status = 'pending-simulated-payment'`,
+          [
+            input.sandboxId,
+            input.orderId,
+            detail.snapshot.payableCents,
+            currentTime,
+          ],
+        );
+        await client.query(
+          `insert into order_business_events (
+             id, sandbox_id, order_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, 'order.simulated-payment-succeeded',
+             $4::jsonb, $5, $6)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            input.orderId,
+            JSON.stringify({
+              amountCents: detail.snapshot.payableCents,
+              doesNotCharge: true,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, 'customer', 'order.simulate-payment',
+             'order', $5, 'allowed', $6, $7::jsonb, $8::jsonb, $9, $10)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            storeId,
+            input.personaId,
+            input.orderId,
+            input.requestId,
+            JSON.stringify({ status: detail.status }),
+            JSON.stringify({
+              doesNotCharge: true,
+              status: "simulated-paid",
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const stored = {
+          orderId: input.orderId,
+          payment: {
+            amountCents: detail.snapshot.payableCents,
+            doesNotCharge: true,
+            occurredAt: currentTime.toISOString(),
+            simulated: true,
+          },
+          status: "simulated-paid",
+        } as const;
+        await client.query(
+          `insert into order_lifecycle_command_requests (
+             sandbox_id, customer_persona_id, order_id, command_type,
+             idempotency_key_hash, payload_hash, result_data
+           ) values ($1, $2, $3, 'simulate-payment', $4, $5, $6::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            input.orderId,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return orderPaymentFromStored(stored, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async cancelCustomerOrder(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({ orderId: input.orderId, reason: input.reason }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:order-cancel:${idempotencyKeyHash}`,
+          ],
+        );
+        const existing = await client.query<OrderCancelCommandRow>(
+          `select payload_hash, result_data
+             from order_lifecycle_command_requests
+            where sandbox_id = $1 and customer_persona_id = $2
+              and command_type = 'cancel' and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const existingRow = existing.rows[0];
+        if (existingRow) {
+          if (existingRow.payload_hash !== payloadHash) {
+            throw new CustomerOrderConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return orderCancellationFromStored(existingRow.result_data, true);
+        }
+        await processCustomerOrderDeadlines(client, {
+          orderId: input.orderId,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const { detail, storeId } = await readCustomerOrderDetailWithClient(
+          client,
+          input,
+          currentTime,
+          true,
+        );
+        const decision = decideCustomerOrderLifecycle({
+          action: "cancel",
+          businessTime: currentTime,
+          holdExpiresAt: detail.holdExpiresAt,
+          status: detail.status,
+        });
+        if (decision.status !== "applied") {
+          throw new CustomerOrderConflictError(
+            decision.reason === "hold-expired"
+              ? "hold-expired"
+              : "illegal-transition",
+            detail.status,
+          );
+        }
+        const couponRestored = detail.coupon !== null;
+        const changed = await releaseOrderHold(client, {
+          businessTime: currentTime,
+          eventType: "order.customer-cancelled",
+          nextStatus: "cancelled",
+          orderId: input.orderId,
+          reason: input.reason,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+        });
+        if (!changed) {
+          throw new CustomerOrderConflictError("illegal-transition");
+        }
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, reason, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, 'customer', 'order.cancel', 'order',
+             $5, 'allowed', $6, $7, $8::jsonb, $9::jsonb, $10, $11)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            storeId,
+            input.personaId,
+            input.orderId,
+            input.reason,
+            input.requestId,
+            JSON.stringify({ status: detail.status }),
+            JSON.stringify({ couponRestored, status: "cancelled" }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const stored = {
+          cancelledAt: currentTime.toISOString(),
+          couponRestored,
+          orderId: input.orderId,
+          status: "cancelled",
+        } as const;
+        await client.query(
+          `insert into order_lifecycle_command_requests (
+             sandbox_id, customer_persona_id, order_id, command_type,
+             idempotency_key_hash, payload_hash, result_data
+           ) values ($1, $2, $3, 'cancel', $4, $5, $6::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            input.orderId,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return orderCancellationFromStored(stored, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async cancelCustomerReservation(input) {
       const client = await pool.connect();
       const wallTime = wallClock.now();
@@ -4163,6 +5808,12 @@ export function createPublicSandboxDatabase(
             input.reason,
           ],
         );
+        await processCustomerOrderDeadlines(client, {
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
         await client.query(
           `insert into reservation_business_events (
              id, sandbox_id, reservation_id, event_type, event_data,
@@ -4472,6 +6123,12 @@ export function createPublicSandboxDatabase(
           sandboxId: input.sandboxId,
           targetBusinessTime: currentTime,
         });
+        await processCustomerOrderDeadlines(client, {
+          recordedAt: wallTime,
+          reservationId: input.reservationId,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
         const result = await readCustomerReservationDetailWithClient(
           client,
           input,
@@ -4522,10 +6179,14 @@ export function createPublicSandboxDatabase(
                   coupon.minimum_spend_cents, coupon.eligible_start_minutes,
                   coupon.eligible_end_minutes, coupon.valid_from,
                   coupon.valid_until, coupon.status,
-                  coupon.reserved_reservation_id, store.code as store_code,
+                  coupon.reserved_reservation_id, coupon.reserved_order_id,
+                  store.code as store_code,
                   store.display_name as store_display_name,
                   reservation.id as reservation_id,
-                  reservation.status as reservation_status
+                  reservation.status as reservation_status,
+                  orders.id as order_id, orders.status as order_status,
+                  orders.order_snapshot->'reservation'->>'storeDisplayName'
+                    as order_store_display_name
              from experience_coupons coupon
              left join stores store on store.id = coupon.store_id
              left join lateral (
@@ -4538,6 +6199,15 @@ export function createPublicSandboxDatabase(
                          candidate.id desc
                 limit 1
              ) reservation on true
+             left join lateral (
+               select candidate.id, candidate.status, candidate.order_snapshot
+                 from customer_orders candidate
+                where candidate.sandbox_id = coupon.sandbox_id
+                  and candidate.customer_persona_id = coupon.customer_persona_id
+                  and candidate.coupon_id = coupon.id
+                order by candidate.created_business_at desc, candidate.id desc
+                limit 1
+             ) orders on true
             where coupon.sandbox_id = $1
               and coupon.customer_persona_id = $2
             order by coupon.valid_until desc, coupon.code`,
@@ -4566,11 +6236,17 @@ export function createPublicSandboxDatabase(
               validUntil: coupon.valid_until,
             });
             const transactionId =
-              status === "reserved"
-                ? coupon.reserved_reservation_id
-                : status === "redeemed"
-                  ? coupon.reservation_id
-                  : null;
+              coupon.business_kind === "reservation"
+                ? status === "reserved"
+                  ? coupon.reserved_reservation_id
+                  : status === "redeemed"
+                    ? coupon.reservation_id
+                    : null
+                : status === "reserved"
+                  ? coupon.reserved_order_id
+                  : status === "redeemed"
+                    ? coupon.order_id
+                    : null;
             return {
               businessKind: coupon.business_kind,
               code: coupon.code,
@@ -4598,15 +6274,24 @@ export function createPublicSandboxDatabase(
                       displayName: coupon.store_display_name,
                     }
                   : null,
-              transaction:
-                transactionId && coupon.reservation_status
+              transaction: transactionId
+                ? coupon.business_kind === "reservation" &&
+                  coupon.reservation_status
                   ? {
                       id: transactionId,
                       kind: "reservation",
                       label: `${coupon.store_display_name ?? "三店"}预约`,
                       status: coupon.reservation_status,
                     }
-                  : null,
+                  : coupon.business_kind === "order" && coupon.order_status
+                    ? {
+                        id: transactionId,
+                        kind: "order",
+                        label: `${coupon.order_store_display_name ?? "三店"}商品订单`,
+                        status: coupon.order_status,
+                      }
+                    : null
+                : null,
               validFrom: coupon.valid_from,
               validUntil: coupon.valid_until,
             };
@@ -4691,6 +6376,11 @@ export function createPublicSandboxDatabase(
         };
         for (const row of rows.rows) {
           const snapshot = reservationSnapshot(row.price_snapshot);
+          const relatedOrders = await readRelatedOrders(
+            client,
+            input.sandboxId,
+            row.id,
+          );
           const item: DatabaseCustomerJourneyReservation = {
             area: snapshot.area,
             coupon: snapshot.coupon
@@ -4715,7 +6405,7 @@ export function createPublicSandboxDatabase(
                     reason: row.refund_reason,
                   }
                 : null,
-            related: { orders: [], repairs: [] },
+            related: { orders: relatedOrders, repairs: [] },
             reservationId: row.id,
             seat: snapshot.seat,
             status: row.status,

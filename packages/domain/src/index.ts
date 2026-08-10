@@ -1,5 +1,5 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "9";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.4";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "10";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.5";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -383,6 +383,163 @@ export function reservationGrowthAward(
   return {
     finalSimulatedAmountCents,
     growthPoints: Math.floor(finalSimulatedAmountCents / 100),
+  };
+}
+
+export type CustomerOrderStatus =
+  "cancelled" | "expired" | "pending-simulated-payment" | "simulated-paid";
+
+export interface CustomerOrderPricingLineInput {
+  readonly availableQuantity: number;
+  readonly productId: string;
+  readonly productName: string;
+  readonly quantity: number;
+  readonly unitPriceCents: number;
+}
+
+export type CustomerOrderPricingResult =
+  | {
+      readonly discountCents: number;
+      readonly lines: ReadonlyArray<{
+        readonly lineTotalCents: number;
+        readonly productId: string;
+        readonly productName: string;
+        readonly quantity: number;
+        readonly unitPriceCents: number;
+      }>;
+      readonly payableCents: number;
+      readonly status: "ready";
+      readonly subtotalCents: number;
+    }
+  | {
+      readonly productId?: string;
+      readonly reason:
+        | "empty-cart"
+        | "insufficient-inventory"
+        | "invalid-amount"
+        | "invalid-quantity";
+      readonly status: "invalid";
+    };
+
+export function priceCustomerOrder(input: {
+  readonly couponDiscountCents: number;
+  readonly lines: ReadonlyArray<CustomerOrderPricingLineInput>;
+}): CustomerOrderPricingResult {
+  if (input.lines.length === 0) {
+    return { reason: "empty-cart", status: "invalid" };
+  }
+  if (
+    !Number.isInteger(input.couponDiscountCents) ||
+    input.couponDiscountCents < 0
+  ) {
+    return { reason: "invalid-amount", status: "invalid" };
+  }
+  for (const line of input.lines) {
+    if (
+      !Number.isInteger(line.quantity) ||
+      line.quantity <= 0 ||
+      !Number.isInteger(line.availableQuantity) ||
+      line.availableQuantity < 0
+    ) {
+      return { reason: "invalid-quantity", status: "invalid" };
+    }
+    if (!Number.isInteger(line.unitPriceCents) || line.unitPriceCents < 0) {
+      return { reason: "invalid-amount", status: "invalid" };
+    }
+    if (line.quantity > line.availableQuantity) {
+      return {
+        productId: line.productId,
+        reason: "insufficient-inventory",
+        status: "invalid",
+      };
+    }
+  }
+  const lines = input.lines.map((line) => ({
+    lineTotalCents: line.unitPriceCents * line.quantity,
+    productId: line.productId,
+    productName: line.productName,
+    quantity: line.quantity,
+    unitPriceCents: line.unitPriceCents,
+  }));
+  const subtotalCents = lines.reduce(
+    (total, line) => total + line.lineTotalCents,
+    0,
+  );
+  const discountCents = Math.min(input.couponDiscountCents, subtotalCents);
+  return {
+    discountCents,
+    lines,
+    payableCents: subtotalCents - discountCents,
+    status: "ready",
+    subtotalCents,
+  };
+}
+
+export type CustomerOrderLifecycleResult =
+  | {
+      readonly couponEffect: "redeem" | "release";
+      readonly inventoryEffect: "release" | "retain";
+      readonly nextStatus: CustomerOrderStatus;
+      readonly status: "applied";
+    }
+  | {
+      readonly reason:
+        "hold-expired" | "illegal-transition" | "paid-order-independent";
+      readonly status: "invalid" | "unchanged";
+    };
+
+export function decideCustomerOrderLifecycle(input: {
+  readonly action:
+    "cancel" | "expire" | "reservation-terminal" | "simulate-payment";
+  readonly businessTime: Date;
+  readonly holdExpiresAt: Date;
+  readonly status: CustomerOrderStatus;
+}): CustomerOrderLifecycleResult {
+  if (
+    input.action === "reservation-terminal" &&
+    input.status === "simulated-paid"
+  ) {
+    return { reason: "paid-order-independent", status: "unchanged" };
+  }
+  if (input.status !== "pending-simulated-payment") {
+    return { reason: "illegal-transition", status: "invalid" };
+  }
+  const holdExpired =
+    input.businessTime.getTime() >= input.holdExpiresAt.getTime();
+  if (input.action === "expire") {
+    if (!holdExpired)
+      return { reason: "illegal-transition", status: "invalid" };
+    return {
+      couponEffect: "release",
+      inventoryEffect: "release",
+      nextStatus: "expired",
+      status: "applied",
+    };
+  }
+  if (input.action === "simulate-payment" && holdExpired) {
+    return { reason: "hold-expired", status: "invalid" };
+  }
+  if (input.action === "reservation-terminal") {
+    return {
+      couponEffect: "release",
+      inventoryEffect: "release",
+      nextStatus: "cancelled",
+      status: "applied",
+    };
+  }
+  if (input.action === "cancel") {
+    return {
+      couponEffect: "release",
+      inventoryEffect: "release",
+      nextStatus: "cancelled",
+      status: "applied",
+    };
+  }
+  return {
+    couponEffect: "redeem",
+    inventoryEffect: "retain",
+    nextStatus: "simulated-paid",
+    status: "applied",
   };
 }
 

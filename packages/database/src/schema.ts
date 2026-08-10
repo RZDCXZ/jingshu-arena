@@ -131,6 +131,116 @@ export const stores = pgTable(
   ],
 ).enableRLS();
 
+export const products = pgTable(
+  "products",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    code: text("code").notNull(),
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    category: text("category").notNull(),
+    archived: boolean("archived").default(false).notNull(),
+  },
+  (table) => [
+    unique("products_sandbox_code_unique").on(table.sandboxId, table.code),
+    check(
+      "products_category",
+      sql`${table.category} IN ('drink', 'snack', 'meal', 'supply')`,
+    ),
+    pgPolicy("products_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const inventoryItems = pgTable(
+  "inventory_items",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "cascade" }),
+    productId: uuid("product_id").references(() => products.id, {
+      onDelete: "restrict",
+    }),
+    kind: text("kind").notNull(),
+    code: text("code").notNull(),
+    displayName: text("display_name").notNull(),
+    onHandQuantity: integer("on_hand_quantity").default(0).notNull(),
+    reservedQuantity: integer("reserved_quantity").default(0).notNull(),
+    lowStockThreshold: integer("low_stock_threshold").default(0).notNull(),
+  },
+  (table) => [
+    unique("inventory_items_sandbox_store_code_unique").on(
+      table.sandboxId,
+      table.storeId,
+      table.code,
+    ),
+    unique("inventory_items_store_product_unique").on(
+      table.sandboxId,
+      table.storeId,
+      table.productId,
+    ),
+    check("inventory_items_kind", sql`${table.kind} IN ('product', 'spare')`),
+    check(
+      "inventory_items_product_reference",
+      sql`(${table.kind} = 'product' AND ${table.productId} IS NOT NULL) OR (${table.kind} = 'spare' AND ${table.productId} IS NULL)`,
+    ),
+    check(
+      "inventory_items_quantity_invariants",
+      sql`${table.onHandQuantity} >= 0 AND ${table.reservedQuantity} >= 0 AND ${table.reservedQuantity} <= ${table.onHandQuantity} AND ${table.lowStockThreshold} >= 0`,
+    ),
+    pgPolicy("inventory_items_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const storeProducts = pgTable(
+  "store_products",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "cascade" }),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "restrict" }),
+    inventoryItemId: uuid("inventory_item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "restrict" }),
+    listed: boolean("listed").default(false).notNull(),
+    unitPriceCents: integer("unit_price_cents").notNull(),
+  },
+  (table) => [
+    unique("store_products_sandbox_store_product_unique").on(
+      table.sandboxId,
+      table.storeId,
+      table.productId,
+    ),
+    unique("store_products_inventory_item_unique").on(table.inventoryItemId),
+    check(
+      "store_products_non_negative_price",
+      sql`${table.unitPriceCents} >= 0`,
+    ),
+    pgPolicy("store_products_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
 export const machineProfiles = pgTable(
   "machine_profiles",
   {
@@ -355,6 +465,7 @@ export const experienceCoupons = pgTable(
     validUntil: timestamp("valid_until", { withTimezone: true }).notNull(),
     status: text("status").default("available").notNull(),
     reservedReservationId: uuid("reserved_reservation_id"),
+    reservedOrderId: uuid("reserved_order_id"),
     reservedUntil: timestamp("reserved_until", { withTimezone: true }),
   },
   (table) => [
@@ -381,6 +492,10 @@ export const experienceCoupons = pgTable(
     check(
       "experience_coupons_status",
       sql`${table.status} IN ('available', 'reserved', 'redeemed', 'expired')`,
+    ),
+    check(
+      "experience_coupons_single_reservation",
+      sql`NOT (${table.reservedReservationId} IS NOT NULL AND ${table.reservedOrderId} IS NOT NULL)`,
     ),
     pgPolicy("experience_coupons_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
@@ -459,6 +574,248 @@ export const reservations = pgTable(
       table.endsAt,
     ),
     pgPolicy("reservations_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const customerOrders = pgTable(
+  "customer_orders",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    customerPersonaId: uuid("customer_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "restrict" }),
+    reservationId: uuid("reservation_id")
+      .notNull()
+      .references(() => reservations.id, { onDelete: "restrict" }),
+    seatId: uuid("seat_id")
+      .notNull()
+      .references(() => seats.id, { onDelete: "restrict" }),
+    status: text("status").notNull(),
+    holdExpiresAt: timestamp("hold_expires_at", {
+      withTimezone: true,
+    }).notNull(),
+    createdBusinessAt: timestamp("created_business_at", {
+      withTimezone: true,
+    }).notNull(),
+    orderSnapshot: jsonb("order_snapshot").notNull(),
+    couponId: uuid("coupon_id").references(() => experienceCoupons.id, {
+      onDelete: "restrict",
+    }),
+    couponSnapshot: jsonb("coupon_snapshot"),
+    simulatedPaymentCents: integer("simulated_payment_cents"),
+    paidBusinessAt: timestamp("paid_business_at", { withTimezone: true }),
+    cancelledBusinessAt: timestamp("cancelled_business_at", {
+      withTimezone: true,
+    }),
+    expiredBusinessAt: timestamp("expired_business_at", { withTimezone: true }),
+    terminalReason: text("terminal_reason"),
+  },
+  (table) => [
+    check(
+      "customer_orders_status",
+      sql`${table.status} IN ('pending-simulated-payment', 'simulated-paid', 'cancelled', 'expired')`,
+    ),
+    check(
+      "customer_orders_non_negative_payment",
+      sql`${table.simulatedPaymentCents} IS NULL OR ${table.simulatedPaymentCents} >= 0`,
+    ),
+    check(
+      "customer_orders_hold_after_creation",
+      sql`${table.holdExpiresAt} > ${table.createdBusinessAt}`,
+    ),
+    pgPolicy("customer_orders_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const orderInventoryReservations = pgTable(
+  "order_inventory_reservations",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => customerOrders.id, { onDelete: "cascade" }),
+    inventoryItemId: uuid("inventory_item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "restrict" }),
+    quantity: integer("quantity").notNull(),
+    status: text("status").notNull(),
+    releasedBusinessAt: timestamp("released_business_at", {
+      withTimezone: true,
+    }),
+  },
+  (table) => [
+    unique("order_inventory_reservations_order_item_unique").on(
+      table.sandboxId,
+      table.orderId,
+      table.inventoryItemId,
+    ),
+    check(
+      "order_inventory_reservations_positive_quantity",
+      sql`${table.quantity} > 0`,
+    ),
+    check(
+      "order_inventory_reservations_status",
+      sql`${table.status} IN ('active', 'released')`,
+    ),
+    pgPolicy("order_inventory_reservations_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const inventoryMovements = pgTable(
+  "inventory_movements",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    inventoryItemId: uuid("inventory_item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "restrict" }),
+    orderId: uuid("order_id").references(() => customerOrders.id, {
+      onDelete: "restrict",
+    }),
+    reason: text("reason").notNull(),
+    onHandDelta: integer("on_hand_delta").notNull(),
+    onHandAfter: integer("on_hand_after").notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "inventory_movements_non_negative_after",
+      sql`${table.onHandAfter} >= 0`,
+    ),
+    check("inventory_movements_non_zero_delta", sql`${table.onHandDelta} <> 0`),
+    pgPolicy("inventory_movements_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const orderBusinessEvents = pgTable(
+  "order_business_events",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => customerOrders.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    eventData: jsonb("event_data").notNull(),
+    sequence: bigserial("sequence", { mode: "number" }).notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    pgPolicy("order_business_events_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const orderCommandRequests = pgTable(
+  "order_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    customerPersonaId: uuid("customer_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => customerOrders.id, { onDelete: "cascade" }),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.customerPersonaId,
+        table.idempotencyKeyHash,
+      ],
+      name: "order_command_requests_pk",
+    }),
+    pgPolicy("order_command_requests_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const orderLifecycleCommandRequests = pgTable(
+  "order_lifecycle_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    customerPersonaId: uuid("customer_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => customerOrders.id, { onDelete: "cascade" }),
+    commandType: text("command_type").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.customerPersonaId,
+        table.commandType,
+        table.idempotencyKeyHash,
+      ],
+      name: "order_lifecycle_command_requests_pk",
+    }),
+    check(
+      "order_lifecycle_command_requests_type",
+      sql`${table.commandType} IN ('simulate-payment', 'cancel')`,
+    ),
+    pgPolicy("order_lifecycle_command_requests_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),

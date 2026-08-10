@@ -112,6 +112,36 @@ export class CustomerReservationIdempotencyConflictError extends Error {
   }
 }
 
+export type CustomerOrderConflictReason =
+  | "coupon-ineligible"
+  | "coupon-not-found"
+  | "coupon-unavailable"
+  | "empty-cart"
+  | "hold-expired"
+  | "idempotency-conflict"
+  | "illegal-transition"
+  | "insufficient-inventory"
+  | "invalid-quantity"
+  | "not-found"
+  | "product-not-listed"
+  | "reservation-ineligible";
+
+export class CustomerOrderConflictError extends Error {
+  readonly code = "CUSTOMER_ORDER_CONFLICT";
+  readonly currentStatus: string | null;
+  readonly reason: CustomerOrderConflictReason;
+
+  constructor(
+    reason: CustomerOrderConflictReason,
+    currentStatus: string | null = null,
+  ) {
+    super(`Customer order command was rejected: ${reason}.`);
+    this.name = "CustomerOrderConflictError";
+    this.currentStatus = currentStatus;
+    this.reason = reason;
+  }
+}
+
 export type CustomerReservationLifecycleConflictReason =
   "hold-expired" | "illegal-transition" | "not-found" | "reservation-started";
 

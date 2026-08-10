@@ -239,5 +239,12 @@ describe("role-context expand migration", () => {
       "select value from jingshu_schema_metadata where key = 'schema_version'",
     );
     expect(metadata.rows).toEqual([{ value: "9" }]);
+
+    await applyMigration("0013_customer_order_inventory.sql");
+
+    const customerOrderMetadata = await client.query<{ value: string }>(
+      "select value from jingshu_schema_metadata where key = 'schema_version'",
+    );
+    expect(customerOrderMetadata.rows).toEqual([{ value: "10" }]);
   });
 });
