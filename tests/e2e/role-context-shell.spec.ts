@@ -278,6 +278,12 @@ test.beforeEach(async ({ context }) => {
           : row.status === "ready-for-pickup"
             ? ({ kind: "complete", label: "完成订单" } as const)
             : null;
+    const hasPreparingEvent =
+      row.status === "preparing" ||
+      row.status === "ready-for-pickup" ||
+      row.status === "completed";
+    const hasReadyEvent =
+      row.status === "ready-for-pickup" || row.status === "completed";
     return {
       actions: {
         canCancel: primary !== null,
@@ -345,6 +351,24 @@ test.beforeEach(async ({ context }) => {
           occurredAt: "2026-08-10T11:19:00.000Z",
           type: "order.simulated-payment-succeeded",
         },
+        ...(hasPreparingEvent
+          ? [
+              {
+                data: {},
+                occurredAt: "2026-08-10T11:25:00.000Z",
+                type: "order.preparing",
+              },
+            ]
+          : []),
+        ...(hasReadyEvent
+          ? [
+              {
+                data: {},
+                occurredAt: "2026-08-10T11:30:00.000Z",
+                type: "order.ready-for-pickup",
+              },
+            ]
+          : []),
       ],
     };
   }
@@ -651,6 +675,7 @@ test.beforeEach(async ({ context }) => {
     }
     const orderId = url.pathname.split("/").at(-1) ?? "";
     const row = staffOrderRows.find((item) => item.orderId === orderId);
+    await new Promise((resolve) => setTimeout(resolve, 150));
     await route.fulfill({
       json: row ? staffOrderDetail(row) : { error: { message: "订单不存在" } },
       status: row ? 200 : 404,
@@ -999,19 +1024,48 @@ test("staff fulfills paid orders one observable stage at a time and safely retri
   ).toContainText("商品快照");
   await expect(page.getByRole("button", { name: "开始制作" })).toBeVisible();
 
+  let failedPrimaryKey = "";
+  const failPrimary = async (route: Route) => {
+    failedPrimaryKey = route.request().headers()["idempotency-key"] ?? "";
+    await route.fulfill({
+      json: {
+        error: {
+          code: "STAFF_ORDER_SERVICE_UNAVAILABLE",
+          message: "订单动作未能完成，原状态保持不变；可以安全重试。",
+          requestId: "00000000-0000-4000-8000-000000000970",
+        },
+      },
+      status: 503,
+    });
+  };
+  await page.route("**/api/v1/staff/orders/**/commands", failPrimary);
+  await page.getByRole("button", { name: "开始制作" }).click();
+  await expect(
+    page
+      .getByRole("complementary", { name: "商品订单详情" })
+      .getByRole("alert"),
+  ).toContainText("原状态保持不变");
+  await page.unroute("**/api/v1/staff/orders/**/commands", failPrimary);
+
   const commandRequest = page.waitForRequest(
     (request) =>
       request.url().includes("/api/v1/staff/orders/") &&
       request.url().endsWith("/commands"),
   );
   await page.getByRole("button", { name: "开始制作" }).click();
-  await commandRequest;
+  const retriedPrimary = await commandRequest;
+  expect(retriedPrimary.headers()["idempotency-key"]).toBe(failedPrimaryKey);
   await expect(
     page.getByRole("button", { name: "正在提交开始制作" }),
   ).toBeDisabled();
   await expect(page.getByRole("button", { name: "标记待取" })).toBeVisible();
   await page.getByRole("button", { name: "标记待取" }).click();
   await expect(page.getByRole("button", { name: "完成订单" })).toBeVisible();
+  const orderDetail = page.getByRole("complementary", {
+    name: "商品订单详情",
+  });
+  await expect(orderDetail.getByText("已开始制作")).toBeVisible();
+  await expect(orderDetail.getByText("已标记待取")).toBeVisible();
   await page.getByRole("button", { name: "完成订单" }).click();
   await expect(
     page.getByRole("complementary", { name: "商品订单详情" }),
@@ -1019,6 +1073,9 @@ test("staff fulfills paid orders one observable stage at a time and safely retri
   await expect(page.getByRole("main").getByText("成长值 +11")).toBeVisible();
 
   await page.getByRole("button", { name: /顾辰.*烤肠.*待取/u }).click();
+  await expect(page.getByText("正在读取服务端详情…")).toBeVisible();
+  await expect(page.getByRole("button", { name: "开始制作" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "完成订单" })).toBeVisible();
   await page.getByRole("button", { name: "取消订单" }).click();
   await expect(
     page.getByRole("dialog", { name: "取消商品订单" }),
@@ -1027,7 +1084,9 @@ test("staff fulfills paid orders one observable stage at a time and safely retri
   await expect(page.getByRole("button", { name: "确认取消" })).toBeDisabled();
   await page.getByLabel("取消原因").fill("顾客临时改变取货计划");
 
+  let failedCancellationKey = "";
   const failCancellation = async (route: Route) => {
+    failedCancellationKey = route.request().headers()["idempotency-key"] ?? "";
     await route.fulfill({
       json: {
         error: {
@@ -1045,7 +1104,15 @@ test("staff fulfills paid orders one observable stage at a time and safely retri
   await expect(cancelDialog.getByRole("alert")).toContainText("原状态保持不变");
   await expect(cancelDialog).toBeVisible();
   await page.unroute("**/api/v1/staff/orders/**/commands", failCancellation);
+  const cancellationRetry = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/commands") &&
+      request.postDataJSON().action === "cancel",
+  );
   await page.getByRole("button", { name: "重试取消" }).click();
+  expect((await cancellationRetry).headers()["idempotency-key"]).toBe(
+    failedCancellationKey,
+  );
   await expect(
     page.getByRole("main").getByText("模拟退款 ¥15.00"),
   ).toBeVisible();

@@ -663,6 +663,145 @@ describe("customer order API", () => {
     }
   });
 
+  it("rolls back every completion side effect when growth persistence fails", async () => {
+    const context = await createArrivedReservation();
+    const catalogResponse = await app.request(
+      `/api/v1/customer/reservations/${context.reservationId}/products`,
+      { headers: { Cookie: context.cookie } },
+    );
+    const catalog = (await catalogResponse.json()) as {
+      products: Array<{ id: string; onHandQuantity: number }>;
+    };
+    const product = catalog.products[0]!;
+    const created = await app.request("/api/v1/customer/orders", {
+      body: JSON.stringify({
+        couponId: null,
+        lines: [{ productId: product.id, quantity: 2 }],
+        reservationId: context.reservationId,
+      }),
+      headers: writeHeaders(context),
+      method: "POST",
+    });
+    expect(created.status).toBe(201);
+    const order = (await created.json()) as { orderId: string };
+    const paid = await app.request(
+      `/api/v1/customer/orders/${order.orderId}/simulated-payment`,
+      { body: "{}", headers: writeHeaders(context), method: "POST" },
+    );
+    expect(paid.status).toBe(200);
+
+    const staff = await switchRole(context, "staff");
+    for (const action of ["start-preparing", "mark-ready"] as const) {
+      const advanced = await app.request(
+        `/api/v1/staff/orders/${order.orderId}/commands`,
+        {
+          body: JSON.stringify({ action }),
+          headers: writeHeaders(staff),
+          method: "POST",
+        },
+      );
+      expect(advanced.status).toBe(200);
+    }
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      await client.query(`
+        create or replace function ticket12_fail_order_growth()
+        returns trigger language plpgsql as $$
+        begin
+          if new.source_kind = 'order' and new.source_id::text = TG_ARGV[0] then
+            raise exception 'ticket12 injected order completion failure';
+          end if;
+          return new;
+        end;
+        $$;
+        create trigger ticket12_fail_order_growth_trigger
+        before insert on member_growth_events
+        for each row execute function ticket12_fail_order_growth('${order.orderId}')
+      `);
+
+      const failed = await app.request(
+        `/api/v1/staff/orders/${order.orderId}/commands`,
+        {
+          body: JSON.stringify({ action: "complete" }),
+          headers: writeHeaders(staff),
+          method: "POST",
+        },
+      );
+      expect(failed.status).toBe(503);
+      await expect(failed.json()).resolves.toMatchObject({
+        error: {
+          code: "STAFF_ORDER_SERVICE_UNAVAILABLE",
+          message:
+            "商品订单暂时无法处理，订单与库存没有被部分修改；请稍后安全重试。",
+        },
+      });
+
+      const evidence = await client.query<{
+        audit_count: string;
+        command_count: string;
+        completed_event_count: string;
+        growth_count: string;
+        hold_status: string;
+        movement_count: string;
+        on_hand_quantity: number;
+        refund_count: string;
+        reserved_quantity: number;
+        status: string;
+      }>(
+        `select orders.status, item.on_hand_quantity, item.reserved_quantity,
+                hold.status as hold_status,
+                (select count(*) from inventory_movements
+                  where sandbox_id = $1 and order_id = $2) as movement_count,
+                (select count(*) from member_growth_events
+                  where sandbox_id = $1 and source_kind = 'order'
+                    and source_id = $2) as growth_count,
+                (select count(*) from order_business_events
+                  where sandbox_id = $1 and order_id = $2
+                    and event_type = 'order.completed') as completed_event_count,
+                (select count(*) from audit_events
+                  where sandbox_id = $1 and object_id = $2
+                    and action = 'order.complete') as audit_count,
+                (select count(*) from order_frontline_command_requests
+                  where sandbox_id = $1 and order_id = $2
+                    and command_type = 'complete') as command_count,
+                (select count(*) from order_simulated_refunds
+                  where sandbox_id = $1 and order_id = $2) as refund_count
+           from customer_orders orders
+           join order_inventory_reservations hold on hold.order_id = orders.id
+           join inventory_items item on item.id = hold.inventory_item_id
+          where orders.sandbox_id = $1 and orders.id = $2`,
+        [context.sandboxId, order.orderId],
+      );
+      expect(evidence.rows).toEqual([
+        {
+          audit_count: "0",
+          command_count: "0",
+          completed_event_count: "0",
+          growth_count: "0",
+          hold_status: "active",
+          movement_count: "0",
+          on_hand_quantity: product.onHandQuantity,
+          refund_count: "0",
+          reserved_quantity: 2,
+          status: "ready-for-pickup",
+        },
+      ]);
+    } finally {
+      await client.query("rollback").catch(() => undefined);
+      await client
+        .query(
+          "drop trigger if exists ticket12_fail_order_growth_trigger on member_growth_events",
+        )
+        .catch(() => undefined);
+      await client
+        .query("drop function if exists ticket12_fail_order_growth()")
+        .catch(() => undefined);
+      await client.end();
+    }
+  });
+
   it("exposes the arrived-reservation catalog and a CSRF-protected snapshot/payment flow", async () => {
     const context = await createArrivedReservation();
     const catalogResponse = await app.request(

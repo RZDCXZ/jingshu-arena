@@ -1551,27 +1551,15 @@ async function releaseOrderHold(
     sandboxId: string;
   },
 ): Promise<boolean> {
-  const released = await client.query(
-    `update inventory_items item
-        set reserved_quantity = item.reserved_quantity - hold.quantity
-       from order_inventory_reservations hold
-      where hold.sandbox_id = $1 and hold.order_id = $2
-        and hold.status = 'active' and item.id = hold.inventory_item_id`,
-    [input.sandboxId, input.orderId],
-  );
-  await client.query(
-    `update order_inventory_reservations
-        set status = 'released', released_business_at = $3
-      where sandbox_id = $1 and order_id = $2 and status = 'active'`,
-    [input.sandboxId, input.orderId, input.businessTime],
-  );
-  const coupon = await client.query(
-    `update experience_coupons
-        set status = 'available', reserved_order_id = null, reserved_until = null
-      where sandbox_id = $1 and reserved_order_id = $2
-        and status in ('reserved', 'redeemed')`,
-    [input.sandboxId, input.orderId],
-  );
+  const inventoryReservationCount = await releaseActiveOrderInventory(client, {
+    businessTime: input.businessTime,
+    orderId: input.orderId,
+    sandboxId: input.sandboxId,
+  });
+  const couponRestored = await restoreOrderCoupon(client, {
+    orderId: input.orderId,
+    sandboxId: input.sandboxId,
+  });
   const updated = await client.query(
     `update customer_orders
         set status = $3::text,
@@ -1600,8 +1588,8 @@ async function releaseOrderHold(
         input.orderId,
         input.eventType,
         JSON.stringify({
-          couponRestored: coupon.rowCount === 1,
-          inventoryReservationCount: released.rowCount ?? 0,
+          couponRestored,
+          inventoryReservationCount,
           reason: input.reason,
         }),
         input.businessTime,
@@ -1610,6 +1598,69 @@ async function releaseOrderHold(
     );
   }
   return updated.rowCount === 1;
+}
+
+async function releaseActiveOrderInventory(
+  client: PoolClient,
+  input: { businessTime: Date; orderId: string; sandboxId: string },
+): Promise<number> {
+  const released = await client.query(
+    `update inventory_items item
+        set reserved_quantity = item.reserved_quantity - hold.quantity
+       from order_inventory_reservations hold
+      where hold.sandbox_id = $1 and hold.order_id = $2
+        and hold.status = 'active' and item.id = hold.inventory_item_id`,
+    [input.sandboxId, input.orderId],
+  );
+  await client.query(
+    `update order_inventory_reservations
+        set status = 'released', released_business_at = $3
+      where sandbox_id = $1 and order_id = $2 and status = 'active'`,
+    [input.sandboxId, input.orderId, input.businessTime],
+  );
+  return released.rowCount ?? 0;
+}
+
+async function restoreOrderCoupon(
+  client: PoolClient,
+  input: { orderId: string; sandboxId: string },
+): Promise<boolean> {
+  const restored = await client.query(
+    `update experience_coupons
+        set status = 'available', reserved_order_id = null, reserved_until = null
+      where sandbox_id = $1 and reserved_order_id = $2
+        and status in ('reserved', 'redeemed')`,
+    [input.sandboxId, input.orderId],
+  );
+  return restored.rowCount === 1;
+}
+
+async function recordOrderSimulatedRefund(
+  client: PoolClient,
+  input: {
+    amountCents: number;
+    businessTime: Date;
+    orderId: string;
+    reason: string | null;
+    recordedAt: Date;
+    sandboxId: string;
+  },
+): Promise<void> {
+  await client.query(
+    `insert into order_simulated_refunds (
+       id, sandbox_id, order_id, amount_cents, reason,
+       business_occurred_at, recorded_at
+     ) values ($1, $2, $3, $4, $5, $6, $7)`,
+    [
+      randomUUID(),
+      input.sandboxId,
+      input.orderId,
+      input.amountCents,
+      input.reason,
+      input.businessTime,
+      input.recordedAt,
+    ],
+  );
 }
 
 async function processCustomerOrderDeadlines(
@@ -5095,34 +5146,20 @@ export function createPublicSandboxDatabase(
         }
         let couponRestored = false;
         if (decision.couponEffect === "restore" && row.order_snapshot.coupon) {
-          const restored = await client.query(
-            `update experience_coupons
-                set status = 'available', reserved_order_id = null,
-                    reserved_until = null
-              where sandbox_id = $1 and reserved_order_id = $2
-                and status in ('reserved', 'redeemed')`,
-            [input.sandboxId, row.id],
-          );
-          couponRestored = restored.rowCount === 1;
+          couponRestored = await restoreOrderCoupon(client, {
+            orderId: row.id,
+            sandboxId: input.sandboxId,
+          });
           if (!couponRestored) {
             throw new Error("The order coupon could not be restored.");
           }
         }
         if (decision.inventoryEffect === "release") {
-          await client.query(
-            `update inventory_items item
-                set reserved_quantity = item.reserved_quantity - hold.quantity
-               from order_inventory_reservations hold
-              where hold.sandbox_id = $1 and hold.order_id = $2
-                and hold.status = 'active' and item.id = hold.inventory_item_id`,
-            [input.sandboxId, row.id],
-          );
-          await client.query(
-            `update order_inventory_reservations
-                set status = 'released', released_business_at = $3
-              where sandbox_id = $1 and order_id = $2 and status = 'active'`,
-            [input.sandboxId, row.id, currentTime],
-          );
+          await releaseActiveOrderInventory(client, {
+            businessTime: currentTime,
+            orderId: row.id,
+            sandboxId: input.sandboxId,
+          });
         }
         if (
           decision.inventoryEffect === "sale" ||
@@ -5189,21 +5226,14 @@ export function createPublicSandboxDatabase(
           );
         }
         if (decision.simulatedRefundCents > 0) {
-          await client.query(
-            `insert into order_simulated_refunds (
-               id, sandbox_id, order_id, amount_cents, reason,
-               business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, $5, $6, $7)`,
-            [
-              randomUUID(),
-              input.sandboxId,
-              row.id,
-              decision.simulatedRefundCents,
-              input.reason,
-              currentTime,
-              wallTime,
-            ],
-          );
+          await recordOrderSimulatedRefund(client, {
+            amountCents: decision.simulatedRefundCents,
+            businessTime: currentTime,
+            orderId: row.id,
+            reason: input.reason,
+            recordedAt: wallTime,
+            sandboxId: input.sandboxId,
+          });
         }
         let growthPoints = 0;
         if (decision.nextStatus === "completed") {
@@ -6565,21 +6595,14 @@ export function createPublicSandboxDatabase(
           throw new CustomerOrderConflictError("illegal-transition");
         }
         if (refund) {
-          await client.query(
-            `insert into order_simulated_refunds (
-               id, sandbox_id, order_id, amount_cents, reason,
-               business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, $5, $6, $7)`,
-            [
-              randomUUID(),
-              input.sandboxId,
-              input.orderId,
-              refund.amountCents,
-              refund.reason,
-              currentTime,
-              wallTime,
-            ],
-          );
+          await recordOrderSimulatedRefund(client, {
+            amountCents: refund.amountCents,
+            businessTime: currentTime,
+            orderId: input.orderId,
+            reason: refund.reason,
+            recordedAt: wallTime,
+            sandboxId: input.sandboxId,
+          });
         }
         await client.query(
           `insert into audit_events (

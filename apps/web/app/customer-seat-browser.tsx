@@ -242,13 +242,16 @@ function orderProgressIndex(
     "ready-for-pickup": 3,
     "simulated-paid": 1,
   };
+  const timelineProgress: Record<string, number> = {
+    "order.completed": 4,
+    "order.pending-created": 0,
+    "order.preparing": 2,
+    "order.ready-for-pickup": 3,
+    "order.simulated-payment-succeeded": 1,
+  };
   return (
     directProgress[status] ??
-    (timeline.some(
-      (event) => event.type === "order.simulated-payment-succeeded",
-    )
-      ? 1
-      : 0)
+    Math.max(0, ...timeline.map((event) => timelineProgress[event.type] ?? 0))
   );
 }
 

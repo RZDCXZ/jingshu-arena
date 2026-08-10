@@ -35,8 +35,8 @@ const eventLabels: Record<string, string> = {
   "order.cancelled": "订单已取消",
   "order.completed": "订单已完成",
   "order.inventory-reserved": "整单库存已预留",
-  "order.marked-ready": "已标记待取",
-  "order.preparing-started": "已开始制作",
+  "order.preparing": "已开始制作",
+  "order.ready-for-pickup": "已标记待取",
   "order.simulated-payment-succeeded": "模拟支付成功",
 };
 
@@ -93,7 +93,14 @@ function stageCount(
   stage: StaffOrderStageFilter,
 ) {
   if (!queue) return 0;
-  if (stage === "all") return queue.rows.length;
+  if (stage === "all") {
+    return (
+      queue.counts.exception +
+      queue.counts.preparing +
+      queue.counts["ready-for-pickup"] +
+      queue.counts["simulated-paid"]
+    );
+  }
   return queue.counts[stage];
 }
 
@@ -454,6 +461,7 @@ export function StaffOrderFulfillment({
   const retryRef = useRef<{
     action: StaffOrderAction;
     key: string;
+    orderId: string;
     reason?: string;
   } | null>(null);
 
@@ -494,6 +502,7 @@ export function StaffOrderFulfillment({
       return;
     }
     const controller = new AbortController();
+    setDetail(null);
     setDetailLoading(true);
     setDetailError("");
     void fetch(`/api/v1/staff/orders/${selectedId}`, {
@@ -513,6 +522,7 @@ export function StaffOrderFulfillment({
   }, [inspectorOpen, refreshKey, refreshNonce, selectedId]);
 
   const normalizedFilter = filter.trim().toLocaleLowerCase("zh-CN");
+  const visibleDetail = detail?.order.orderId === selectedId ? detail : null;
   const rows = useMemo(
     () =>
       (queue?.rows ?? []).filter((row) =>
@@ -526,18 +536,37 @@ export function StaffOrderFulfillment({
   );
 
   function selectOrder(orderId: string) {
+    if (orderId !== selectedId) {
+      setDetail(null);
+      setDetailError("");
+      retryRef.current = null;
+    }
     setSelectedId(orderId);
     setCommandError("");
     onInspector(true);
   }
 
   async function submitCommand(action: StaffOrderAction, reason?: string) {
-    if (!selectedId) return;
+    if (!selectedId || detail?.order.orderId !== selectedId) return;
+    if (
+      action === "cancel"
+        ? !detail.actions.canCancel
+        : detail.actions.primary?.kind !== action
+    ) {
+      return;
+    }
     const previous = retryRef.current;
     const attempt =
-      previous?.action === action && previous.reason === reason
+      previous?.orderId === selectedId &&
+      previous.action === action &&
+      previous.reason === reason
         ? previous
-        : { action, key: crypto.randomUUID(), ...(reason ? { reason } : {}) };
+        : {
+            action,
+            key: crypto.randomUUID(),
+            orderId: selectedId,
+            ...(reason ? { reason } : {}),
+          };
     retryRef.current = attempt;
     setSubmitting(action);
     setCommandError("");
@@ -696,7 +725,7 @@ export function StaffOrderFulfillment({
       {inspectorOpen ? (
         <OrderInspector
           commandError={cancelOpen ? "" : commandError}
-          detail={detail}
+          detail={visibleDetail}
           error={detailError}
           loading={detailLoading}
           onCancel={() => {
@@ -706,7 +735,6 @@ export function StaffOrderFulfillment({
           }}
           onClose={() => onInspector(false)}
           onPrimary={(action) => {
-            retryRef.current = null;
             void submitCommand(action);
           }}
           submitting={submitting}
