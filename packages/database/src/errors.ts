@@ -206,4 +206,25 @@ export class StaffOrderConflictError extends Error {
     this.currentStatus = currentStatus;
   }
 }
+
+export type ManagerInventoryConflictReason =
+  | "cross-store"
+  | "idempotency-conflict"
+  | "invalid-quantity"
+  | "invalid-reason"
+  | "no-change"
+  | "not-found"
+  | "original-movement-not-found"
+  | "reserved-inventory";
+
+export class ManagerInventoryConflictError extends Error {
+  readonly code = "MANAGER_INVENTORY_CONFLICT";
+  readonly reason: ManagerInventoryConflictReason;
+
+  constructor(reason: ManagerInventoryConflictReason) {
+    super(`Manager inventory command was rejected: ${reason}.`);
+    this.name = "ManagerInventoryConflictError";
+    this.reason = reason;
+  }
+}
 import type { ReservationStatus } from "@jingshu/domain";

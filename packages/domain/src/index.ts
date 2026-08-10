@@ -1,7 +1,21 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "10";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.5";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "11";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.6";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
+
+export function isSafePlainTextReason(value: string, maxLength = 200) {
+  const reason = value.trim();
+  return (
+    reason.length > 0 &&
+    reason.length <= maxLength &&
+    !Array.from(reason).some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return (
+        code < 32 || code === 127 || character === "<" || character === ">"
+      );
+    })
+  );
+}
 
 const HALF_HOUR_MS = 30 * 60 * 1_000;
 const HOUR_MS = 60 * 60 * 1_000;

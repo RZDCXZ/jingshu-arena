@@ -28,6 +28,7 @@ import { roleMeta, type RolePageId } from "./role-context-model";
 import { RoleWorkbench, type StaffReservationPreset } from "./role-workbench";
 import { CustomerSeatBrowser } from "./customer-seat-browser";
 import { StaffOrderFulfillment } from "./staff-order-fulfillment";
+import { StoreInventory } from "./store-inventory";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -612,6 +613,15 @@ export function RoleContextShell({
               onInspector={setInspectorOpen}
               onToast={setToast}
               refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+            />
+          ) : (context.role.id === "staff" && activePage === "inventory") ||
+            (context.role.id === "manager" &&
+              activePage === "manager-inventory") ? (
+            <StoreInventory
+              csrfToken={context.csrfToken}
+              onToast={setToast}
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              role={context.role.id}
             />
           ) : (context.role.id === "staff" &&
               (activePage === "workbench" || activePage === "reservations")) ||

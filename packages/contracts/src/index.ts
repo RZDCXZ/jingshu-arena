@@ -514,6 +514,98 @@ export interface StaffOrderCommandResponse {
   readonly status: CustomerOrderStatus;
 }
 
+export const INVENTORY_KINDS = ["product", "spare"] as const;
+export type InventoryKind = (typeof INVENTORY_KINDS)[number];
+export const INVENTORY_MOVEMENT_KINDS = [
+  "receipt",
+  "stocktake",
+  "compensation",
+  "sale",
+  "waste",
+  "spare-usage",
+  "spare-return",
+] as const;
+export type InventoryMovementKind = (typeof INVENTORY_MOVEMENT_KINDS)[number];
+export const MANAGER_INVENTORY_ACTIONS = [
+  "receipt",
+  "stocktake",
+  "compensation",
+] as const;
+export type ManagerInventoryAction = (typeof MANAGER_INVENTORY_ACTIONS)[number];
+
+export interface InventoryMovementResponse {
+  readonly businessOccurredAt: string;
+  readonly inventoryItemId: string;
+  readonly inventoryItemName: string;
+  readonly kind: InventoryMovementKind;
+  readonly movementId: string;
+  readonly onHandAfter: number;
+  readonly onHandDelta: number;
+  readonly orderId: string | null;
+  readonly originalMovementId: string | null;
+  readonly reason: string;
+}
+
+export interface StoreInventoryResponse {
+  readonly currentTime: string;
+  readonly items: ReadonlyArray<{
+    readonly alerting: boolean;
+    readonly availableQuantity: number;
+    readonly code: string;
+    readonly displayName: string;
+    readonly inventoryItemId: string;
+    readonly kind: InventoryKind;
+    readonly lowStockThreshold: number;
+    readonly onHandQuantity: number;
+    readonly recentMovement: InventoryMovementResponse | null;
+    readonly reservedQuantity: number;
+  }>;
+  readonly movements: ReadonlyArray<InventoryMovementResponse>;
+  readonly status: "ready";
+  readonly store: { readonly code: string; readonly displayName: string };
+  readonly summary: {
+    readonly alertCount: number;
+    readonly itemCount: number;
+    readonly productCount: number;
+    readonly spareCount: number;
+  };
+}
+
+export type ManagerInventoryCommandRequest =
+  | {
+      readonly action: "receipt";
+      readonly inventoryItemId: string;
+      readonly quantity: number;
+      readonly reason: string;
+    }
+  | {
+      readonly action: "stocktake";
+      readonly actualQuantity: number;
+      readonly inventoryItemId: string;
+      readonly reason: string;
+    }
+  | {
+      readonly action: "compensation";
+      readonly inventoryItemId: string;
+      readonly onHandDelta: number;
+      readonly originalMovementId: string | null;
+      readonly reason: string;
+    };
+
+export interface ManagerInventoryCommandResponse {
+  readonly action: ManagerInventoryAction;
+  readonly alerting: boolean;
+  readonly alertTransition: "activated" | "resolved" | "unchanged";
+  readonly businessOccurredAt: string;
+  readonly inventoryItemId: string;
+  readonly movementId: string;
+  readonly onHandAfter: number;
+  readonly onHandDelta: number;
+  readonly originalMovementId: string | null;
+  readonly reason: string;
+  readonly replayed: boolean;
+}
+
 export type CustomerMemberTier = "bronze" | "gold" | "silver";
 export type CustomerExperienceCouponStatus =
   "available" | "expired" | "redeemed" | "reserved";

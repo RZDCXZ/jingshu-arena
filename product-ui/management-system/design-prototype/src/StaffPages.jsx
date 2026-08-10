@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   Pulse,
+  ArrowCounterClockwise,
   ArrowRight,
   Barcode,
   CalendarBlank,
@@ -1315,6 +1316,22 @@ export function InventoryPage({
                 }
               >
                 盘点
+              </Button>
+              <Button
+                tone="secondary"
+                icon={ArrowCounterClockwise}
+                disabled={readonly}
+                onClick={() =>
+                  onInventoryAction({
+                    kind: "inventory-compensation",
+                    label: "创建补偿流水",
+                    item: "替换耳机",
+                    delta: -1,
+                    original: "RCV-260808-0007",
+                  })
+                }
+              >
+                补偿流水
               </Button>
               <Button
                 tone="primary"

@@ -12,6 +12,7 @@ import { registerCustomerMembershipRoutes } from "./customer-membership-routes.j
 import { registerCustomerOrderRoutes } from "./customer-order-routes.js";
 import { registerStaffReservationRoutes } from "./staff-reservation-routes.js";
 import { registerStaffOrderRoutes } from "./staff-order-routes.js";
+import { registerManagerInventoryRoutes } from "./manager-inventory-routes.js";
 
 interface AppOptions {
   allowedOrigins?: ReadonlyArray<string>;
@@ -51,6 +52,7 @@ export function createApp(options: AppOptions = {}) {
   registerCustomerOrderRoutes(app, services);
   registerStaffReservationRoutes(app, services);
   registerStaffOrderRoutes(app, services);
+  registerManagerInventoryRoutes(app, services);
   registerPublicSandboxRoutes(app, services);
 
   return app;

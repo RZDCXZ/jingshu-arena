@@ -21,6 +21,7 @@ import {
   deriveExperienceCouponStatus,
   deriveSeatAvailability,
   evaluateReservationCoupon,
+  isSafePlainTextReason,
   memberTierForGrowth,
   priceCustomerOrder,
   type CustomerOrderStatus,
@@ -44,6 +45,8 @@ import {
   CustomerReservationLifecycleConflictError,
   CustomerSeatBrowseValidationError,
   FrontlineReservationConflictError,
+  ManagerInventoryConflictError,
+  type ManagerInventoryConflictReason,
   StaffOrderConflictError,
   PublicSandboxIdempotencyConflictError,
   PublicSandboxOwnershipConflictError,
@@ -607,6 +610,91 @@ export interface ExecuteStaffOrderCommandInput extends ReadStaffOrderDetailInput
   readonly requestId: string;
 }
 
+export type ReadStoreInventoryInput = ReadStaffReservationWorkbenchInput;
+
+interface ManagerInventoryCommandBase extends ReadStoreInventoryInput {
+  readonly idempotencyKey: string;
+  readonly inventoryItemId: string;
+  readonly reason: string;
+  readonly requestId: string;
+  readonly role: "manager";
+}
+
+export type ExecuteManagerInventoryCommandInput =
+  | (ManagerInventoryCommandBase & {
+      readonly action: "receipt";
+      readonly quantity: number;
+    })
+  | (ManagerInventoryCommandBase & {
+      readonly action: "stocktake";
+      readonly actualQuantity: number;
+    })
+  | (ManagerInventoryCommandBase & {
+      readonly action: "compensation";
+      readonly onHandDelta: number;
+      readonly originalMovementId: string | null;
+    });
+
+export interface DatabaseManagerInventoryCommand {
+  readonly action: "compensation" | "receipt" | "stocktake";
+  readonly alerting: boolean;
+  readonly alertTransition: "activated" | "resolved" | "unchanged";
+  readonly businessOccurredAt: Date;
+  readonly inventoryItemId: string;
+  readonly movementId: string;
+  readonly onHandAfter: number;
+  readonly onHandDelta: number;
+  readonly originalMovementId: string | null;
+  readonly reason: string;
+  readonly replayed: boolean;
+}
+
+export interface DatabaseStoreInventoryItem {
+  readonly alerting: boolean;
+  readonly availableQuantity: number;
+  readonly code: string;
+  readonly displayName: string;
+  readonly inventoryItemId: string;
+  readonly kind: "product" | "spare";
+  readonly lowStockThreshold: number;
+  readonly onHandQuantity: number;
+  readonly reservedQuantity: number;
+  readonly recentMovement: DatabaseInventoryMovement | null;
+}
+
+export interface DatabaseInventoryMovement {
+  readonly businessOccurredAt: Date;
+  readonly inventoryItemId: string;
+  readonly inventoryItemName: string;
+  readonly kind:
+    | "compensation"
+    | "receipt"
+    | "sale"
+    | "spare-return"
+    | "spare-usage"
+    | "stocktake"
+    | "waste";
+  readonly movementId: string;
+  readonly onHandAfter: number;
+  readonly onHandDelta: number;
+  readonly orderId: string | null;
+  readonly originalMovementId: string | null;
+  readonly reason: string;
+}
+
+export interface DatabaseStoreInventory {
+  readonly currentTime: Date;
+  readonly items: ReadonlyArray<DatabaseStoreInventoryItem>;
+  readonly movements: ReadonlyArray<DatabaseInventoryMovement>;
+  readonly store: { readonly code: string; readonly displayName: string };
+  readonly summary: {
+    readonly alertCount: number;
+    readonly itemCount: number;
+    readonly productCount: number;
+    readonly spareCount: number;
+  };
+}
+
 export interface DatabaseStaffOrderSummary {
   readonly amountCents: number;
   readonly couponLabel: string | null;
@@ -833,6 +921,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   executeStaffOrderCommand(
     input: ExecuteStaffOrderCommandInput,
   ): Promise<DatabaseStaffOrderCommand>;
+  executeManagerInventoryCommand(
+    input: ExecuteManagerInventoryCommandInput,
+  ): Promise<DatabaseManagerInventoryCommand>;
   createCustomerPendingReservation(
     input: CreateCustomerPendingReservationInput,
   ): Promise<DatabaseCustomerPendingReservation>;
@@ -863,6 +954,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readStaffOrderQueue(
     input: ReadStaffOrderQueueInput,
   ): Promise<DatabaseStaffOrderQueue>;
+  readStoreInventory(
+    input: ReadStoreInventoryInput,
+  ): Promise<DatabaseStoreInventory>;
   readCustomerSeatAvailability(
     input: ReadCustomerSeatAvailabilityInput,
   ): Promise<DatabaseCustomerSeatAvailability>;
@@ -1423,6 +1517,35 @@ interface StaffOrderCommandRow {
     simulatedRefundCents: number;
     status: CustomerOrderStatus;
   };
+}
+
+interface ManagerInventoryCommandRow {
+  payload_hash: string;
+  result_data: {
+    action: "compensation" | "receipt" | "stocktake";
+    alerting: boolean;
+    alertTransition: "activated" | "resolved" | "unchanged";
+    businessOccurredAt: string;
+    inventoryItemId: string;
+    movementId: string;
+    onHandAfter: number;
+    onHandDelta: number;
+    originalMovementId: string | null;
+    reason: string;
+  };
+}
+
+interface InventoryMovementRow {
+  business_occurred_at: Date;
+  inventory_item_id: string;
+  inventory_item_name: string;
+  movement_kind: DatabaseInventoryMovement["kind"];
+  movement_id: string;
+  on_hand_after: number;
+  on_hand_delta: number;
+  order_id: string | null;
+  original_movement_id: string | null;
+  reason: string;
 }
 
 function pendingOrderFromStored(
@@ -3181,11 +3304,83 @@ async function recordStaffOrderDenial(
   );
 }
 
+async function recordManagerInventoryDenial(
+  client: PoolClient,
+  input: {
+    readonly action: "compensation" | "receipt" | "stocktake";
+    readonly actorStoreId: string;
+    readonly businessTime: Date;
+    readonly inventoryItemId: string;
+    readonly onHandQuantity: number | null;
+    readonly personaId: string;
+    readonly reason: ManagerInventoryConflictReason;
+    readonly recordedAt: Date;
+    readonly requestId: string;
+    readonly reservedQuantity: number | null;
+    readonly sandboxId: string;
+  },
+) {
+  const balance = {
+    onHandQuantity: input.onHandQuantity,
+    reservedQuantity: input.reservedQuantity,
+  };
+  await client.query(
+    `insert into audit_events (
+       id, sandbox_id, store_id, persona_id, role, action, object_type,
+       object_id, result, reason, request_id, before_data, after_data,
+       business_occurred_at, recorded_at
+     ) values ($1, $2, $3, $4, 'manager', $5, 'inventory_item', $6,
+       'denied', $7, $8, $9::jsonb, $10::jsonb, $11, $12)`,
+    [
+      randomUUID(),
+      input.sandboxId,
+      input.actorStoreId,
+      input.personaId,
+      `inventory.${input.action}`,
+      input.inventoryItemId,
+      input.reason,
+      input.requestId,
+      JSON.stringify(balance),
+      JSON.stringify(balance),
+      input.businessTime,
+      input.recordedAt,
+    ],
+  );
+}
+
 function staffOrderCommandFromStored(
   value: StaffOrderCommandRow["result_data"],
   replayed: boolean,
 ): DatabaseStaffOrderCommand {
   return { ...value, occurredAt: new Date(value.occurredAt), replayed };
+}
+
+function managerInventoryCommandFromStored(
+  value: ManagerInventoryCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseManagerInventoryCommand {
+  return {
+    ...value,
+    businessOccurredAt: new Date(value.businessOccurredAt),
+    replayed,
+  };
+}
+
+function inventoryMovementFromRow(
+  movement: InventoryMovementRow,
+): DatabaseInventoryMovement {
+  return {
+    businessOccurredAt: movement.business_occurred_at,
+    inventoryItemId: movement.inventory_item_id,
+    inventoryItemName: movement.inventory_item_name,
+    kind: movement.movement_kind,
+    movementId: movement.movement_id,
+    onHandAfter: movement.on_hand_after,
+    onHandDelta: movement.on_hand_delta,
+    orderId: movement.order_id,
+    originalMovementId: movement.original_movement_id,
+    reason: movement.reason,
+  };
 }
 
 function buildRoleContext(
@@ -3642,9 +3837,14 @@ async function materializePublicSandbox(input: {
   );
   const spareSeeds = seededStores.flatMap((store) =>
     [
-      { code: "spare-headset", displayName: "维修耳机", quantity: 6 },
-      { code: "spare-key-switch", displayName: "键盘轴体", quantity: 24 },
-      { code: "spare-mouse", displayName: "维修鼠标", quantity: 5 },
+      { code: "spare-keyboard", displayName: "维修键盘", quantity: 7 },
+      { code: "spare-mouse", displayName: "维修鼠标", quantity: 1 },
+      { code: "spare-headset", displayName: "维修耳机", quantity: 2 },
+      { code: "spare-display-cable", displayName: "显示线", quantity: 6 },
+      { code: "spare-network-cable", displayName: "网线", quantity: 8 },
+      { code: "spare-power-unit", displayName: "电源", quantity: 4 },
+      { code: "spare-cooling-fan", displayName: "散热风扇", quantity: 5 },
+      { code: "spare-memory", displayName: "内存", quantity: 3 },
     ].map((spare) => ({
       ...spare,
       id: randomUUID(),
@@ -5020,6 +5220,385 @@ export function createPublicSandboxDatabase(
         client.release();
       }
     },
+    async executeManagerInventoryCommand(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        if (input.role !== "manager") throw new RoleContextStaleError();
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const deny = async (
+          denialReason: ManagerInventoryConflictReason,
+          balance?: {
+            readonly id: string;
+            readonly on_hand_quantity: number;
+            readonly reserved_quantity: number;
+          },
+        ): Promise<never> => {
+          await recordManagerInventoryDenial(client, {
+            action: input.action,
+            actorStoreId: context.actorStoreId,
+            businessTime: currentTime,
+            inventoryItemId: balance?.id ?? input.inventoryItemId,
+            onHandQuantity: balance?.on_hand_quantity ?? null,
+            personaId: input.personaId,
+            reason: denialReason,
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            reservedQuantity: balance?.reserved_quantity ?? null,
+            sandboxId: input.sandboxId,
+          });
+          await client.query("commit");
+          throw new ManagerInventoryConflictError(denialReason);
+        };
+        const reason = input.reason.trim();
+        if (!isSafePlainTextReason(reason)) await deny("invalid-reason");
+        const payloadHash = hash(
+          JSON.stringify({
+            action: input.action,
+            inventoryItemId: input.inventoryItemId,
+            reason,
+            ...(input.action === "receipt"
+              ? { quantity: input.quantity }
+              : input.action === "stocktake"
+                ? { actualQuantity: input.actualQuantity }
+                : {
+                    onHandDelta: input.onHandDelta,
+                    originalMovementId: input.originalMovementId,
+                  }),
+          }),
+        );
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:manager-inventory:${idempotencyKeyHash}`,
+          ],
+        );
+        const existing = await client.query<ManagerInventoryCommandRow>(
+          `select payload_hash, result_data
+             from inventory_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const existingRow = existing.rows[0];
+        if (existingRow) {
+          if (existingRow.payload_hash !== payloadHash) {
+            await deny("idempotency-conflict");
+          }
+          await client.query("commit");
+          return managerInventoryCommandFromStored(
+            existingRow.result_data,
+            true,
+          );
+        }
+        const item = await client.query<{
+          id: string;
+          low_stock_threshold: number;
+          on_hand_quantity: number;
+          reserved_quantity: number;
+          store_id: string;
+        }>(
+          `select id, store_id, on_hand_quantity, reserved_quantity,
+                  low_stock_threshold
+             from inventory_items
+            where sandbox_id = $1 and id = $2
+            for update`,
+          [input.sandboxId, input.inventoryItemId],
+        );
+        const itemRow = item.rows[0];
+        if (!itemRow) {
+          return await deny("not-found");
+        }
+        if (itemRow.store_id !== context.actorStoreId) {
+          await deny("cross-store", itemRow);
+        }
+        let onHandDelta: number;
+        let onHandAfter: number;
+        let originalMovementId: string | null = null;
+        if (input.action === "receipt") {
+          if (!Number.isInteger(input.quantity) || input.quantity <= 0) {
+            await deny("invalid-quantity", itemRow);
+          }
+          onHandDelta = input.quantity;
+          onHandAfter = itemRow.on_hand_quantity + onHandDelta;
+        } else if (input.action === "stocktake") {
+          if (
+            !Number.isInteger(input.actualQuantity) ||
+            input.actualQuantity < 0
+          ) {
+            await deny("invalid-quantity", itemRow);
+          }
+          if (input.actualQuantity < itemRow.reserved_quantity) {
+            await deny("reserved-inventory", itemRow);
+          }
+          onHandAfter = input.actualQuantity;
+          onHandDelta = onHandAfter - itemRow.on_hand_quantity;
+          if (onHandDelta === 0) {
+            await deny("no-change", itemRow);
+          }
+        } else {
+          if (!Number.isInteger(input.onHandDelta) || input.onHandDelta === 0) {
+            await deny("invalid-quantity", itemRow);
+          }
+          onHandDelta = input.onHandDelta;
+          onHandAfter = itemRow.on_hand_quantity + onHandDelta;
+          if (onHandAfter < itemRow.reserved_quantity) {
+            await deny("reserved-inventory", itemRow);
+          }
+          originalMovementId = input.originalMovementId;
+          if (originalMovementId) {
+            const original = await client.query<{ id: string }>(
+              `select id from inventory_movements
+                where sandbox_id = $1 and store_id = $2
+                  and inventory_item_id = $3 and id = $4`,
+              [
+                input.sandboxId,
+                context.actorStoreId,
+                itemRow.id,
+                originalMovementId,
+              ],
+            );
+            if (!original.rows[0]) {
+              await deny("original-movement-not-found", itemRow);
+            }
+          }
+        }
+        const beforeAlerting =
+          itemRow.on_hand_quantity - itemRow.reserved_quantity <=
+          itemRow.low_stock_threshold;
+        const alerting =
+          onHandAfter - itemRow.reserved_quantity <=
+          itemRow.low_stock_threshold;
+        const alertTransition =
+          beforeAlerting === alerting
+            ? "unchanged"
+            : alerting
+              ? "activated"
+              : "resolved";
+        const movementId = randomUUID();
+        await client.query(
+          `update inventory_items set on_hand_quantity = $3
+            where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, itemRow.id, onHandAfter],
+        );
+        await client.query(
+          `insert into inventory_movements (
+             id, sandbox_id, store_id, inventory_item_id, order_id,
+             movement_kind, compensates_movement_id, reason, on_hand_delta,
+             on_hand_after, business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, null, $5, $6, $7, $8, $9, $10, $11)`,
+          [
+            movementId,
+            input.sandboxId,
+            context.actorStoreId,
+            itemRow.id,
+            input.action,
+            originalMovementId,
+            reason,
+            onHandDelta,
+            onHandAfter,
+            currentTime,
+            wallTime,
+          ],
+        );
+        const stored: ManagerInventoryCommandRow["result_data"] = {
+          action: input.action,
+          alerting,
+          alertTransition,
+          businessOccurredAt: currentTime.toISOString(),
+          inventoryItemId: itemRow.id,
+          movementId,
+          onHandAfter,
+          onHandDelta,
+          originalMovementId,
+          reason,
+        };
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, reason, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, 'manager', $5, 'inventory_item', $6,
+             'allowed', $7, $8, $9::jsonb, $10::jsonb, $11, $12)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            context.actorStoreId,
+            input.personaId,
+            `inventory.${input.action}`,
+            itemRow.id,
+            reason,
+            input.requestId,
+            JSON.stringify({
+              alerting: beforeAlerting,
+              onHandQuantity: itemRow.on_hand_quantity,
+              reservedQuantity: itemRow.reserved_quantity,
+            }),
+            JSON.stringify({
+              alerting,
+              movementId,
+              onHandQuantity: onHandAfter,
+              reservedQuantity: itemRow.reserved_quantity,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into inventory_command_requests (
+             sandbox_id, actor_persona_id, inventory_item_id, command_type,
+             idempotency_key_hash, payload_hash, result_data, created_at
+           ) values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            itemRow.id,
+            input.action,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+            wallTime,
+          ],
+        );
+        await client.query("commit");
+        return managerInventoryCommandFromStored(stored, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readStoreInventory(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const store = await client.query<{
+          code: string;
+          display_name: string;
+        }>(
+          `select code, display_name from stores
+            where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const storeRow = store.rows[0];
+        if (!storeRow) throw new RoleContextUnavailableError();
+        const result = await client.query<{
+          available_quantity: number;
+          code: string;
+          display_name: string;
+          id: string;
+          kind: "product" | "spare";
+          low_stock_threshold: number;
+          on_hand_quantity: number;
+          reserved_quantity: number;
+        }>(
+          `select id, kind, code, display_name, on_hand_quantity,
+                  reserved_quantity, low_stock_threshold,
+                  on_hand_quantity - reserved_quantity as available_quantity
+             from inventory_items
+            where sandbox_id = $1 and store_id = $2
+            order by kind, display_name, id`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const movementResult = await client.query<InventoryMovementRow>(
+          `select movement.id as movement_id,
+                  movement.inventory_item_id,
+                  item.display_name as inventory_item_name,
+                  coalesce(
+                    movement.movement_kind,
+                    case when movement.reason = 'order-waste' then 'waste' else 'sale' end
+                  ) as movement_kind,
+                  movement.on_hand_delta, movement.on_hand_after,
+                  movement.reason, movement.order_id,
+                  movement.compensates_movement_id as original_movement_id,
+                  movement.business_occurred_at
+             from inventory_movements movement
+             join inventory_items item on item.id = movement.inventory_item_id
+            where movement.sandbox_id = $1 and movement.store_id = $2
+            order by movement.business_occurred_at desc, movement.recorded_at desc,
+                     movement.id desc
+            limit 20`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const latestMovementResult = await client.query<InventoryMovementRow>(
+          `select distinct on (movement.inventory_item_id)
+                  movement.id as movement_id,
+                  movement.inventory_item_id,
+                  item.display_name as inventory_item_name,
+                  coalesce(
+                    movement.movement_kind,
+                    case when movement.reason = 'order-waste' then 'waste' else 'sale' end
+                  ) as movement_kind,
+                  movement.on_hand_delta, movement.on_hand_after,
+                  movement.reason, movement.order_id,
+                  movement.compensates_movement_id as original_movement_id,
+                  movement.business_occurred_at
+             from inventory_movements movement
+             join inventory_items item on item.id = movement.inventory_item_id
+            where movement.sandbox_id = $1 and movement.store_id = $2
+            order by movement.inventory_item_id,
+                     movement.business_occurred_at desc,
+                     movement.recorded_at desc, movement.id desc`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const movements = movementResult.rows.map(inventoryMovementFromRow);
+        const latestMovementByItem = new Map(
+          latestMovementResult.rows.map((movement) => [
+            movement.inventory_item_id,
+            inventoryMovementFromRow(movement),
+          ]),
+        );
+        const items = result.rows.map((item) => ({
+          alerting: item.available_quantity <= item.low_stock_threshold,
+          availableQuantity: item.available_quantity,
+          code: item.code,
+          displayName: item.display_name,
+          inventoryItemId: item.id,
+          kind: item.kind,
+          lowStockThreshold: item.low_stock_threshold,
+          onHandQuantity: item.on_hand_quantity,
+          recentMovement: latestMovementByItem.get(item.id) ?? null,
+          reservedQuantity: item.reserved_quantity,
+        }));
+        await client.query("commit");
+        return {
+          currentTime,
+          items,
+          movements,
+          store: {
+            code: storeRow.code,
+            displayName: storeRow.display_name,
+          },
+          summary: {
+            alertCount: items.filter((item) => item.alerting).length,
+            itemCount: items.length,
+            productCount: items.filter((item) => item.kind === "product")
+              .length,
+            spareCount: items.filter((item) => item.kind === "spare").length,
+          },
+        };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async readStaffOrderDetail(input) {
       const client = await pool.connect();
       const wallTime = wallClock.now();
@@ -5194,15 +5773,16 @@ export function createPublicSandboxDatabase(
             await client.query(
               `insert into inventory_movements (
                  id, sandbox_id, store_id, inventory_item_id, order_id,
-                 reason, on_hand_delta, on_hand_after, business_occurred_at,
-                 recorded_at
-               ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                 movement_kind, reason, on_hand_delta, on_hand_after,
+                 business_occurred_at, recorded_at
+               ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
               [
                 randomUUID(),
                 input.sandboxId,
                 row.store_id,
                 hold.inventory_item_id,
                 row.id,
+                decision.inventoryEffect === "sale" ? "sale" : "waste",
                 decision.inventoryEffect === "sale"
                   ? "order-sale"
                   : "order-waste",

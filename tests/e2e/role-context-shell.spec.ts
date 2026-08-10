@@ -6,6 +6,7 @@ import type {
   PublicRole,
   PublicSandboxReadyResponse,
   RoleContextReadyResponse,
+  StoreInventoryResponse,
   StaffOrderDetailResponse,
   StaffOrderSummaryResponse,
   StaffReservationDetailResponse,
@@ -266,6 +267,45 @@ test.beforeEach(async ({ context }) => {
       waitingMinutes: 13,
     },
   ];
+  const inventoryItems: StoreInventoryResponse["items"][number][] = [
+    {
+      alerting: true,
+      availableQuantity: 3,
+      code: "peripheral-wipe",
+      displayName: "外设清洁湿巾",
+      inventoryItemId: "00000000-0000-4000-8000-000000000981",
+      kind: "product",
+      lowStockThreshold: 3,
+      onHandQuantity: 9,
+      recentMovement: null,
+      reservedQuantity: 6,
+    },
+    {
+      alerting: true,
+      availableQuantity: 2,
+      code: "spare-headset",
+      displayName: "维修耳机",
+      inventoryItemId: "00000000-0000-4000-8000-000000000982",
+      kind: "spare",
+      lowStockThreshold: 2,
+      onHandQuantity: 2,
+      recentMovement: null,
+      reservedQuantity: 0,
+    },
+    {
+      alerting: false,
+      availableQuantity: 6,
+      code: "spare-display-cable",
+      displayName: "显示线",
+      inventoryItemId: "00000000-0000-4000-8000-000000000983",
+      kind: "spare",
+      lowStockThreshold: 2,
+      onHandQuantity: 6,
+      recentMovement: null,
+      reservedQuantity: 0,
+    },
+  ];
+  const inventoryMovements: StoreInventoryResponse["movements"][number][] = [];
 
   function staffOrderDetail(
     row: MutableStaffOrderSummary,
@@ -681,6 +721,102 @@ test.beforeEach(async ({ context }) => {
       status: row ? 200 : 404,
     });
   });
+  await context.route("**/api/v1/store/inventory**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/commands")) {
+      expect(currentRole).toBe("manager");
+      expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+      expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+      const body = request.postDataJSON() as
+        | {
+            action: "receipt";
+            inventoryItemId: string;
+            quantity: number;
+            reason: string;
+          }
+        | {
+            action: "stocktake";
+            actualQuantity: number;
+            inventoryItemId: string;
+            reason: string;
+          }
+        | {
+            action: "compensation";
+            inventoryItemId: string;
+            onHandDelta: number;
+            originalMovementId: string | null;
+            reason: string;
+          };
+      const item = inventoryItems.find(
+        (candidate) => candidate.inventoryItemId === body.inventoryItemId,
+      )!;
+      const beforeAlerting = item.alerting;
+      const onHandDelta =
+        body.action === "receipt"
+          ? body.quantity
+          : body.action === "stocktake"
+            ? body.actualQuantity - item.onHandQuantity
+            : body.onHandDelta;
+      item.onHandQuantity += onHandDelta;
+      item.availableQuantity = item.onHandQuantity - item.reservedQuantity;
+      item.alerting = item.availableQuantity <= item.lowStockThreshold;
+      const movementId = crypto.randomUUID();
+      const movement: StoreInventoryResponse["movements"][number] = {
+        businessOccurredAt: businessTime,
+        inventoryItemId: item.inventoryItemId,
+        inventoryItemName: item.displayName,
+        kind: body.action,
+        movementId,
+        onHandAfter: item.onHandQuantity,
+        onHandDelta,
+        orderId: null,
+        originalMovementId:
+          body.action === "compensation" ? body.originalMovementId : null,
+        reason: body.reason,
+      };
+      inventoryMovements.unshift(movement);
+      item.recentMovement = movement;
+      await route.fulfill({
+        json: {
+          action: body.action,
+          alerting: item.alerting,
+          alertTransition:
+            beforeAlerting === item.alerting
+              ? "unchanged"
+              : item.alerting
+                ? "activated"
+                : "resolved",
+          businessOccurredAt: businessTime,
+          inventoryItemId: item.inventoryItemId,
+          movementId,
+          onHandAfter: item.onHandQuantity,
+          onHandDelta,
+          originalMovementId: movement.originalMovementId,
+          reason: body.reason,
+          replayed: false,
+        },
+        status: 200,
+      });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        currentTime: businessTime,
+        items: inventoryItems,
+        movements: inventoryMovements,
+        status: "ready",
+        store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+        summary: {
+          alertCount: inventoryItems.filter((item) => item.alerting).length,
+          itemCount: 20,
+          productCount: 12,
+          spareCount: 8,
+        },
+      } satisfies StoreInventoryResponse,
+      status: 200,
+    });
+  });
 
   await context.route("**/api/v1/customer/stores", async (route) => {
     await route.fulfill({
@@ -946,6 +1082,77 @@ async function enterStaffShell(page: Page) {
   await page.getByRole("button", { name: "进入店员视图" }).click();
   await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
 }
+
+test("staff reads inventory while manager stocktakes, receives and compensates with dedicated dialogs", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "库存", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "库存" })).toBeVisible();
+  await expect(page.getByText("余额只读")).toBeVisible();
+  await expect(page.getByRole("button", { name: "手工入库" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "店长 许知远 · 虚构人物 棱镜旗舰店",
+    })
+    .click();
+  await expect(page.getByRole("heading", { name: "经营看板" })).toBeVisible();
+  await page.getByRole("button", { name: "库存", exact: true }).click();
+  await expect(page.getByText("20", { exact: true })).toBeVisible();
+  await expect(page.getByText("12", { exact: true })).toBeVisible();
+  await expect(page.getByText("8", { exact: true })).toBeVisible();
+
+  const stocktakeTrigger = page.getByRole("button", { name: "盘点" });
+  await stocktakeTrigger.click();
+  await expect(page.getByLabel("库存项目", { exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(stocktakeTrigger).toBeFocused();
+  await stocktakeTrigger.click();
+  const stocktake = page.getByRole("dialog", { name: "创建库存盘点" });
+  await expect(stocktake).toBeVisible();
+  const stocktakeBox = await stocktake.boundingBox();
+  expect(stocktakeBox?.width).toBe(560);
+  expect(stocktakeBox?.height).toBe(542);
+  await stocktake.getByLabel("实际数量").fill("10");
+  await expect(stocktake.getByText(/差额.*\+1/u)).toBeVisible();
+  await stocktake
+    .getByLabel("盘点原因")
+    .fill("闭店前例行盘点，现场数量已复核。");
+  await stocktake.getByRole("button", { name: "提交盘点" }).click();
+  await expect(page.getByText("盘点流水已创建")).toBeVisible();
+
+  await page.getByRole("button", { name: "手工入库" }).click();
+  const receipt = page.getByRole("dialog", { name: "创建手工入库" });
+  await receipt.getByLabel("入库数量").fill("3");
+  await receipt.getByLabel("入库原因").fill("门店补货到货，店长已复核数量。");
+  await receipt.getByRole("button", { name: "确认入库" }).click();
+  await expect(page.getByText("入库流水已创建")).toBeVisible();
+
+  await page.getByRole("button", { name: "补偿流水" }).click();
+  const compensation = page.getByRole("dialog", { name: "创建补偿流水" });
+  await compensation.getByLabel("补偿差额").fill("-1");
+  await compensation
+    .getByLabel("补偿原因")
+    .fill("原入库多计一件，使用新流水进行补偿。");
+  await compensation.getByRole("button", { name: "创建补偿" }).click();
+  await expect(page.getByText("补偿流水已创建")).toBeVisible();
+
+  await page.getByRole("button", { name: "收起流水" }).click();
+  await page.getByRole("button", { name: "查看全部流水" }).click();
+  await expect(
+    page.locator("#inventory-ledger-rows").getByText("原入库多计一件"),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 1024, height: 768 });
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.body.clientWidth,
+    scrollWidth: document.body.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBe(layout.clientWidth);
+});
 
 test("shared shell exposes the signed persona, role, scope, lifecycle, and freshness", async ({
   page,

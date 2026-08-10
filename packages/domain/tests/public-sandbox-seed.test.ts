@@ -2,11 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildPublicSandboxSeed,
+  isSafePlainTextReason,
   PUBLIC_SANDBOX_SCHEMA_VERSION,
   PUBLIC_SANDBOX_SEED_VERSION,
 } from "../src/index.js";
 
 describe("public sandbox seed", () => {
+  it("accepts only bounded plain-text business reasons", () => {
+    expect(isSafePlainTextReason("门店到货，店长已复核。")).toBe(true);
+    expect(isSafePlainTextReason("   ")).toBe(false);
+    expect(isSafePlainTextReason("含有<标签>的原因")).toBe(false);
+    expect(isSafePlainTextReason(`换行\n原因`)).toBe(false);
+    expect(isSafePlainTextReason("原".repeat(201))).toBe(false);
+  });
+
   it("builds the same protected three-store world on every call", () => {
     const first = buildPublicSandboxSeed();
     const second = buildPublicSandboxSeed();

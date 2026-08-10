@@ -4,6 +4,7 @@ import {
   bigserial,
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -702,6 +703,8 @@ export const inventoryMovements = pgTable(
     orderId: uuid("order_id").references(() => customerOrders.id, {
       onDelete: "restrict",
     }),
+    movementKind: text("movement_kind"),
+    compensatesMovementId: uuid("compensates_movement_id"),
     reason: text("reason").notNull(),
     onHandDelta: integer("on_hand_delta").notNull(),
     onHandAfter: integer("on_hand_after").notNull(),
@@ -718,7 +721,56 @@ export const inventoryMovements = pgTable(
       sql`${table.onHandAfter} >= 0`,
     ),
     check("inventory_movements_non_zero_delta", sql`${table.onHandDelta} <> 0`),
+    check(
+      "inventory_movements_kind",
+      sql`${table.movementKind} IN ('receipt', 'stocktake', 'compensation', 'sale', 'waste', 'spare-usage', 'spare-return')`,
+    ),
+    foreignKey({
+      columns: [table.compensatesMovementId],
+      foreignColumns: [table.id],
+      name: "inventory_movements_compensates_movement_id_fk",
+    }).onDelete("restrict"),
     pgPolicy("inventory_movements_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const inventoryCommandRequests = pgTable(
+  "inventory_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    actorPersonaId: uuid("actor_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    inventoryItemId: uuid("inventory_item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "restrict" }),
+    commandType: text("command_type").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.actorPersonaId,
+        table.idempotencyKeyHash,
+      ],
+      name: "inventory_command_requests_pk",
+    }),
+    check(
+      "inventory_command_requests_type",
+      sql`${table.commandType} IN ('receipt', 'stocktake', 'compensation')`,
+    ),
+    pgPolicy("inventory_command_requests_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),

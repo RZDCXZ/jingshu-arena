@@ -246,5 +246,78 @@ describe("role-context expand migration", () => {
       "select value from jingshu_schema_metadata where key = 'schema_version'",
     );
     expect(customerOrderMetadata.rows).toEqual([{ value: "10" }]);
+
+    await applyMigration("0014_staff_order_fulfillment.sql");
+    await applyMigration("0015_manager_inventory.sql");
+
+    const inventoryMetadata = await client.query<{ value: string }>(
+      "select value from jingshu_schema_metadata where key = 'schema_version'",
+    );
+    expect(inventoryMetadata.rows).toEqual([{ value: "12" }]);
+    const inventoryStructures = await client.query<{
+      command_table: string | null;
+      movement_kind: string | null;
+    }>(
+      `select
+        to_regclass('public.inventory_command_requests')::text as command_table,
+        (select column_name from information_schema.columns
+          where table_schema = 'public' and table_name = 'inventory_movements'
+            and column_name = 'movement_kind') as movement_kind`,
+    );
+    expect(inventoryStructures.rows).toEqual([
+      {
+        command_table: "inventory_command_requests",
+        movement_kind: "movement_kind",
+      },
+    ]);
+
+    const rollingOperatorId = "00000000-0000-4000-8000-000000000613";
+    const rollingStoreId = "00000000-0000-4000-8000-000000000614";
+    const rollingInventoryItemId = "00000000-0000-4000-8000-000000000615";
+    const rollingMovementId = "00000000-0000-4000-8000-000000000616";
+    await client.query("begin");
+    await client.query("set local role jingshu_runtime");
+    await client.query("select set_config('app.sandbox_id', $1, true)", [
+      rollingSandboxId,
+    ]);
+    await client.query(
+      `insert into operators (id, sandbox_id, display_name, city)
+       values ($1, $2, '滚动部署经营方', '栖光市')`,
+      [rollingOperatorId, rollingSandboxId],
+    );
+    await client.query(
+      `insert into stores (
+         id, sandbox_id, operator_id, code, display_name, seat_count,
+         opens_at, closes_at, is_open_24_hours
+       ) values ($1, $2, $3, 'rolling-store', '滚动部署门店', 1,
+         '00:00', '00:00', true)`,
+      [rollingStoreId, rollingSandboxId, rollingOperatorId],
+    );
+    await client.query(
+      `insert into inventory_items (
+         id, sandbox_id, store_id, kind, code, display_name,
+         on_hand_quantity, reserved_quantity, low_stock_threshold
+       ) values ($1, $2, $3, 'spare', 'rolling-spare', '滚动部署备件', 1, 0, 0)`,
+      [rollingInventoryItemId, rollingSandboxId, rollingStoreId],
+    );
+    await client.query(
+      `insert into inventory_movements (
+         id, sandbox_id, store_id, inventory_item_id, order_id, reason,
+         on_hand_delta, on_hand_after, business_occurred_at, recorded_at
+       ) values ($1, $2, $3, $4, null, 'legacy-writer', 1, 1, now(), now())`,
+      [
+        rollingMovementId,
+        rollingSandboxId,
+        rollingStoreId,
+        rollingInventoryItemId,
+      ],
+    );
+    await client.query("commit");
+    const rollingMovement = await client.query<{
+      movement_kind: string | null;
+    }>("select movement_kind from inventory_movements where id = $1", [
+      rollingMovementId,
+    ]);
+    expect(rollingMovement.rows).toEqual([{ movement_kind: null }]);
   });
 });

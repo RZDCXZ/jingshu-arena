@@ -865,6 +865,49 @@ function resolveActionModal(action) {
     };
   }
 
+  if (action?.kind === "inventory-compensation") {
+    return {
+      eyebrow: "统一库存账本",
+      title: actionLabel,
+      noticeTitle: "错误操作只通过新流水修正",
+      noticeBody:
+        "本次补偿不会编辑或删除原流水；可以关联原操作，也可以在业务原因中清楚说明原操作。",
+      confirmLabel: "创建补偿",
+      fields: [
+        {
+          label: "库存项目",
+          value: action.item || "替换耳机",
+          options: ["替换耳机", "显示线", "维修鼠标", "外设清洁套装"],
+        },
+        {
+          label: "当前账面库存",
+          value: "7",
+          readOnly: true,
+        },
+        {
+          label: "补偿差额",
+          value: `${action.delta ?? -1}`,
+          type: "number",
+        },
+        {
+          label: "关联原流水（可选）",
+          value: action.original || "不关联，在原因中说明原操作",
+          options: [
+            action.original || "RCV-260808-0007",
+            "STK-260808-0086",
+            "不关联，在原因中说明原操作",
+          ],
+        },
+        {
+          label: "补偿原因（必填，最多 200 字）",
+          value: "原入库多计一件，关联原入库流水进行补偿。",
+          multiline: true,
+          full: true,
+        },
+      ],
+    };
+  }
+
   if (action?.kind === "manager-store-profile") {
     return {
       eyebrow: "门店基本资料",
