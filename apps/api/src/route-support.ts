@@ -32,6 +32,7 @@ export interface AppServices {
   repairImageSigningSecret?: string;
   repairImageStorage?: RepairImageStorage;
   sessionSecret?: string;
+  wallClock: { now(): Date };
 }
 
 export function csrfTokensMatch(

@@ -127,6 +127,13 @@
       "when": 1786356000000,
       "tag": "0017_repair_maintenance_refund",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1786363200000,
+      "tag": "0018_repair_spares_verification",
+      "breakpoints": true
     }
   ]
 }

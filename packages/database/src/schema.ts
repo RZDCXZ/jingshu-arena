@@ -624,6 +624,23 @@ export const repairs = pgTable(
     processingBusinessAt: timestamp("processing_business_at", {
       withTimezone: true,
     }),
+    resolutionNote: text("resolution_note"),
+    resolutionSubmittedByPersonaId: uuid(
+      "resolution_submitted_by_persona_id",
+    ).references(() => demoPersonas.id, { onDelete: "restrict" }),
+    resolutionBusinessAt: timestamp("resolution_business_at", {
+      withTimezone: true,
+    }),
+    latestVerificationOutcome: text("latest_verification_outcome"),
+    latestVerificationReason: text("latest_verification_reason"),
+    verifiedByPersonaId: uuid("verified_by_persona_id").references(
+      () => demoPersonas.id,
+      { onDelete: "restrict" },
+    ),
+    verificationBusinessAt: timestamp("verification_business_at", {
+      withTimezone: true,
+    }),
+    closedBusinessAt: timestamp("closed_business_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -645,6 +662,18 @@ export const repairs = pgTable(
     check(
       "repairs_assignment_state",
       sql`(${table.status} = 'new' AND ${table.assignedToPersonaId} IS NULL AND ${table.assignedBusinessAt} IS NULL) OR (${table.status} <> 'new' AND ${table.assignedToPersonaId} IS NOT NULL AND ${table.assignedBusinessAt} IS NOT NULL)`,
+    ),
+    check(
+      "repairs_verification_outcome",
+      sql`${table.latestVerificationOutcome} IN ('success', 'failure')`,
+    ),
+    check(
+      "repairs_resolution_state",
+      sql`${table.status} NOT IN ('verification', 'closed') OR (${table.resolutionNote} IS NOT NULL AND ${table.resolutionSubmittedByPersonaId} IS NOT NULL AND ${table.resolutionBusinessAt} IS NOT NULL)`,
+    ),
+    check(
+      "repairs_closed_state",
+      sql`${table.status} <> 'closed' OR (${table.latestVerificationOutcome} = 'success' AND ${table.verifiedByPersonaId} IS NOT NULL AND ${table.verificationBusinessAt} IS NOT NULL AND ${table.closedBusinessAt} IS NOT NULL)`,
     ),
     uniqueIndex("repairs_one_open_per_seat_unique")
       .on(table.sandboxId, table.seatId)
@@ -751,7 +780,7 @@ export const repairStateCommandRequests = pgTable(
     }),
     check(
       "repair_state_command_requests_type",
-      sql`${table.commandType} IN ('assign', 'start')`,
+      sql`${table.commandType} IN ('assign', 'start', 'spare-claim', 'spare-return', 'submit-resolution', 'verify-success', 'verify-failure')`,
     ),
     pgPolicy("repair_state_command_requests_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
@@ -1017,11 +1046,15 @@ export const inventoryMovements = pgTable(
     orderId: uuid("order_id").references(() => customerOrders.id, {
       onDelete: "restrict",
     }),
+    repairId: uuid("repair_id").references(() => repairs.id, {
+      onDelete: "restrict",
+    }),
     movementKind: text("movement_kind"),
     compensatesMovementId: uuid("compensates_movement_id"),
     reason: text("reason").notNull(),
     onHandDelta: integer("on_hand_delta").notNull(),
     onHandAfter: integer("on_hand_after").notNull(),
+    sequence: bigserial("sequence", { mode: "number" }).notNull(),
     businessOccurredAt: timestamp("business_occurred_at", {
       withTimezone: true,
     }).notNull(),
@@ -1045,6 +1078,87 @@ export const inventoryMovements = pgTable(
       name: "inventory_movements_compensates_movement_id_fk",
     }).onDelete("restrict"),
     pgPolicy("inventory_movements_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const repairSpareUsages = pgTable(
+  "repair_spare_usages",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    repairId: uuid("repair_id")
+      .notNull()
+      .references(() => repairs.id, { onDelete: "restrict" }),
+    inventoryItemId: uuid("inventory_item_id")
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: "restrict" }),
+    claimedByPersonaId: uuid("claimed_by_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "restrict" }),
+    inventoryMovementId: uuid("inventory_movement_id")
+      .notNull()
+      .references(() => inventoryMovements.id, { onDelete: "restrict" }),
+    quantity: integer("quantity").notNull(),
+    returnedQuantity: integer("returned_quantity").default(0).notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("repair_spare_usages_movement_unique").on(table.inventoryMovementId),
+    check("repair_spare_usages_quantity", sql`${table.quantity} > 0`),
+    check(
+      "repair_spare_usages_returned_quantity",
+      sql`${table.returnedQuantity} >= 0 AND ${table.returnedQuantity} <= ${table.quantity}`,
+    ),
+    pgPolicy("repair_spare_usages_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const repairSpareReturns = pgTable(
+  "repair_spare_returns",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    repairId: uuid("repair_id")
+      .notNull()
+      .references(() => repairs.id, { onDelete: "restrict" }),
+    usageId: uuid("usage_id")
+      .notNull()
+      .references(() => repairSpareUsages.id, { onDelete: "restrict" }),
+    returnedByPersonaId: uuid("returned_by_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "restrict" }),
+    inventoryMovementId: uuid("inventory_movement_id")
+      .notNull()
+      .references(() => inventoryMovements.id, { onDelete: "restrict" }),
+    quantity: integer("quantity").notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("repair_spare_returns_movement_unique").on(
+      table.inventoryMovementId,
+    ),
+    check("repair_spare_returns_quantity", sql`${table.quantity} > 0`),
+    pgPolicy("repair_spare_returns_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),

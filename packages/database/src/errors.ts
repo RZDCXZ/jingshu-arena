@@ -251,9 +251,15 @@ export type RepairCommandConflictReason =
   | "cross-store"
   | "idempotency-conflict"
   | "illegal-transition"
+  | "inventory-insufficient"
+  | "inventory-item-not-found"
   | "note-invalid"
   | "not-assignee"
-  | "not-found";
+  | "not-found"
+  | "quantity-invalid"
+  | "return-exceeds-claim"
+  | "usage-not-found"
+  | "verifier-not-independent";
 
 export class RepairCommandConflictError extends Error {
   readonly code = "REPAIR_COMMAND_CONFLICT";

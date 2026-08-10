@@ -422,6 +422,25 @@ export interface StartRepairRequest {
   readonly publicNote: string;
 }
 
+export interface ClaimRepairSpareRequest {
+  readonly inventoryItemId: string;
+  readonly quantity: number;
+}
+
+export interface ReturnRepairSpareRequest {
+  readonly quantity: number;
+  readonly usageId: string;
+}
+
+export interface SubmitRepairResolutionRequest {
+  readonly resolutionNote: string;
+}
+
+export interface VerifyRepairRequest {
+  readonly outcome: "failure" | "success";
+  readonly reason?: string;
+}
+
 export interface RepairCommandResponse {
   readonly action: "assign" | "start";
   readonly affectedReservations: ReadonlyArray<{
@@ -437,10 +456,50 @@ export interface RepairCommandResponse {
   readonly status: RepairStatus;
 }
 
+export interface RepairSpareCommandResponse {
+  readonly action: "claim" | "return";
+  readonly businessOccurredAt: string;
+  readonly inventoryItem: {
+    readonly displayName: string;
+    readonly inventoryItemId: string;
+  };
+  readonly movementId: string;
+  readonly onHandAfter: number;
+  readonly quantity: number;
+  readonly recordedAt: string;
+  readonly repairId: string;
+  readonly replayed: boolean;
+  readonly returnedQuantity: number;
+  readonly usageId: string;
+}
+
+export interface RepairResolutionCommandResponse {
+  readonly occurredAt: string;
+  readonly recordedAt: string;
+  readonly repairId: string;
+  readonly replayed: boolean;
+  readonly seatOperationalStatus: "maintenance" | "normal";
+  readonly status: RepairStatus;
+}
+
+export interface RepairVerificationCommandResponse {
+  readonly occurredAt: string;
+  readonly outcome: "failure" | "success";
+  readonly recordedAt: string;
+  readonly repairId: string;
+  readonly replayed: boolean;
+  readonly seatOperationalStatus: "maintenance" | "normal";
+  readonly status: RepairStatus;
+}
+
 export interface RepairDetailResponse {
   readonly actions: {
     readonly canAssign: boolean;
+    readonly canClaimSpare: boolean;
+    readonly canReturnSpare: boolean;
     readonly canStart: boolean;
+    readonly canSubmitResolution: boolean;
+    readonly canVerify: boolean;
   };
   readonly assignedTo: {
     readonly displayName: string;
@@ -461,11 +520,21 @@ export interface RepairDetailResponse {
   readonly internal: {
     readonly audits: ReadonlyArray<{
       readonly action: string;
+      readonly actor: {
+        readonly displayName: string;
+        readonly personaId: string;
+      } | null;
       readonly occurredAt: string;
+      readonly recordedAt: string;
       readonly result: "allowed" | "denied";
     }>;
     readonly events: ReadonlyArray<{
+      readonly actor: {
+        readonly displayName: string;
+        readonly personaId: string;
+      } | null;
       readonly occurredAt: string;
+      readonly recordedAt: string;
       readonly type: string;
     }>;
     readonly notes: ReadonlyArray<string>;
@@ -481,13 +550,66 @@ export interface RepairDetailResponse {
     readonly type: string;
   }>;
   readonly repairId: string;
+  readonly resolution: {
+    readonly note: string;
+    readonly submittedAt: string;
+    readonly submittedBy: {
+      readonly displayName: string;
+      readonly personaId: string;
+    } | null;
+  } | null;
   readonly reservationId: string | null;
   readonly seat: {
     readonly code: string;
     readonly operationalStatus: "maintenance" | "normal";
   };
   readonly source: "customer" | "staff";
+  readonly spares: {
+    readonly available: ReadonlyArray<{
+      readonly availableQuantity: number;
+      readonly displayName: string;
+      readonly inventoryItemId: string;
+      readonly onHandQuantity: number;
+    }>;
+    readonly usages: ReadonlyArray<{
+      readonly claimedAt: string;
+      readonly claimedBy: {
+        readonly displayName: string;
+        readonly personaId: string;
+      };
+      readonly consumedQuantity: number;
+      readonly inventoryItem: {
+        readonly displayName: string;
+        readonly inventoryItemId: string;
+      };
+      readonly movementId: string;
+      readonly quantity: number;
+      readonly recordedAt: string;
+      readonly returnedQuantity: number;
+      readonly returns: ReadonlyArray<{
+        readonly movementId: string;
+        readonly quantity: number;
+        readonly recordedAt: string;
+        readonly returnedAt: string;
+        readonly returnedBy: {
+          readonly displayName: string;
+          readonly personaId: string;
+        };
+        readonly returnId: string;
+      }>;
+      readonly usageId: string;
+    }>;
+  } | null;
   readonly status: RepairStatus;
+  readonly latestVerification: {
+    readonly outcome: "failure" | "success";
+    readonly reason: string;
+    readonly verifiedAt: string;
+    readonly verifiedBy: {
+      readonly displayName: string;
+      readonly personaId: string;
+    } | null;
+  } | null;
   readonly store: { readonly code: string; readonly displayName: string };
 }
 

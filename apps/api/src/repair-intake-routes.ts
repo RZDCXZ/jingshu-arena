@@ -4,6 +4,7 @@ import type { Context, Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import type {
   AssignRepairRequest,
+  ClaimRepairSpareRequest,
   CreateCustomerRepairRequest,
   CreateRepairImageIntentRequest,
   CreateStaffRepairRequest,
@@ -15,9 +16,15 @@ import type {
   RepairImageIntentResponse,
   RepairImageListResponse,
   RepairSampleImageResponse,
+  RepairResolutionCommandResponse,
+  RepairSpareCommandResponse,
+  RepairVerificationCommandResponse,
+  ReturnRepairSpareRequest,
   StartRepairRequest,
   StaffRepairIntakeResponse,
   StaffRepairQueueResponse,
+  SubmitRepairResolutionRequest,
+  VerifyRepairRequest,
 } from "@jingshu/contracts";
 import type {
   RepairCommandConflictError,
@@ -168,9 +175,19 @@ function repairFailure(error: unknown, requestId: string) {
         message: "报修状态已经变化，请刷新详情后继续。",
         status: 409,
       },
+      "inventory-insufficient": {
+        code: "REPAIR_SPARE_INSUFFICIENT",
+        message: "备件可用库存不足，报修与库存均未变更。",
+        status: 409,
+      },
+      "inventory-item-not-found": {
+        code: "REPAIR_SPARE_NOT_FOUND",
+        message: "未找到当前报修可领用的本店备件。",
+        status: 404,
+      },
       "note-invalid": {
         code: "REPAIR_NOTE_INVALID",
-        message: "公开说明与内部说明均需为 1–500 字规范纯文本。",
+        message: "说明需为允许长度内的规范纯文本。",
         status: 422,
       },
       "not-assignee": {
@@ -182,6 +199,26 @@ function repairFailure(error: unknown, requestId: string) {
         code: "REPAIR_NOT_FOUND",
         message: "未找到当前角色可访问的报修。",
         status: 404,
+      },
+      "quantity-invalid": {
+        code: "REPAIR_SPARE_QUANTITY_INVALID",
+        message: "备件数量必须为正整数。",
+        status: 422,
+      },
+      "return-exceeds-claim": {
+        code: "REPAIR_SPARE_RETURN_EXCEEDS_CLAIM",
+        message: "累计退回数量不能超过该次领用数量。",
+        status: 409,
+      },
+      "usage-not-found": {
+        code: "REPAIR_SPARE_USAGE_NOT_FOUND",
+        message: "未找到当前报修可退回的备件领用记录。",
+        status: 404,
+      },
+      "verifier-not-independent": {
+        code: "REPAIR_INDEPENDENT_VERIFIER_REQUIRED",
+        message: "处理人不能验证自己的维修，请由另一位同店员工或店长验证。",
+        status: 403,
       },
     };
     const failure = failures[error.reason];
@@ -418,7 +455,7 @@ function readUrl(
 ) {
   const token = signRepairImageToken(
     {
-      expiresAt: Date.now() + 5 * 60 * 1_000,
+      expiresAt: services.wallClock.now().getTime() + 5 * 60 * 1_000,
       imageId: image.imageId,
       kind: "repair-read",
       sandboxId: image.sandboxId,
@@ -677,10 +714,12 @@ export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
               audits: result.internal.audits.map((audit) => ({
                 ...audit,
                 occurredAt: audit.occurredAt.toISOString(),
+                recordedAt: audit.recordedAt.toISOString(),
               })),
               events: result.internal.events.map((event) => ({
                 ...event,
                 occurredAt: event.occurredAt.toISOString(),
+                recordedAt: event.recordedAt.toISOString(),
               })),
               notes: result.internal.notes,
             }
@@ -689,6 +728,33 @@ export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
           ...update,
           occurredAt: update.occurredAt.toISOString(),
         })),
+        resolution: result.resolution
+          ? {
+              ...result.resolution,
+              submittedAt: result.resolution.submittedAt.toISOString(),
+            }
+          : null,
+        spares: result.spares
+          ? {
+              available: result.spares.available,
+              usages: result.spares.usages.map((usage) => ({
+                ...usage,
+                claimedAt: usage.claimedAt.toISOString(),
+                recordedAt: usage.recordedAt.toISOString(),
+                returns: usage.returns.map((item) => ({
+                  ...item,
+                  recordedAt: item.recordedAt.toISOString(),
+                  returnedAt: item.returnedAt.toISOString(),
+                })),
+              })),
+            }
+          : null,
+        latestVerification: result.latestVerification
+          ? {
+              ...result.latestVerification,
+              verifiedAt: result.latestVerification.verifiedAt.toISOString(),
+            }
+          : null,
       } satisfies RepairDetailResponse);
     } catch (error) {
       const failure = repairFailure(error, requestId);
@@ -795,7 +861,9 @@ export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
       });
       const finalObjectKey = `finished/${session.sandboxId}/${sanitized.objectName}`;
       await services.sandboxDatabase.enqueueRepairImageCleanup({
-        availableAt: new Date(Date.now() + REPAIR_IMAGE_ORPHAN_GRACE_MS),
+        availableAt: new Date(
+          services.wallClock.now().getTime() + REPAIR_IMAGE_ORPHAN_GRACE_MS,
+        ),
         objectKey: finalObjectKey,
         reason: "unadopted-finished-object",
         sandboxId: session.sandboxId,
@@ -1023,7 +1091,7 @@ export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
     if (
       token?.kind !== "repair-upload" ||
       token.intentId !== context.req.param("intentId") ||
-      Date.parse(token.expiresAt) <= Date.now() ||
+      Date.parse(token.expiresAt) <= services.wallClock.now().getTime() ||
       context.req.header("Content-Type")?.toLowerCase() !== token.contentType
     ) {
       const invalid = repairFailure(
@@ -1156,7 +1224,9 @@ export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
         });
         const finalObjectKey = `finished/${session.sandboxId}/${sanitized.objectName}`;
         await services.sandboxDatabase.enqueueRepairImageCleanup({
-          availableAt: new Date(Date.now() + REPAIR_IMAGE_ORPHAN_GRACE_MS),
+          availableAt: new Date(
+            services.wallClock.now().getTime() + REPAIR_IMAGE_ORPHAN_GRACE_MS,
+          ),
           objectKey: finalObjectKey,
           reason: "unadopted-finished-object",
           sandboxId: session.sandboxId,
@@ -1305,7 +1375,7 @@ export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
       token?.kind !== "repair-read" ||
       token.imageId !== imageId ||
       token.sandboxId !== session.sandboxId ||
-      token.expiresAt <= Date.now()
+      token.expiresAt <= services.wallClock.now().getTime()
     ) {
       const failure = repairFailure(
         { code: "REPAIR_IMAGE_CONFLICT", reason: "not-found" },
@@ -1554,6 +1624,217 @@ export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
       }
     });
   }
+
+  for (const action of ["claim", "return"] as const) {
+    app.post(
+      `/api/v1/staff/repairs/:repairId/spares/${action}`,
+      async (context) => {
+        const requestId = randomUUID();
+        context.header("X-Request-Id", requestId);
+        context.header("Cache-Control", "no-store");
+        if (!services.sandboxDatabase || !services.sessionSecret) {
+          const unavailable = repairFailure(null, requestId);
+          return context.json(unavailable.body, unavailable.status);
+        }
+        const auth = await staffSession(context, services, requestId);
+        if (!auth.session) return auth.response;
+        const fence = await staffWriteFence(
+          context,
+          services,
+          requestId,
+          auth.session,
+        );
+        if (fence.response) return fence.response;
+        const repairId = context.req.param("repairId");
+        const parsed: unknown = await context.req.json().catch(() => null);
+        const body = isPlainRecord(parsed) ? parsed : null;
+        const allowed =
+          action === "claim"
+            ? new Set(["inventoryItemId", "quantity"])
+            : new Set(["quantity", "usageId"]);
+        const quantity = Number(body?.quantity);
+        const targetId = String(
+          action === "claim"
+            ? (body?.inventoryItemId ?? "")
+            : (body?.usageId ?? ""),
+        );
+        if (
+          !UUID_V4_PATTERN.test(repairId) ||
+          !body ||
+          Object.keys(body).some((key) => !allowed.has(key)) ||
+          !Number.isSafeInteger(quantity) ||
+          quantity <= 0 ||
+          !UUID_V4_PATTERN.test(targetId)
+        ) {
+          const invalid = repairFailure(
+            { code: "REPAIR_COMMAND_CONFLICT", reason: "quantity-invalid" },
+            requestId,
+          );
+          return context.json(invalid.body, invalid.status);
+        }
+        try {
+          const request = body as unknown as
+            ClaimRepairSpareRequest | ReturnRepairSpareRequest;
+          const result =
+            await services.sandboxDatabase.executeRepairSpareCommand({
+              action,
+              contextVersion: auth.session.contextVersion,
+              idempotencyKey: fence.idempotencyKey!,
+              inventoryItemId:
+                action === "claim"
+                  ? (request as ClaimRepairSpareRequest).inventoryItemId
+                  : null,
+              personaId: auth.session.personaId,
+              quantity,
+              repairId,
+              requestId,
+              role: auth.session.role === "manager" ? "manager" : "staff",
+              sandboxId: auth.session.sandboxId,
+              usageId:
+                action === "return"
+                  ? (request as ReturnRepairSpareRequest).usageId
+                  : null,
+            });
+          return context.json({
+            ...result,
+            businessOccurredAt: result.businessOccurredAt.toISOString(),
+            recordedAt: result.recordedAt.toISOString(),
+          } satisfies RepairSpareCommandResponse);
+        } catch (error) {
+          const failure = repairFailure(error, requestId);
+          return context.json(failure.body, failure.status);
+        }
+      },
+    );
+  }
+
+  app.post("/api/v1/staff/repairs/:repairId/resolution", async (context) => {
+    const requestId = randomUUID();
+    context.header("X-Request-Id", requestId);
+    context.header("Cache-Control", "no-store");
+    if (!services.sandboxDatabase || !services.sessionSecret) {
+      const unavailable = repairFailure(null, requestId);
+      return context.json(unavailable.body, unavailable.status);
+    }
+    const auth = await staffSession(context, services, requestId);
+    if (!auth.session) return auth.response;
+    const fence = await staffWriteFence(
+      context,
+      services,
+      requestId,
+      auth.session,
+    );
+    if (fence.response) return fence.response;
+    const repairId = context.req.param("repairId");
+    const parsed: unknown = await context.req.json().catch(() => null);
+    const body = isPlainRecord(parsed) ? parsed : null;
+    const resolutionNote =
+      typeof body?.resolutionNote === "string"
+        ? normalizeRepairDescription(body.resolutionNote)
+        : null;
+    if (
+      !UUID_V4_PATTERN.test(repairId) ||
+      !body ||
+      Object.keys(body).some((key) => key !== "resolutionNote") ||
+      !resolutionNote
+    ) {
+      const invalid = repairFailure(
+        { code: "REPAIR_COMMAND_CONFLICT", reason: "note-invalid" },
+        requestId,
+      );
+      return context.json(invalid.body, invalid.status);
+    }
+    try {
+      const request = body as unknown as SubmitRepairResolutionRequest;
+      const result =
+        await services.sandboxDatabase.executeRepairResolutionCommand({
+          contextVersion: auth.session.contextVersion,
+          idempotencyKey: fence.idempotencyKey!,
+          personaId: auth.session.personaId,
+          repairId,
+          requestId,
+          resolutionNote: request.resolutionNote,
+          role: auth.session.role === "manager" ? "manager" : "staff",
+          sandboxId: auth.session.sandboxId,
+        });
+      return context.json({
+        ...result,
+        occurredAt: result.occurredAt.toISOString(),
+        recordedAt: result.recordedAt.toISOString(),
+      } satisfies RepairResolutionCommandResponse);
+    } catch (error) {
+      const failure = repairFailure(error, requestId);
+      return context.json(failure.body, failure.status);
+    }
+  });
+
+  app.post("/api/v1/staff/repairs/:repairId/verification", async (context) => {
+    const requestId = randomUUID();
+    context.header("X-Request-Id", requestId);
+    context.header("Cache-Control", "no-store");
+    if (!services.sandboxDatabase || !services.sessionSecret) {
+      const unavailable = repairFailure(null, requestId);
+      return context.json(unavailable.body, unavailable.status);
+    }
+    const auth = await staffSession(context, services, requestId);
+    if (!auth.session) return auth.response;
+    const fence = await staffWriteFence(
+      context,
+      services,
+      requestId,
+      auth.session,
+    );
+    if (fence.response) return fence.response;
+    const repairId = context.req.param("repairId");
+    const parsed: unknown = await context.req.json().catch(() => null);
+    const body = isPlainRecord(parsed) ? parsed : null;
+    const hasReason = body
+      ? Object.prototype.hasOwnProperty.call(body, "reason")
+      : false;
+    const normalizedReason =
+      typeof body?.reason === "string"
+        ? normalizeRepairDescription(body.reason)
+        : null;
+    if (
+      !UUID_V4_PATTERN.test(repairId) ||
+      !body ||
+      Object.keys(body).some((key) => key !== "outcome" && key !== "reason") ||
+      (body.outcome !== "failure" && body.outcome !== "success") ||
+      (hasReason && typeof body.reason !== "string") ||
+      (body.outcome === "failure" && !normalizedReason) ||
+      (hasReason && (!normalizedReason || normalizedReason.length > 200))
+    ) {
+      const invalid = repairFailure(
+        { code: "REPAIR_COMMAND_CONFLICT", reason: "note-invalid" },
+        requestId,
+      );
+      return context.json(invalid.body, invalid.status);
+    }
+    const reason = normalizedReason ?? "独立复测通过，座位可以恢复使用。";
+    try {
+      const request = body as unknown as VerifyRepairRequest;
+      const result =
+        await services.sandboxDatabase.executeRepairVerificationCommand({
+          contextVersion: auth.session.contextVersion,
+          idempotencyKey: fence.idempotencyKey!,
+          outcome: request.outcome,
+          personaId: auth.session.personaId,
+          reason,
+          repairId,
+          requestId,
+          role: auth.session.role === "manager" ? "manager" : "staff",
+          sandboxId: auth.session.sandboxId,
+        });
+      return context.json({
+        ...result,
+        occurredAt: result.occurredAt.toISOString(),
+        recordedAt: result.recordedAt.toISOString(),
+      } satisfies RepairVerificationCommandResponse);
+    } catch (error) {
+      const failure = repairFailure(error, requestId);
+      return context.json(failure.body, failure.status);
+    }
+  });
 
   app.post("/api/v1/customer/repairs", async (context) => {
     const requestId = randomUUID();

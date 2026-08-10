@@ -36,6 +36,7 @@ const app = createApp({
   repairImageStorage,
   secureCookies: true,
   sessionSecret,
+  wallClock: { now: () => wallTime },
 });
 const { Client } = pg;
 
@@ -1062,5 +1063,153 @@ describe("repair intake API", () => {
     await expect(missing.json()).resolves.toMatchObject({
       error: { code: "REPAIR_NOT_FOUND" },
     });
+  });
+
+  it("exposes dedicated guarded spare, resolution and independent verification commands", async () => {
+    const staff = await createStaffSession();
+    const intakeResponse = await app.request("/api/v1/staff/repair-intake", {
+      headers: { Cookie: staff.cookie },
+    });
+    const intake = (await intakeResponse.json()) as {
+      handlers: Array<{ displayName: string; personaId: string }>;
+      seats: Array<{ code: string; id: string }>;
+    };
+    const handler = intake.handlers.find(
+      (candidate) =>
+        candidate.displayName === staff.context.persona.displayName,
+    )!;
+    const createdResponse = await app.request("/api/v1/staff/repairs", {
+      body: JSON.stringify({
+        description: "耳机右声道无声",
+        seatId: intake.seats.find((seat) => seat.code === "A-18")!.id,
+      }),
+      headers: writeHeaders(staff),
+      method: "POST",
+    });
+    const repair = (await createdResponse.json()) as { repairId: string };
+    await app.request(`/api/v1/staff/repairs/${repair.repairId}/assign`, {
+      body: JSON.stringify({
+        assigneePersonaId: handler.personaId,
+        internalNote: "检查耳机接口。",
+        priority: "high",
+        publicNote: "门店已安排处理人。",
+      }),
+      headers: writeHeaders(staff),
+      method: "POST",
+    });
+    await app.request(`/api/v1/staff/repairs/${repair.repairId}/start`, {
+      body: JSON.stringify({
+        internalNote: "已复现右声道无声。",
+        publicNote: "设备已进入检修。",
+      }),
+      headers: writeHeaders(staff),
+      method: "POST",
+    });
+    const processingDetailResponse = await app.request(
+      `/api/v1/repairs/${repair.repairId}`,
+      { headers: { Cookie: staff.cookie } },
+    );
+    const processingDetail = (await processingDetailResponse.json()) as {
+      spares: {
+        available: Array<{
+          displayName: string;
+          inventoryItemId: string;
+        }>;
+      };
+    };
+    const headset = processingDetail.spares.available.find(
+      (item) => item.displayName === "无品牌替换耳机",
+    )!;
+
+    const claimed = await app.request(
+      `/api/v1/staff/repairs/${repair.repairId}/spares/claim`,
+      {
+        body: JSON.stringify({
+          inventoryItemId: headset.inventoryItemId,
+          quantity: 1,
+        }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(claimed.status, await claimed.clone().text()).toBe(200);
+    await expect(claimed.json()).resolves.toMatchObject({
+      action: "claim",
+      inventoryItem: { displayName: "无品牌替换耳机" },
+      quantity: 1,
+      returnedQuantity: 0,
+    });
+
+    const tooLongResolution = await app.request(
+      `/api/v1/staff/repairs/${repair.repairId}/resolution`,
+      {
+        body: JSON.stringify({ resolutionNote: "已".repeat(501) }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(tooLongResolution.status).toBe(422);
+    const submitted = await app.request(
+      `/api/v1/staff/repairs/${repair.repairId}/resolution`,
+      {
+        body: JSON.stringify({
+          resolutionNote: "已更换无品牌替换耳机并完成左右声道试听。",
+        }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(submitted.status, await submitted.clone().text()).toBe(200);
+    await expect(submitted.json()).resolves.toMatchObject({
+      seatOperationalStatus: "maintenance",
+      status: "verification",
+    });
+
+    const selfVerification = await app.request(
+      `/api/v1/staff/repairs/${repair.repairId}/verification`,
+      {
+        body: JSON.stringify({
+          outcome: "success",
+          reason: "左右声道试听通过。",
+        }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(selfVerification.status).toBe(403);
+    await expect(selfVerification.json()).resolves.toMatchObject({
+      error: { code: "REPAIR_INDEPENDENT_VERIFIER_REQUIRED" },
+    });
+
+    const manager = await switchRole(staff, "manager");
+    const verified = await app.request(
+      `/api/v1/staff/repairs/${repair.repairId}/verification`,
+      {
+        body: JSON.stringify({
+          outcome: "success",
+        }),
+        headers: writeHeaders(manager),
+        method: "POST",
+      },
+    );
+    expect(verified.status, await verified.clone().text()).toBe(200);
+    await expect(verified.json()).resolves.toMatchObject({
+      outcome: "success",
+      seatOperationalStatus: "normal",
+      status: "closed",
+    });
+
+    const closedClaim = await app.request(
+      `/api/v1/staff/repairs/${repair.repairId}/spares/claim`,
+      {
+        body: JSON.stringify({
+          inventoryItemId: headset.inventoryItemId,
+          quantity: 1,
+        }),
+        headers: writeHeaders(manager),
+        method: "POST",
+      },
+    );
+    expect(closedClaim.status).toBe(409);
   });
 });

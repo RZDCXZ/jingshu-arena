@@ -979,14 +979,22 @@ export function OrdersPage({ orderStates, onAdvance, onCancel, readonly }) {
 
 export function RepairsPage({
   repairStates,
+  repairSpareStates = {},
+  verificationEvidence = {},
   onAdvance,
+  onClaimSpare,
   onCreate,
+  onReturnSpare,
   readonly,
   role = "staff",
 }) {
   const [tab, setTab] = useState("open");
   const [selectedId, setSelectedId] = useState(repairs[0].id);
   const [search, setSearch] = useState("");
+  const [resolutionOpen, setResolutionOpen] = useState(false);
+  const [resolutionNote, setResolutionNote] = useState(
+    "已更换无品牌备用耳机，并完成左右声道与麦克风测试。",
+  );
   const stateFor = (repair) => repairStates[repair.id] || repair.status;
   const rows = repairs
     .map((repair) => ({ ...repair, status: stateFor(repair) }))
@@ -1001,6 +1009,9 @@ export function RepairsPage({
   const selected =
     repairs.find((repair) => repair.id === selectedId) || repairs[0];
   const selectedStatus = stateFor(selected);
+  const claimedQuantity = repairSpareStates[selected.id]?.claimed || 0;
+  const returnedQuantity = repairSpareStates[selected.id]?.returned || 0;
+  const consumedQuantity = Math.max(0, claimedQuantity - returnedQuantity);
   const actionMap = {
     待分派: "分派给我",
     已分派: "开始处理",
@@ -1111,16 +1122,70 @@ export function RepairsPage({
             <p>
               {selected.seat} · {selected.profile}
             </p>
-            {nextAction && (
-              <Button
-                tone="primary"
-                icon={Wrench}
-                disabled={readonly || role === "hq"}
-                onClick={() => onAdvance(selected.id)}
-              >
-                {nextAction}
-              </Button>
-            )}
+            <div className="repair-legal-actions">
+              {["待分派", "已分派"].includes(selectedStatus) && nextAction && (
+                <Button
+                  tone="primary"
+                  icon={Wrench}
+                  disabled={readonly || role === "hq"}
+                  onClick={() => onAdvance(selected.id)}
+                >
+                  {nextAction}
+                </Button>
+              )}
+              {selectedStatus === "处理中" && (
+                <>
+                  <Button
+                    tone="secondary"
+                    icon={Package}
+                    disabled={readonly || role === "hq" || claimedQuantity >= 2}
+                    onClick={() => onClaimSpare?.(selected.id)}
+                  >
+                    领用备件
+                  </Button>
+                  <Button
+                    tone="secondary"
+                    icon={ArrowCounterClockwise}
+                    disabled={readonly || role === "hq" || consumedQuantity < 1}
+                    onClick={() => onReturnSpare?.(selected.id)}
+                  >
+                    退回未用
+                  </Button>
+                  <Button
+                    tone="primary"
+                    icon={CheckCircle}
+                    disabled={readonly || role === "hq"}
+                    onClick={() => setResolutionOpen(true)}
+                  >
+                    提交解决说明
+                  </Button>
+                </>
+              )}
+              {selectedStatus === "待验证" && role === "manager" && (
+                <>
+                  <Button
+                    tone="primary"
+                    icon={CheckCircle}
+                    disabled={readonly || role === "hq"}
+                    onClick={() => {
+                      onAdvance(selected.id, "success");
+                    }}
+                  >
+                    验证成功并关闭
+                  </Button>
+                  <Button
+                    tone="ghost"
+                    icon={WarningCircle}
+                    disabled={readonly || role === "hq"}
+                    onClick={() => {
+                      onAdvance(selected.id, "failure");
+                    }}
+                  >
+                    验证失败并退回
+                  </Button>
+                </>
+              )}
+            </div>
           </div>
           {selectedStatus === "处理中" && (
             <InlineNotice tone="warning" title="座位维护联动已生效">
@@ -1147,7 +1212,9 @@ export function RepairsPage({
               </div>
               <div>
                 <dt>处理人</dt>
-                <dd>{selectedStatus === "待分派" ? "未分派" : "周宁"}</dd>
+                <dd>
+                  {selectedStatus === "待分派" ? "未分派" : selected.assignee}
+                </dd>
               </div>
               <div>
                 <dt>顾客可见说明</dt>
@@ -1185,18 +1252,51 @@ export function RepairsPage({
             <div className="parts-row">
               <Cube />
               <span>
-                <strong>替换耳机</strong>
+                <strong>无品牌替换耳机</strong>
                 <small>
-                  可用 2 · 已领用 {selectedStatus === "处理中" ? 1 : 0}
+                  可用 {2 - claimedQuantity + returnedQuantity} · 已领用
+                  {claimedQuantity} · 已退回 {returnedQuantity} · 已消耗
+                  {consumedQuantity}
                 </small>
               </span>
-              {selectedStatus === "处理中" && (
-                <Button tone="secondary" size="small">
-                  退回
-                </Button>
-              )}
+              <StatusPill tone={consumedQuantity > 0 ? "warning" : "neutral"}>
+                {consumedQuantity > 0 ? "已关联流水" : "未领用"}
+              </StatusPill>
             </div>
+            {claimedQuantity > 0 && (
+              <p className="repair-ledger-proof mono">
+                MOV-RPR-0017 · 业务发生 19:49 · 入库记录 19:49:02 · 报修与库存同事务
+              </p>
+            )}
           </section>
+          {selectedStatus === "待验证" && (
+            <section className="inspector-section repair-resolution-proof">
+              <h3>解决说明</h3>
+              <CheckCircle weight="fill" />
+              <p>{resolutionNote}</p>
+              <small>
+                {selected.assignee}提交 · 业务发生 19:57 · 等待独立验证
+              </small>
+            </section>
+          )}
+          {verificationEvidence[selected.id] && (
+            <InlineNotice
+              tone={
+                verificationEvidence[selected.id] === "success"
+                  ? "success"
+                  : "warning"
+              }
+              title={
+                verificationEvidence[selected.id] === "success"
+                  ? "独立验证成功"
+                  : "独立验证失败，已退回处理中"
+              }
+            >
+              {verificationEvidence[selected.id] === "success"
+                ? "店长林琪复测通过；报修关闭，座位在同一事务恢复正常。"
+                : "店长林琪复测仍有右声道异常；座位保持维护，可重新处理。"}
+            </InlineNotice>
+          )}
           <section className="inspector-section">
             <h3>报修与审计证据</h3>
             <Timeline
@@ -1223,13 +1323,47 @@ export function RepairsPage({
               ]}
             />
           </section>
-          {selectedStatus === "待验证" && (
-            <Button tone="ghost" disabled={readonly}>
-              验证失败并退回处理中
-            </Button>
-          )}
         </div>
       </aside>
+      {resolutionOpen && (
+        <Modal
+          eyebrow="REPAIR RESOLUTION"
+          title="提交解决说明"
+          onClose={() => setResolutionOpen(false)}
+          footer={
+            <>
+              <Button tone="ghost" onClick={() => setResolutionOpen(false)}>
+                取消
+              </Button>
+              <Button
+                tone="primary"
+                icon={CheckCircle}
+                disabled={!resolutionNote.trim()}
+                onClick={() => {
+                  setResolutionOpen(false);
+                  onAdvance(selected.id);
+                }}
+              >
+                提交并进入待验证
+              </Button>
+            </>
+          }
+        >
+          <InlineNotice tone="info" title="处理人与验证人必须独立">
+            提交后座位继续保持维护；须由同店另一位店员或店长复测。
+          </InlineNotice>
+          <label className="field repair-resolution-field">
+            <span>解决说明</span>
+            <textarea
+              autoFocus
+              maxLength={500}
+              onChange={(event) => setResolutionNote(event.target.value)}
+              value={resolutionNote}
+            />
+            <small>{resolutionNote.length}/500 · 请勿填写真实个人信息</small>
+          </label>
+        </Modal>
+      )}
     </div>
   );
 }

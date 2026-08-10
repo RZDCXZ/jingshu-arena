@@ -1408,6 +1408,7 @@ function ImagePickerScreen({ flow }: { flow: FlowControls }) {
 
 function RepairDetailScreen() {
   const demo = useDemo();
+  const [verificationFailed, setVerificationFailed] = useState(false);
   const status = demo.repairStatus === "none" ? "new" : demo.repairStatus;
   const labels: Record<RepairStatus, string> = { none: "未创建", new: "新建", assigned: "已分派", processing: "处理中", verification: "待验证", closed: "已关闭" };
   const step = status === "new" ? 0 : status === "assigned" ? 1 : status === "processing" ? 2 : status === "verification" ? 3 : 4;
@@ -1415,17 +1416,23 @@ function RepairDetailScreen() {
     if (status === "new") demo.setRepairStatus("assigned");
     else if (status === "assigned") demo.setRepairStatus("processing");
     else if (status === "processing") demo.setRepairStatus("verification");
-    else if (status === "verification") demo.setRepairStatus("closed");
   };
+  const failVerification = () => {
+    setVerificationFailed(true);
+    demo.setRepairStatus("processing");
+  };
+  const closeRepair = () => demo.setRepairStatus("closed");
   return (
     <MobileScroll className="app-screen app-dark">
       <main className="detail-content repair-detail" data-screen-id="MP-15">
-        <section className="status-hero"><div><StatusPill tone={status === "closed" ? "neutral" : status === "processing" ? "amber" : "cyan"}>{labels[status]}</StatusPill><h1>{status === "processing" ? "座位已进入维护处理" : status === "closed" ? "故障验证完成" : "报修已提交，等待公开进度"}</h1><p>竞技区 {demo.selectedSeat} · 竞技型</p></div><Wrench size={46} /></section>
+        <section className="status-hero"><div><StatusPill tone={status === "closed" ? "neutral" : status === "processing" ? "amber" : "cyan"}>{labels[status]}</StatusPill><h1>{status === "processing" ? verificationFailed ? "验证未通过，门店继续处理" : "座位已进入维护处理" : status === "verification" ? "维修结果等待独立验证" : status === "closed" ? "故障验证完成，座位已恢复" : "报修已提交，等待公开进度"}</h1><p>竞技区 {demo.selectedSeat} · 竞技型</p></div><Wrench size={46} /></section>
         <StepRail labels={["新建", "分派", "处理", "验证", "关闭"]} active={step} />
         <Section title="顾客描述"><div className="issue-copy"><Headphones size={23} /><p>{demo.repairDescription}<small>请勿补充真实个人信息</small></p></div>{demo.repairPhoto ? <img className="repair-detail-photo" src="/assets/repair-headset-sample.png" alt="报修样例图" /> : null}</Section>
         {status === "processing" || status === "verification" || status === "closed" ? <Notice tone="warning" icon={CurrencyCny} title="设备中断影响">当前不足半小时片段照常计费，未来完整片段形成模拟退款 ¥18.00。</Notice> : null}
-        <Section title="公开处理动态"><Timeline events={[{ time: "19:42", title: "报修单已创建", note: "等待门店分派" }, ...(step >= 1 ? [{ time: "19:44", title: "已安排处理", note: "公开说明：正在检查耳机连接" }] : []), ...(step >= 2 ? [{ time: "19:48", title: "处理中", note: "座位暂时标记为维护中" }] : []), ...(step >= 3 ? [{ time: "19:57", title: "等待验证", note: "公开说明：已更换无品牌备用耳机" }] : []), ...(step >= 4 ? [{ time: "20:02", title: "验证成功并关闭", note: "座位恢复可用" }] : [])]} /></Section>
-        {status !== "closed" ? <><Notice tone="warning" icon={Lightning} title="推进本地演示">只触发预置的公开维修结果，不展示处理人、内部备注或备件成本。</Notice><SecondaryButton onClick={advance}>{status === "new" ? "推进到已分派" : status === "assigned" ? "推进到处理中" : status === "processing" ? "推进到待验证" : "推进到已关闭"}</SecondaryButton></> : <Notice tone="success" icon={CheckCircle} title="公开结果已完整">故障验证成功；模拟退款与预约影响已写入统一历史。</Notice>}
+        {step >= 3 || verificationFailed ? <Section title="公开解决结果"><div className="issue-copy"><CheckCircle size={23} /><p>已更换无品牌备用耳机并完成左右声道测试。<small>仅展示门店公开说明，不含处理人、内部备注或备件数量</small></p></div></Section> : null}
+        {verificationFailed && status === "processing" ? <Notice tone="warning" icon={Warning} title="验证未通过，已退回处理中">公开原因：复测仍存在右声道无声；座位继续保持维护。</Notice> : null}
+        <Section title="公开处理动态"><Timeline events={[{ time: "19:42", title: "报修单已创建", note: "等待门店分派" }, ...(step >= 1 || verificationFailed ? [{ time: "19:44", title: "已安排处理", note: "公开说明：正在检查耳机连接" }] : []), ...(step >= 2 || verificationFailed ? [{ time: "19:48", title: "处理中", note: "座位暂时标记为维护中" }] : []), ...(verificationFailed ? [{ time: "19:59", title: "验证未通过", note: "公开说明：门店将继续处理" }] : []), ...(step >= 3 ? [{ time: verificationFailed ? "20:06" : "19:57", title: "等待验证", note: "公开说明：维修结果已重新提交" }] : []), ...(step >= 4 ? [{ time: "20:12", title: "验证成功并关闭", note: "座位恢复可用" }] : [])]} /></Section>
+        {status !== "closed" ? <><Notice tone="warning" icon={Lightning} title="推进本地演示">只触发预置的公开维修结果，不展示处理人、内部备注或备件成本。</Notice>{status === "verification" ? <div className="repair-demo-actions"><SecondaryButton danger onClick={failVerification}>演示验证失败并退回</SecondaryButton><PrimaryButton onClick={closeRepair}>演示验证成功并关闭</PrimaryButton></div> : <SecondaryButton onClick={advance}>{status === "new" ? "推进到已分派" : status === "assigned" ? "推进到处理中" : "重新提交并进入待验证"}</SecondaryButton>}</> : <Notice tone="success" icon={CheckCircle} title="公开结果已完整">故障验证成功；座位已恢复可用，模拟退款与预约影响已写入统一历史。</Notice>}
       </main>
     </MobileScroll>
   );

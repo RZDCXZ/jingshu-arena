@@ -2034,9 +2034,13 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
             <h1>
               {repairDetail?.status === "processing"
                 ? "设备正在检修"
-                : createdRepair.duplicate
-                  ? "已打开现有报修"
-                  : "报修已创建"}
+                : repairDetail?.status === "verification"
+                  ? "维修结果等待验证"
+                  : repairDetail?.status === "closed"
+                    ? "故障已验证并关闭"
+                    : createdRepair.duplicate
+                      ? "已打开现有报修"
+                      : "报修已创建"}
             </h1>
             <p>{repairUploadNotice}</p>
           </section>
@@ -2071,7 +2075,9 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                   {(repairDetail?.seat.operationalStatus ??
                     createdRepair.seat.operationalStatus) === "maintenance"
                     ? "维护中 · 不会自动换座"
-                    : "正常 · 尚未进入维护"}
+                    : repairDetail?.status === "closed"
+                      ? "正常 · 已完成验证并恢复"
+                      : "正常 · 尚未进入维护"}
                 </dd>
               </div>
             </dl>
@@ -2083,6 +2089,48 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                 <strong>本座位已进入维护</strong>
                 系统不会自动换座；你的预约影响与模拟退款如下，均不涉及真实资金。
               </span>
+            </section>
+          ) : null}
+          {repairDetail?.resolution ? (
+            <section className="customer-repair-public-result">
+              <div>
+                <CheckCircle />
+                <span>
+                  <strong>门店已提交解决说明</strong>
+                  <small>
+                    {new Date(
+                      repairDetail.resolution.submittedAt,
+                    ).toLocaleString("zh-CN")}
+                  </small>
+                </span>
+              </div>
+              <p>{repairDetail.resolution.note}</p>
+            </section>
+          ) : null}
+          {repairDetail?.latestVerification ? (
+            <section
+              className={`customer-repair-public-result is-${repairDetail.latestVerification.outcome}`}
+            >
+              <div>
+                {repairDetail.latestVerification.outcome === "success" ? (
+                  <CheckCircle />
+                ) : (
+                  <Warning />
+                )}
+                <span>
+                  <strong>
+                    {repairDetail.latestVerification.outcome === "success"
+                      ? "独立验证通过，座位已恢复"
+                      : "验证未通过，门店继续处理"}
+                  </strong>
+                  <small>
+                    {new Date(
+                      repairDetail.latestVerification.verifiedAt,
+                    ).toLocaleString("zh-CN")}
+                  </small>
+                </span>
+              </div>
+              <p>{repairDetail.latestVerification.reason}</p>
             </section>
           ) : null}
           {repairDetail?.impacts.length ? (

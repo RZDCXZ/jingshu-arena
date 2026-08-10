@@ -2,8 +2,18 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-10
-- 已验证契约版本：`product-ui/miniprogram/prod.md` 1.3
-- 验证范围：[`15 — 报修处理联动座位维护、预约中断与模拟退款`](../../../.scratch/jingshu-basic-rc/issues/15-repair-maintenance-refund.md)；保留 ticket 14 与 ticket 10 的跨端视觉基线结论
+- 已验证契约版本：`product-ui/miniprogram/prod.md` 1.4
+- 验证范围：[`16 — 备件领退、解决说明与维修验证闭环`](../../../.scratch/jingshu-basic-rc/issues/16-repair-spares-verification.md)；保留 ticket 15 与 ticket 14 的跨端视觉基线结论
+
+## Ticket 16 `MP-15` 顾客关闭结果复核
+
+- 应用内浏览器在真实 Web → Hono → 临时 PostgreSQL 路径以精确 `360 × 800 CSS px` 完成“预约使用中 → 报修 → 店员领退备件并提交解决说明 → 店长验证失败 → 处理人重新提交 → 独立验证成功 → 顾客历史行程 → 公开报修详情”。生产页实测 `scrollWidth = clientWidth = 360px`，正式源与生产页 warning/error 均为 0。
+- 正式小程序另以 Pixel 10 设备预设复核 `MP-15` 关闭态：设备屏幕 `427 × 952 CSS px`，滚动容器 `scrollWidth = clientWidth = 427px`、warning/error 为 0；公开结果、座位恢复与失败后重提时间线保持可滚动且无横向裁切。
+- 正式 `MP-15` 关闭态和生产顾客公开详情分别保存在 `design/source-ticket16-mp15-repair-closed-360x800.png` 与 `design/implementation-ticket16-customer-repair-closed-360x800.png`；`design/qa-ticket16-customer-repair-closed-comparison-720x800.png` 将同一关闭状态、同一目标画布的两侧证据置于同一比较输入。
+- 生产公开页显示故障、座位已恢复、门店公开解决说明、独立验证通过、预约提前完成与 `¥27.00` 模拟退款；正文检查确认不包含处理人、验证人、备件数量、库存流水、内部备注或审计日志。公开时间线与管理端的分派、处理、重新提交和关闭结果一致。
+- 正式参考的本地演示实际完成“验证失败并退回处理中 → 重新提交待验证 → 验证成功并关闭”，关闭态只保留公开结果和座位恢复，不暴露内部备件成本。生产 Web H5 保留共享沙箱工具栏、真实服务端状态和图片恢复入口，正式参考保留 iPhone 设备框与五步进度，两侧页面职责、状态层级和深色视觉语言一致。
+- 复核公开/内部边界、座位恢复、解决结果、验证结果、移动滚动与触控可达性后，最终没有仍需处理的 P0、P1 或 P2 差异。
+- 完整 `pnpm verify` 通过：261 个 Vitest 单元测试、2 个开发启动测试、113 个真实 PostgreSQL/API 集成测试、2 个设计内容基线测试与 41 个 Chromium E2E 全部通过；正式小程序原型 28 个受保护运行时文件完整，`NO_PROXY='*' no_proxy='*' MOBILE_RUNTIME_TEST_PORT=4186 npm run test:runtime` 8/8、TypeScript、Vite 生产构建与 Sites 包装均通过。high 级依赖审计通过，仅报告 1 个不阻塞门禁的 moderate 漏洞。
 
 ## Ticket 15 `MP-15` Web H5 公开结果复核
 

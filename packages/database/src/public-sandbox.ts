@@ -356,10 +356,104 @@ export interface DatabaseRepairCommand {
   readonly status: DatabaseRepairCreated["status"];
 }
 
+export type ExecuteRepairSpareCommandInput = RepairStaffContextInput & {
+  readonly action: "claim" | "return";
+  readonly idempotencyKey: string;
+  readonly inventoryItemId: string | null;
+  readonly quantity: number;
+  readonly repairId: string;
+  readonly requestId: string;
+  readonly usageId: string | null;
+};
+
+export interface DatabaseRepairSpareCommand {
+  readonly action: ExecuteRepairSpareCommandInput["action"];
+  readonly businessOccurredAt: Date;
+  readonly inventoryItem: {
+    readonly displayName: string;
+    readonly inventoryItemId: string;
+  };
+  readonly movementId: string;
+  readonly onHandAfter: number;
+  readonly quantity: number;
+  readonly recordedAt: Date;
+  readonly repairId: string;
+  readonly replayed: boolean;
+  readonly returnedQuantity: number;
+  readonly usageId: string;
+}
+
+export interface DatabaseRepairSpareUsage {
+  readonly claimedAt: Date;
+  readonly claimedBy: {
+    readonly displayName: string;
+    readonly personaId: string;
+  };
+  readonly consumedQuantity: number;
+  readonly inventoryItem: {
+    readonly displayName: string;
+    readonly inventoryItemId: string;
+  };
+  readonly movementId: string;
+  readonly quantity: number;
+  readonly recordedAt: Date;
+  readonly returnedQuantity: number;
+  readonly returns: ReadonlyArray<{
+    readonly movementId: string;
+    readonly quantity: number;
+    readonly recordedAt: Date;
+    readonly returnedAt: Date;
+    readonly returnedBy: {
+      readonly displayName: string;
+      readonly personaId: string;
+    };
+    readonly returnId: string;
+  }>;
+  readonly usageId: string;
+}
+
+export type ExecuteRepairResolutionCommandInput = RepairStaffContextInput & {
+  readonly idempotencyKey: string;
+  readonly repairId: string;
+  readonly requestId: string;
+  readonly resolutionNote: string;
+};
+
+export interface DatabaseRepairResolutionCommand {
+  readonly occurredAt: Date;
+  readonly recordedAt: Date;
+  readonly repairId: string;
+  readonly replayed: boolean;
+  readonly seatOperationalStatus: "maintenance" | "normal";
+  readonly status: DatabaseRepairCreated["status"];
+}
+
+export type ExecuteRepairVerificationCommandInput = RepairStaffContextInput & {
+  readonly idempotencyKey: string;
+  readonly outcome: "failure" | "success";
+  readonly reason: string;
+  readonly repairId: string;
+  readonly requestId: string;
+};
+
+export interface DatabaseRepairVerificationCommand {
+  readonly occurredAt: Date;
+  readonly outcome: ExecuteRepairVerificationCommandInput["outcome"];
+  readonly recordedAt: Date;
+  readonly repairId: string;
+  readonly replayed: boolean;
+  readonly seatOperationalStatus: "maintenance" | "normal";
+  readonly status: DatabaseRepairCreated["status"];
+}
+
 export interface DatabaseRepairDetail {
   readonly actions: {
     readonly canAssign: boolean;
+    readonly canClaimSpare: boolean;
+    readonly canReturnSpare: boolean;
     readonly canStart: boolean;
+    readonly canSubmitResolution: boolean;
+    readonly canVerify: boolean;
   };
   readonly assignedTo: {
     readonly displayName: string;
@@ -371,11 +465,21 @@ export interface DatabaseRepairDetail {
   readonly internal: {
     readonly audits: ReadonlyArray<{
       readonly action: string;
+      readonly actor: {
+        readonly displayName: string;
+        readonly personaId: string;
+      } | null;
       readonly occurredAt: Date;
+      readonly recordedAt: Date;
       readonly result: "allowed" | "denied";
     }>;
     readonly events: ReadonlyArray<{
+      readonly actor: {
+        readonly displayName: string;
+        readonly personaId: string;
+      } | null;
       readonly occurredAt: Date;
+      readonly recordedAt: Date;
       readonly type: string;
     }>;
     readonly notes: ReadonlyArray<string>;
@@ -397,10 +501,36 @@ export interface DatabaseRepairDetail {
     readonly type: string;
   }>;
   readonly repairId: string;
+  readonly resolution: {
+    readonly note: string;
+    readonly submittedAt: Date;
+    readonly submittedBy: {
+      readonly displayName: string;
+      readonly personaId: string;
+    } | null;
+  } | null;
   readonly reservationId: string | null;
   readonly seat: DatabaseRepairCreated["seat"];
   readonly source: DatabaseRepairCreated["source"];
+  readonly spares: {
+    readonly available: ReadonlyArray<{
+      readonly availableQuantity: number;
+      readonly displayName: string;
+      readonly inventoryItemId: string;
+      readonly onHandQuantity: number;
+    }>;
+    readonly usages: ReadonlyArray<DatabaseRepairSpareUsage>;
+  } | null;
   readonly status: DatabaseRepairCreated["status"];
+  readonly latestVerification: {
+    readonly outcome: "failure" | "success";
+    readonly reason: string;
+    readonly verifiedAt: Date;
+    readonly verifiedBy: {
+      readonly displayName: string;
+      readonly personaId: string;
+    } | null;
+  } | null;
   readonly store: DatabaseRepairCreated["store"];
 }
 
@@ -1207,6 +1337,15 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   executeRepairCommand(
     input: ExecuteRepairCommandInput,
   ): Promise<DatabaseRepairCommand>;
+  executeRepairSpareCommand(
+    input: ExecuteRepairSpareCommandInput,
+  ): Promise<DatabaseRepairSpareCommand>;
+  executeRepairResolutionCommand(
+    input: ExecuteRepairResolutionCommandInput,
+  ): Promise<DatabaseRepairResolutionCommand>;
+  executeRepairVerificationCommand(
+    input: ExecuteRepairVerificationCommandInput,
+  ): Promise<DatabaseRepairVerificationCommand>;
   executeManagerInventoryCommand(
     input: ExecuteManagerInventoryCommandInput,
   ): Promise<DatabaseManagerInventoryCommand>;
@@ -1959,7 +2098,16 @@ interface RepairDetailRow extends RepairRow {
   assigned_to_display_name: string | null;
   assigned_to_persona_id: string | null;
   assigned_to_role: FrontlineRole | null;
+  latest_verification_outcome: "failure" | "success" | null;
+  latest_verification_reason: string | null;
+  resolution_business_at: Date | null;
+  resolution_note: string | null;
+  resolution_submitted_by_display_name: string | null;
+  resolution_submitted_by_persona_id: string | null;
   store_id: string;
+  verification_business_at: Date | null;
+  verified_by_display_name: string | null;
+  verified_by_persona_id: string | null;
 }
 
 interface RepairStateCommandRow {
@@ -1977,10 +2125,40 @@ interface RepairStateCommandRow {
 interface RepairEventRow {
   business_occurred_at: Date;
   event_data: {
+    actorDisplayName?: string;
+    actorPersonaId?: string;
     internalNote?: string;
     publicNote?: string;
   };
   event_type: string;
+  recorded_at: Date;
+}
+
+interface RepairSpareCommandRow {
+  payload_hash: string;
+  result_data: Omit<
+    DatabaseRepairSpareCommand,
+    "businessOccurredAt" | "recordedAt" | "replayed"
+  > & {
+    businessOccurredAt: string;
+    recordedAt: string;
+  };
+}
+
+interface RepairResolutionCommandRow {
+  payload_hash: string;
+  result_data: Omit<
+    DatabaseRepairResolutionCommand,
+    "occurredAt" | "recordedAt" | "replayed"
+  > & { occurredAt: string; recordedAt: string };
+}
+
+interface RepairVerificationCommandRow {
+  payload_hash: string;
+  result_data: Omit<
+    DatabaseRepairVerificationCommand,
+    "occurredAt" | "recordedAt" | "replayed"
+  > & { occurredAt: string; recordedAt: string };
 }
 
 interface RepairCommandRow {
@@ -2038,6 +2216,42 @@ function repairCommandFromStored(
   replayed: boolean,
 ): DatabaseRepairCommand {
   return { ...value, occurredAt: new Date(value.occurredAt), replayed };
+}
+
+function repairSpareCommandFromStored(
+  value: RepairSpareCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseRepairSpareCommand {
+  return {
+    ...value,
+    businessOccurredAt: new Date(value.businessOccurredAt),
+    recordedAt: new Date(value.recordedAt),
+    replayed,
+  };
+}
+
+function repairResolutionCommandFromStored(
+  value: RepairResolutionCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseRepairResolutionCommand {
+  return {
+    ...value,
+    occurredAt: new Date(value.occurredAt),
+    recordedAt: new Date(value.recordedAt),
+    replayed,
+  };
+}
+
+function repairVerificationCommandFromStored(
+  value: RepairVerificationCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseRepairVerificationCommand {
+  return {
+    ...value,
+    occurredAt: new Date(value.occurredAt),
+    recordedAt: new Date(value.recordedAt),
+    replayed,
+  };
 }
 
 function repairCreatedFromRow(
@@ -3735,7 +3949,14 @@ async function recordFrontlineReservationDenial(
 async function recordRepairCommandDenial(
   client: PoolClient,
   input: {
-    readonly action: "assign" | "start";
+    readonly action:
+      | "assign"
+      | "spare-claim"
+      | "spare-return"
+      | "start"
+      | "submit-resolution"
+      | "verify-failure"
+      | "verify-success";
     readonly actorStoreId: string;
     readonly businessTime: Date;
     readonly currentStatus: string | null;
@@ -4532,7 +4753,11 @@ async function materializePublicSandbox(input: {
     [
       { code: "spare-keyboard", displayName: "维修键盘", quantity: 7 },
       { code: "spare-mouse", displayName: "维修鼠标", quantity: 1 },
-      { code: "spare-headset", displayName: "维修耳机", quantity: 2 },
+      {
+        code: "spare-headset",
+        displayName: "无品牌替换耳机",
+        quantity: 2,
+      },
       { code: "spare-display-cable", displayName: "显示线", quantity: 6 },
       { code: "spare-network-cable", displayName: "网线", quantity: 8 },
       { code: "spare-power-unit", displayName: "电源", quantity: 4 },
@@ -6159,20 +6384,32 @@ export function createPublicSandboxDatabase(
                   store.display_name as store_display_name,
                   assignee.id as assigned_to_persona_id,
                   assignee.display_name as assigned_to_display_name,
-                  assignee.role as assigned_to_role
+                  assignee.role as assigned_to_role,
+                  repair.resolution_note, repair.resolution_business_at,
+                  resolution_submitter.id as resolution_submitted_by_persona_id,
+                  resolution_submitter.display_name as resolution_submitted_by_display_name,
+                  repair.latest_verification_outcome,
+                  repair.latest_verification_reason,
+                  repair.verification_business_at,
+                  verifier.id as verified_by_persona_id,
+                  verifier.display_name as verified_by_display_name
              from repairs repair
              join seats seat on seat.id = repair.seat_id
              join machine_profiles profile on profile.id = repair.machine_profile_id
              join stores store on store.id = repair.store_id
              left join demo_personas assignee
                on assignee.id = repair.assigned_to_persona_id
+             left join demo_personas resolution_submitter
+               on resolution_submitter.id = repair.resolution_submitted_by_persona_id
+             left join demo_personas verifier
+               on verifier.id = repair.verified_by_persona_id
             where repair.sandbox_id = $1 and repair.id = $2`,
           [input.sandboxId, input.repairId],
         );
         const row = result.rows[0];
         if (!row) throw new RepairCommandConflictError("not-found");
         const events = await client.query<RepairEventRow>(
-          `select event_type, event_data, business_occurred_at
+          `select event_type, event_data, business_occurred_at, recorded_at
              from repair_business_events
             where sandbox_id = $1 and repair_id = $2
             order by sequence, id`,
@@ -6217,6 +6454,89 @@ export function createPublicSandboxDatabase(
           ],
         );
         const frontline = input.role === "staff" || input.role === "manager";
+        const canManageRepair =
+          frontline &&
+          (input.role === "manager" ||
+            row.assigned_to_persona_id === input.personaId);
+        const availableSpares = frontline
+          ? (
+              await client.query<{
+                available_quantity: number;
+                display_name: string;
+                inventory_item_id: string;
+                on_hand_quantity: number;
+              }>(
+                `select id as inventory_item_id, display_name,
+                        on_hand_quantity,
+                        on_hand_quantity - reserved_quantity as available_quantity
+                   from inventory_items
+                  where sandbox_id = $1 and store_id = $2 and kind = 'spare'
+                  order by display_name, id`,
+                [input.sandboxId, row.store_id],
+              )
+            ).rows
+          : [];
+        const usageRows = frontline
+          ? (
+              await client.query<{
+                claimed_at: Date;
+                claimed_by_display_name: string;
+                claimed_by_persona_id: string;
+                display_name: string;
+                inventory_item_id: string;
+                movement_id: string;
+                quantity: number;
+                recorded_at: Date;
+                returned_quantity: number;
+                usage_id: string;
+              }>(
+                `select usage.id as usage_id, usage.inventory_item_id,
+                        item.display_name, usage.quantity,
+                        usage.returned_quantity,
+                        usage.inventory_movement_id as movement_id,
+                        usage.business_occurred_at as claimed_at,
+                        usage.recorded_at,
+                        actor.id as claimed_by_persona_id,
+                        actor.display_name as claimed_by_display_name
+                   from repair_spare_usages usage
+                   join inventory_items item on item.id = usage.inventory_item_id
+                   join demo_personas actor on actor.id = usage.claimed_by_persona_id
+                  where usage.sandbox_id = $1 and usage.repair_id = $2
+                  order by usage.business_occurred_at, usage.recorded_at, usage.id`,
+                [input.sandboxId, input.repairId],
+              )
+            ).rows
+          : [];
+        const returnRows = frontline
+          ? (
+              await client.query<{
+                movement_id: string;
+                quantity: number;
+                recorded_at: Date;
+                return_id: string;
+                returned_at: Date;
+                returned_by_display_name: string;
+                returned_by_persona_id: string;
+                usage_id: string;
+              }>(
+                `select spare_return.id as return_id, spare_return.usage_id,
+                        spare_return.inventory_movement_id as movement_id,
+                        spare_return.quantity,
+                        spare_return.business_occurred_at as returned_at,
+                        spare_return.recorded_at,
+                        actor.id as returned_by_persona_id,
+                        actor.display_name as returned_by_display_name
+                   from repair_spare_returns spare_return
+                   join demo_personas actor
+                     on actor.id = spare_return.returned_by_persona_id
+                  where spare_return.sandbox_id = $1
+                    and spare_return.repair_id = $2
+                  order by spare_return.business_occurred_at,
+                           spare_return.recorded_at, spare_return.id`,
+                [input.sandboxId, input.repairId],
+              )
+            ).rows
+          : [];
         const internal =
           input.role === "customer"
             ? null
@@ -6224,25 +6544,49 @@ export function createPublicSandboxDatabase(
                 audits: (
                   await client.query<{
                     action: string;
+                    actor_display_name: string | null;
+                    actor_persona_id: string | null;
                     business_occurred_at: Date;
+                    recorded_at: Date;
                     result: "allowed" | "denied";
                   }>(
-                    `select action, result, business_occurred_at
-                       from audit_events
-                      where sandbox_id = $1 and (
-                        (object_type = 'repair' and object_id = $2::uuid)
-                        or after_data->>'repairId' = $2::text
+                    `select audit.action, audit.result,
+                            audit.business_occurred_at, audit.recorded_at,
+                            actor.id as actor_persona_id,
+                            actor.display_name as actor_display_name
+                       from audit_events audit
+                       left join demo_personas actor on actor.id = audit.persona_id
+                      where audit.sandbox_id = $1 and (
+                        (audit.object_type = 'repair' and audit.object_id = $2::uuid)
+                        or audit.after_data->>'repairId' = $2::text
                       )
-                      order by recorded_at, id`,
+                      order by audit.recorded_at, audit.id`,
                     [input.sandboxId, input.repairId],
                   )
                 ).rows.map((audit) => ({
                   action: audit.action,
+                  actor:
+                    audit.actor_persona_id && audit.actor_display_name
+                      ? {
+                          displayName: audit.actor_display_name,
+                          personaId: audit.actor_persona_id,
+                        }
+                      : null,
                   occurredAt: audit.business_occurred_at,
+                  recordedAt: audit.recorded_at,
                   result: audit.result,
                 })),
                 events: events.rows.map((event) => ({
+                  actor:
+                    event.event_data.actorPersonaId &&
+                    event.event_data.actorDisplayName
+                      ? {
+                          displayName: event.event_data.actorDisplayName,
+                          personaId: event.event_data.actorPersonaId,
+                        }
+                      : null,
                   occurredAt: event.business_occurred_at,
+                  recordedAt: event.recorded_at,
                   type: event.event_type,
                 })),
                 notes: frontline
@@ -6257,11 +6601,23 @@ export function createPublicSandboxDatabase(
         const detail: DatabaseRepairDetail = {
           actions: {
             canAssign: frontline && row.status === "new",
+            canClaimSpare: canManageRepair && row.status === "processing",
+            canReturnSpare:
+              canManageRepair &&
+              row.status !== "closed" &&
+              usageRows.some(
+                (usage) => usage.returned_quantity < usage.quantity,
+              ),
             canStart:
               frontline &&
               row.status === "assigned" &&
               (input.role === "manager" ||
                 row.assigned_to_persona_id === input.personaId),
+            canSubmitResolution: canManageRepair && row.status === "processing",
+            canVerify:
+              frontline &&
+              row.status === "verification" &&
+              row.assigned_to_persona_id !== input.personaId,
           },
           assignedTo:
             input.role !== "customer" &&
@@ -6308,13 +6664,88 @@ export function createPublicSandboxDatabase(
               : [],
           ),
           repairId: row.repair_id,
+          resolution:
+            row.resolution_note && row.resolution_business_at
+              ? {
+                  note: row.resolution_note,
+                  submittedAt: row.resolution_business_at,
+                  submittedBy:
+                    input.role !== "customer" &&
+                    row.resolution_submitted_by_persona_id &&
+                    row.resolution_submitted_by_display_name
+                      ? {
+                          displayName: row.resolution_submitted_by_display_name,
+                          personaId: row.resolution_submitted_by_persona_id,
+                        }
+                      : null,
+                }
+              : null,
           reservationId: row.reservation_id,
           seat: {
             code: row.seat_code,
             operationalStatus: row.operational_status,
           },
           source: row.source,
+          spares: frontline
+            ? {
+                available: availableSpares.map((item) => ({
+                  availableQuantity: item.available_quantity,
+                  displayName: item.display_name,
+                  inventoryItemId: item.inventory_item_id,
+                  onHandQuantity: item.on_hand_quantity,
+                })),
+                usages: usageRows.map((usage) => ({
+                  claimedAt: usage.claimed_at,
+                  claimedBy: {
+                    displayName: usage.claimed_by_display_name,
+                    personaId: usage.claimed_by_persona_id,
+                  },
+                  consumedQuantity: usage.quantity - usage.returned_quantity,
+                  inventoryItem: {
+                    displayName: usage.display_name,
+                    inventoryItemId: usage.inventory_item_id,
+                  },
+                  movementId: usage.movement_id,
+                  quantity: usage.quantity,
+                  recordedAt: usage.recorded_at,
+                  returnedQuantity: usage.returned_quantity,
+                  returns: returnRows
+                    .filter((item) => item.usage_id === usage.usage_id)
+                    .map((item) => ({
+                      movementId: item.movement_id,
+                      quantity: item.quantity,
+                      recordedAt: item.recorded_at,
+                      returnedAt: item.returned_at,
+                      returnedBy: {
+                        displayName: item.returned_by_display_name,
+                        personaId: item.returned_by_persona_id,
+                      },
+                      returnId: item.return_id,
+                    })),
+                  usageId: usage.usage_id,
+                })),
+              }
+            : null,
           status: row.status,
+          latestVerification:
+            row.latest_verification_outcome &&
+            row.latest_verification_reason &&
+            row.verification_business_at
+              ? {
+                  outcome: row.latest_verification_outcome,
+                  reason: row.latest_verification_reason,
+                  verifiedAt: row.verification_business_at,
+                  verifiedBy:
+                    input.role !== "customer" &&
+                    row.verified_by_persona_id &&
+                    row.verified_by_display_name
+                      ? {
+                          displayName: row.verified_by_display_name,
+                          personaId: row.verified_by_persona_id,
+                        }
+                      : null,
+                }
+              : null,
           store: {
             code: row.store_code,
             displayName: row.store_display_name,
@@ -6806,6 +7237,919 @@ export function createPublicSandboxDatabase(
         );
         await client.query("commit");
         return repairCommandFromStored(stored, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async executeRepairSpareCommand(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      const commandType =
+        input.action === "claim" ? "spare-claim" : "spare-return";
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const businessTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const deny = async (
+          reason: RepairCommandConflictReason,
+          currentStatus: string | null = null,
+        ): Promise<never> => {
+          await recordRepairCommandDenial(client, {
+            action: commandType,
+            actorStoreId: context.actorStoreId,
+            businessTime,
+            currentStatus,
+            personaId: input.personaId,
+            reason,
+            recordedAt: wallTime,
+            repairId: input.repairId,
+            requestId: input.requestId,
+            role: input.role,
+            sandboxId: input.sandboxId,
+          });
+          await client.query("commit");
+          throw new RepairCommandConflictError(reason, currentStatus);
+        };
+        if (!Number.isSafeInteger(input.quantity) || input.quantity <= 0) {
+          await deny("quantity-invalid");
+        }
+        if (input.action === "claim" && !input.inventoryItemId) {
+          await deny("inventory-item-not-found");
+        }
+        if (input.action === "return" && !input.usageId) {
+          await deny("usage-not-found");
+        }
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({
+            action: input.action,
+            inventoryItemId: input.inventoryItemId!,
+            quantity: input.quantity,
+            repairId: input.repairId,
+            usageId: input.usageId,
+          }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:repair-state:${commandType}:${idempotencyKeyHash}`,
+          ],
+        );
+        const previous = await client.query<RepairSpareCommandRow>(
+          `select payload_hash, result_data
+             from repair_state_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and command_type = $3 and idempotency_key_hash = $4`,
+          [input.sandboxId, input.personaId, commandType, idempotencyKeyHash],
+        );
+        const previousRow = previous.rows[0];
+        if (previousRow) {
+          if (previousRow.payload_hash !== payloadHash) {
+            await deny("idempotency-conflict");
+          }
+          await client.query("commit");
+          return repairSpareCommandFromStored(previousRow.result_data, true);
+        }
+        const repairs = await client.query<{
+          assigned_to_persona_id: string | null;
+          status: DatabaseRepairCreated["status"];
+          store_id: string;
+        }>(
+          `select store_id, status, assigned_to_persona_id
+             from repairs
+            where sandbox_id = $1 and id = $2
+            for update`,
+          [input.sandboxId, input.repairId],
+        );
+        const repair = repairs.rows[0];
+        if (!repair) return await deny("not-found");
+        if (repair.store_id !== context.actorStoreId) {
+          await deny("cross-store", repair.status);
+        }
+        if (
+          (input.action === "claim" && repair.status !== "processing") ||
+          (input.action === "return" && repair.status === "closed")
+        ) {
+          await deny("illegal-transition", repair.status);
+        }
+        if (
+          input.role !== "manager" &&
+          repair.assigned_to_persona_id !== input.personaId
+        ) {
+          await deny("not-assignee", repair.status);
+        }
+        const actors = await client.query<{ display_name: string }>(
+          `select display_name from demo_personas
+            where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, input.personaId],
+        );
+        const actorDisplayName = actors.rows[0]?.display_name;
+        if (!actorDisplayName) throw new RoleContextUnavailableError();
+        if (input.action === "return") {
+          const usages = await client.query<{
+            display_name: string;
+            inventory_item_id: string;
+            on_hand_quantity: number;
+            quantity: number;
+            returned_quantity: number;
+          }>(
+            `select item.display_name, item.id as inventory_item_id,
+                    item.on_hand_quantity, usage.quantity,
+                    usage.returned_quantity
+               from repair_spare_usages usage
+               join inventory_items item on item.id = usage.inventory_item_id
+              where usage.sandbox_id = $1 and usage.repair_id = $2
+                and usage.id = $3 and item.store_id = $4
+              for update of usage, item`,
+            [
+              input.sandboxId,
+              input.repairId,
+              input.usageId,
+              context.actorStoreId,
+            ],
+          );
+          const usage = usages.rows[0];
+          if (!usage) return await deny("usage-not-found", repair.status);
+          if (usage.returned_quantity + input.quantity > usage.quantity) {
+            await deny("return-exceeds-claim", repair.status);
+          }
+          const returnedQuantity = usage.returned_quantity + input.quantity;
+          const onHandAfter = usage.on_hand_quantity + input.quantity;
+          const updatedUsage = await client.query(
+            `update repair_spare_usages
+                set returned_quantity = $4
+              where sandbox_id = $1 and repair_id = $2 and id = $3
+                and returned_quantity + $5 <= quantity`,
+            [
+              input.sandboxId,
+              input.repairId,
+              input.usageId,
+              returnedQuantity,
+              input.quantity,
+            ],
+          );
+          if (updatedUsage.rowCount !== 1) {
+            throw new RepairCommandConflictError(
+              "return-exceeds-claim",
+              repair.status,
+            );
+          }
+          const updatedItem = await client.query(
+            `update inventory_items
+                set on_hand_quantity = $4
+              where sandbox_id = $1 and id = $2 and store_id = $3`,
+            [
+              input.sandboxId,
+              usage.inventory_item_id,
+              context.actorStoreId,
+              onHandAfter,
+            ],
+          );
+          if (updatedItem.rowCount !== 1) {
+            throw new RepairCommandConflictError(
+              "inventory-item-not-found",
+              repair.status,
+            );
+          }
+          const movementId = randomUUID();
+          const returnId = randomUUID();
+          await client.query(
+            `insert into inventory_movements (
+               id, sandbox_id, store_id, inventory_item_id, order_id,
+               repair_id, movement_kind, reason, on_hand_delta, on_hand_after,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, null, $5, 'spare-return',
+               'repair-spare-return', $6, $7, $8, $9)`,
+            [
+              movementId,
+              input.sandboxId,
+              context.actorStoreId,
+              usage.inventory_item_id,
+              input.repairId,
+              input.quantity,
+              onHandAfter,
+              businessTime,
+              wallTime,
+            ],
+          );
+          await client.query(
+            `insert into repair_spare_returns (
+               id, sandbox_id, repair_id, usage_id, returned_by_persona_id,
+               inventory_movement_id, quantity, business_occurred_at,
+               recorded_at
+             ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [
+              returnId,
+              input.sandboxId,
+              input.repairId,
+              input.usageId,
+              input.personaId,
+              movementId,
+              input.quantity,
+              businessTime,
+              wallTime,
+            ],
+          );
+          await client.query(
+            `insert into repair_business_events (
+               id, sandbox_id, repair_id, event_type, event_data,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, 'repair.spare-returned', $4::jsonb, $5, $6)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.repairId,
+              JSON.stringify({
+                actorDisplayName,
+                actorPersonaId: input.personaId,
+                inventoryItemDisplayName: usage.display_name,
+                inventoryItemId: usage.inventory_item_id,
+                movementId,
+                quantity: input.quantity,
+                returnId,
+                returnedQuantity,
+                usageId: input.usageId,
+              }),
+              businessTime,
+              wallTime,
+            ],
+          );
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action, object_type,
+               object_id, result, request_id, before_data, after_data,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, $5, 'repair.spare-return', 'repair',
+               $6, 'allowed', $7, $8::jsonb, $9::jsonb, $10, $11)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              context.actorStoreId,
+              input.personaId,
+              input.role,
+              input.repairId,
+              input.requestId,
+              JSON.stringify({
+                returnedQuantity: usage.returned_quantity,
+                status: repair.status,
+              }),
+              JSON.stringify({
+                movementId,
+                onHandQuantity: onHandAfter,
+                quantity: input.quantity,
+                repairId: input.repairId,
+                returnedQuantity,
+                status: repair.status,
+                usageId: input.usageId,
+              }),
+              businessTime,
+              wallTime,
+            ],
+          );
+          const stored: RepairSpareCommandRow["result_data"] = {
+            action: "return",
+            businessOccurredAt: businessTime.toISOString(),
+            inventoryItem: {
+              displayName: usage.display_name,
+              inventoryItemId: usage.inventory_item_id,
+            },
+            movementId,
+            onHandAfter,
+            quantity: input.quantity,
+            recordedAt: wallTime.toISOString(),
+            repairId: input.repairId,
+            returnedQuantity,
+            usageId: input.usageId!,
+          };
+          await client.query(
+            `insert into repair_state_command_requests (
+               sandbox_id, actor_persona_id, repair_id, command_type,
+               idempotency_key_hash, payload_hash, result_data
+             ) values ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+            [
+              input.sandboxId,
+              input.personaId,
+              input.repairId,
+              commandType,
+              idempotencyKeyHash,
+              payloadHash,
+              JSON.stringify(stored),
+            ],
+          );
+          await client.query("commit");
+          return repairSpareCommandFromStored(stored, false);
+        }
+        const items = await client.query<{
+          available_quantity: number;
+          display_name: string;
+          on_hand_quantity: number;
+        }>(
+          `select display_name, on_hand_quantity,
+                  on_hand_quantity - reserved_quantity as available_quantity
+             from inventory_items
+            where sandbox_id = $1 and id = $2 and store_id = $3
+              and kind = 'spare'
+            for update`,
+          [input.sandboxId, input.inventoryItemId, context.actorStoreId],
+        );
+        const item = items.rows[0];
+        if (!item) {
+          return await deny("inventory-item-not-found", repair.status);
+        }
+        if (item.available_quantity < input.quantity) {
+          await deny("inventory-insufficient", repair.status);
+        }
+        const onHandAfter = item.on_hand_quantity - input.quantity;
+        const updated = await client.query(
+          `update inventory_items
+              set on_hand_quantity = $4
+            where sandbox_id = $1 and id = $2 and store_id = $3
+              and on_hand_quantity - reserved_quantity >= $5`,
+          [
+            input.sandboxId,
+            input.inventoryItemId,
+            context.actorStoreId,
+            onHandAfter,
+            input.quantity,
+          ],
+        );
+        if (updated.rowCount !== 1) {
+          throw new RepairCommandConflictError(
+            "inventory-insufficient",
+            repair.status,
+          );
+        }
+        const movementId = randomUUID();
+        const usageId = randomUUID();
+        await client.query(
+          `insert into inventory_movements (
+             id, sandbox_id, store_id, inventory_item_id, order_id,
+             repair_id, movement_kind, reason, on_hand_delta, on_hand_after,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, null, $5, 'spare-usage',
+             'repair-spare-claim', $6, $7, $8, $9)`,
+          [
+            movementId,
+            input.sandboxId,
+            context.actorStoreId,
+            input.inventoryItemId,
+            input.repairId,
+            -input.quantity,
+            onHandAfter,
+            businessTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into repair_spare_usages (
+             id, sandbox_id, repair_id, inventory_item_id,
+             claimed_by_persona_id, inventory_movement_id, quantity,
+             returned_quantity, business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9)`,
+          [
+            usageId,
+            input.sandboxId,
+            input.repairId,
+            input.inventoryItemId,
+            input.personaId,
+            movementId,
+            input.quantity,
+            businessTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into repair_business_events (
+             id, sandbox_id, repair_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, 'repair.spare-claimed', $4::jsonb, $5, $6)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            input.repairId,
+            JSON.stringify({
+              actorDisplayName,
+              actorPersonaId: input.personaId,
+              inventoryItemDisplayName: item.display_name,
+              inventoryItemId: input.inventoryItemId,
+              movementId,
+              quantity: input.quantity,
+              usageId,
+            }),
+            businessTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, 'repair.spare-claim', 'repair', $6,
+             'allowed', $7, $8::jsonb, $9::jsonb, $10, $11)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            context.actorStoreId,
+            input.personaId,
+            input.role,
+            input.repairId,
+            input.requestId,
+            JSON.stringify({
+              availableQuantity: item.available_quantity,
+              onHandQuantity: item.on_hand_quantity,
+              status: repair.status,
+            }),
+            JSON.stringify({
+              inventoryItemId: input.inventoryItemId,
+              movementId,
+              onHandQuantity: onHandAfter,
+              quantity: input.quantity,
+              repairId: input.repairId,
+              status: repair.status,
+              usageId,
+            }),
+            businessTime,
+            wallTime,
+          ],
+        );
+        const stored: RepairSpareCommandRow["result_data"] = {
+          action: "claim",
+          businessOccurredAt: businessTime.toISOString(),
+          inventoryItem: {
+            displayName: item.display_name,
+            inventoryItemId: input.inventoryItemId!,
+          },
+          movementId,
+          onHandAfter,
+          quantity: input.quantity,
+          recordedAt: wallTime.toISOString(),
+          repairId: input.repairId,
+          returnedQuantity: 0,
+          usageId,
+        };
+        await client.query(
+          `insert into repair_state_command_requests (
+             sandbox_id, actor_persona_id, repair_id, command_type,
+             idempotency_key_hash, payload_hash, result_data
+           ) values ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            input.repairId,
+            commandType,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return repairSpareCommandFromStored(stored, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async executeRepairResolutionCommand(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      const commandType = "submit-resolution" as const;
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const businessTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const deny = async (
+          reason: RepairCommandConflictReason,
+          currentStatus: string | null = null,
+        ): Promise<never> => {
+          await recordRepairCommandDenial(client, {
+            action: commandType,
+            actorStoreId: context.actorStoreId,
+            businessTime,
+            currentStatus,
+            personaId: input.personaId,
+            reason,
+            recordedAt: wallTime,
+            repairId: input.repairId,
+            requestId: input.requestId,
+            role: input.role,
+            sandboxId: input.sandboxId,
+          });
+          await client.query("commit");
+          throw new RepairCommandConflictError(reason, currentStatus);
+        };
+        const resolutionNote = input.resolutionNote.normalize("NFC").trim();
+        if (!isSafePlainTextReason(resolutionNote, 500)) {
+          await deny("note-invalid");
+        }
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({ repairId: input.repairId, resolutionNote }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:repair-state:${commandType}:${idempotencyKeyHash}`,
+          ],
+        );
+        const previous = await client.query<RepairResolutionCommandRow>(
+          `select payload_hash, result_data
+             from repair_state_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and command_type = $3 and idempotency_key_hash = $4`,
+          [input.sandboxId, input.personaId, commandType, idempotencyKeyHash],
+        );
+        const previousRow = previous.rows[0];
+        if (previousRow) {
+          if (previousRow.payload_hash !== payloadHash) {
+            await deny("idempotency-conflict");
+          }
+          await client.query("commit");
+          return repairResolutionCommandFromStored(
+            previousRow.result_data,
+            true,
+          );
+        }
+        const repairs = await client.query<{
+          assigned_to_persona_id: string | null;
+          operational_status: "maintenance" | "normal";
+          status: DatabaseRepairCreated["status"];
+          store_id: string;
+        }>(
+          `select repair.store_id, repair.status,
+                  repair.assigned_to_persona_id, seat.operational_status
+             from repairs repair
+             join seats seat on seat.id = repair.seat_id
+            where repair.sandbox_id = $1 and repair.id = $2
+            for update of repair, seat`,
+          [input.sandboxId, input.repairId],
+        );
+        const repair = repairs.rows[0];
+        if (!repair) return await deny("not-found");
+        if (repair.store_id !== context.actorStoreId) {
+          await deny("cross-store", repair.status);
+        }
+        if (repair.status !== "processing") {
+          await deny("illegal-transition", repair.status);
+        }
+        if (
+          input.role !== "manager" &&
+          repair.assigned_to_persona_id !== input.personaId
+        ) {
+          await deny("not-assignee", repair.status);
+        }
+        if (repair.operational_status !== "maintenance") {
+          throw new Error(
+            "A processing repair must keep its seat in maintenance.",
+          );
+        }
+        const actors = await client.query<{ display_name: string }>(
+          `select display_name from demo_personas
+            where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, input.personaId],
+        );
+        const actorDisplayName = actors.rows[0]?.display_name;
+        if (!actorDisplayName) throw new RoleContextUnavailableError();
+        const updated = await client.query(
+          `update repairs
+              set status = 'verification', resolution_note = $3,
+                  resolution_submitted_by_persona_id = $4,
+                  resolution_business_at = $5,
+                  latest_verification_outcome = null,
+                  latest_verification_reason = null,
+                  verified_by_persona_id = null,
+                  verification_business_at = null
+            where sandbox_id = $1 and id = $2 and status = 'processing'`,
+          [
+            input.sandboxId,
+            input.repairId,
+            resolutionNote,
+            input.personaId,
+            businessTime,
+          ],
+        );
+        if (updated.rowCount !== 1) {
+          throw new RepairCommandConflictError(
+            "illegal-transition",
+            repair.status,
+          );
+        }
+        await client.query(
+          `insert into repair_business_events (
+             id, sandbox_id, repair_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, 'repair.resolution-submitted', $4::jsonb,
+             $5, $6)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            input.repairId,
+            JSON.stringify({
+              actorDisplayName,
+              actorPersonaId: input.personaId,
+              publicNote: resolutionNote,
+              resolutionNote,
+            }),
+            businessTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, 'repair.submit-resolution',
+             'repair', $6, 'allowed', $7, $8::jsonb, $9::jsonb, $10, $11)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            context.actorStoreId,
+            input.personaId,
+            input.role,
+            input.repairId,
+            input.requestId,
+            JSON.stringify({ status: repair.status }),
+            JSON.stringify({
+              resolutionNote,
+              status: "verification",
+            }),
+            businessTime,
+            wallTime,
+          ],
+        );
+        const stored: RepairResolutionCommandRow["result_data"] = {
+          occurredAt: businessTime.toISOString(),
+          recordedAt: wallTime.toISOString(),
+          repairId: input.repairId,
+          seatOperationalStatus: "maintenance",
+          status: "verification",
+        };
+        await client.query(
+          `insert into repair_state_command_requests (
+             sandbox_id, actor_persona_id, repair_id, command_type,
+             idempotency_key_hash, payload_hash, result_data
+           ) values ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            input.repairId,
+            commandType,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return repairResolutionCommandFromStored(stored, false);
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async executeRepairVerificationCommand(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      const commandType =
+        input.outcome === "success" ? "verify-success" : "verify-failure";
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const businessTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const deny = async (
+          denialReason: RepairCommandConflictReason,
+          currentStatus: string | null = null,
+        ): Promise<never> => {
+          await recordRepairCommandDenial(client, {
+            action: commandType,
+            actorStoreId: context.actorStoreId,
+            businessTime,
+            currentStatus,
+            personaId: input.personaId,
+            reason: denialReason,
+            recordedAt: wallTime,
+            repairId: input.repairId,
+            requestId: input.requestId,
+            role: input.role,
+            sandboxId: input.sandboxId,
+          });
+          await client.query("commit");
+          throw new RepairCommandConflictError(denialReason, currentStatus);
+        };
+        const reason = input.reason.normalize("NFC").trim();
+        if (!isSafePlainTextReason(reason, 200)) {
+          await deny("note-invalid");
+        }
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({
+            outcome: input.outcome,
+            reason,
+            repairId: input.repairId,
+          }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:repair-state:${commandType}:${idempotencyKeyHash}`,
+          ],
+        );
+        const previous = await client.query<RepairVerificationCommandRow>(
+          `select payload_hash, result_data
+             from repair_state_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and command_type = $3 and idempotency_key_hash = $4`,
+          [input.sandboxId, input.personaId, commandType, idempotencyKeyHash],
+        );
+        const previousRow = previous.rows[0];
+        if (previousRow) {
+          if (previousRow.payload_hash !== payloadHash) {
+            await deny("idempotency-conflict");
+          }
+          await client.query("commit");
+          return repairVerificationCommandFromStored(
+            previousRow.result_data,
+            true,
+          );
+        }
+        const repairs = await client.query<{
+          assigned_to_persona_id: string | null;
+          operational_status: "maintenance" | "normal";
+          seat_id: string;
+          status: DatabaseRepairCreated["status"];
+          store_id: string;
+        }>(
+          `select repair.store_id, repair.seat_id, repair.status,
+                  repair.assigned_to_persona_id, seat.operational_status
+             from repairs repair
+             join seats seat on seat.id = repair.seat_id
+            where repair.sandbox_id = $1 and repair.id = $2
+            for update of repair, seat`,
+          [input.sandboxId, input.repairId],
+        );
+        const repair = repairs.rows[0];
+        if (!repair) return await deny("not-found");
+        if (repair.store_id !== context.actorStoreId) {
+          await deny("cross-store", repair.status);
+        }
+        if (repair.status !== "verification") {
+          await deny("illegal-transition", repair.status);
+        }
+        if (repair.assigned_to_persona_id === input.personaId) {
+          await deny("verifier-not-independent", repair.status);
+        }
+        if (repair.operational_status !== "maintenance") {
+          throw new Error(
+            "A repair awaiting verification must keep its seat in maintenance.",
+          );
+        }
+        const actors = await client.query<{ display_name: string }>(
+          `select display_name from demo_personas
+            where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, input.personaId],
+        );
+        const actorDisplayName = actors.rows[0]?.display_name;
+        if (!actorDisplayName) throw new RoleContextUnavailableError();
+        const nextStatus =
+          input.outcome === "success" ? "closed" : "processing";
+        const nextSeatStatus =
+          input.outcome === "success" ? "normal" : "maintenance";
+        const updated = await client.query(
+          `update repairs
+              set status = $3, latest_verification_outcome = $4,
+                  latest_verification_reason = $5,
+                  verified_by_persona_id = $6,
+                  verification_business_at = $7,
+                  closed_business_at = case when $4::text = 'success'
+                    then $7::timestamptz else null end
+            where sandbox_id = $1 and id = $2 and status = 'verification'`,
+          [
+            input.sandboxId,
+            input.repairId,
+            nextStatus,
+            input.outcome,
+            reason,
+            input.personaId,
+            businessTime,
+          ],
+        );
+        if (updated.rowCount !== 1) {
+          throw new RepairCommandConflictError(
+            "illegal-transition",
+            repair.status,
+          );
+        }
+        if (input.outcome === "success") {
+          const restored = await client.query(
+            `update seats set operational_status = 'normal'
+              where sandbox_id = $1 and id = $2
+                and operational_status = 'maintenance'`,
+            [input.sandboxId, repair.seat_id],
+          );
+          if (restored.rowCount !== 1) {
+            throw new Error("The verified repair seat could not be restored.");
+          }
+        }
+        const eventType =
+          input.outcome === "success"
+            ? "repair.closed"
+            : "repair.verification-failed";
+        await client.query(
+          `insert into repair_business_events (
+             id, sandbox_id, repair_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            input.repairId,
+            eventType,
+            JSON.stringify({
+              actorDisplayName,
+              actorPersonaId: input.personaId,
+              outcome: input.outcome,
+              publicNote: reason,
+              reason,
+              seatOperationalStatus: nextSeatStatus,
+            }),
+            businessTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, $6, 'repair', $7, 'allowed', $8,
+             $9::jsonb, $10::jsonb, $11, $12)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            context.actorStoreId,
+            input.personaId,
+            input.role,
+            `repair.${commandType}`,
+            input.repairId,
+            input.requestId,
+            JSON.stringify({
+              seatOperationalStatus: repair.operational_status,
+              status: repair.status,
+            }),
+            JSON.stringify({
+              outcome: input.outcome,
+              reason,
+              seatOperationalStatus: nextSeatStatus,
+              status: nextStatus,
+            }),
+            businessTime,
+            wallTime,
+          ],
+        );
+        const stored: RepairVerificationCommandRow["result_data"] = {
+          occurredAt: businessTime.toISOString(),
+          outcome: input.outcome,
+          recordedAt: wallTime.toISOString(),
+          repairId: input.repairId,
+          seatOperationalStatus: nextSeatStatus,
+          status: nextStatus,
+        };
+        await client.query(
+          `insert into repair_state_command_requests (
+             sandbox_id, actor_persona_id, repair_id, command_type,
+             idempotency_key_hash, payload_hash, result_data
+           ) values ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            input.repairId,
+            commandType,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return repairVerificationCommandFromStored(stored, false);
       } catch (error) {
         await client.query("rollback").catch(() => undefined);
         throw error;
@@ -8068,8 +9412,7 @@ export function createPublicSandboxDatabase(
              from inventory_movements movement
              join inventory_items item on item.id = movement.inventory_item_id
             where movement.sandbox_id = $1 and movement.store_id = $2
-            order by movement.business_occurred_at desc, movement.recorded_at desc,
-                     movement.id desc
+            order by movement.sequence desc
             limit 20`,
           [input.sandboxId, context.actorStoreId],
         );
@@ -8089,9 +9432,7 @@ export function createPublicSandboxDatabase(
              from inventory_movements movement
              join inventory_items item on item.id = movement.inventory_item_id
             where movement.sandbox_id = $1 and movement.store_id = $2
-            order by movement.inventory_item_id,
-                     movement.business_occurred_at desc,
-                     movement.recorded_at desc, movement.id desc`,
+            order by movement.inventory_item_id, movement.sequence desc`,
           [input.sandboxId, context.actorStoreId],
         );
         const movements = movementResult.rows.map(inventoryMovementFromRow);

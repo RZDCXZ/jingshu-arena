@@ -377,5 +377,39 @@ describe("role-context expand migration", () => {
         processing_column: "processing_business_at",
       },
     ]);
+
+    await applyMigration("0018_repair_spares_verification.sql");
+    const verificationMetadata = await client.query<{ value: string }>(
+      "select value from jingshu_schema_metadata where key = 'schema_version'",
+    );
+    expect(verificationMetadata.rows).toEqual([{ value: "15" }]);
+    const verificationStructures = await client.query<{
+      movement_repair_column: string | null;
+      resolution_column: string | null;
+      return_table: string | null;
+      usage_force_rls: boolean;
+      usage_table: string | null;
+    }>(
+      `select
+         to_regclass('public.repair_spare_usages')::text as usage_table,
+         to_regclass('public.repair_spare_returns')::text as return_table,
+         (select column_name from information_schema.columns
+           where table_schema = 'public' and table_name = 'repairs'
+             and column_name = 'resolution_note') as resolution_column,
+         (select column_name from information_schema.columns
+           where table_schema = 'public' and table_name = 'inventory_movements'
+             and column_name = 'repair_id') as movement_repair_column,
+         (select relforcerowsecurity from pg_class
+           where oid = 'public.repair_spare_usages'::regclass) as usage_force_rls`,
+    );
+    expect(verificationStructures.rows).toEqual([
+      {
+        movement_repair_column: "repair_id",
+        resolution_column: "resolution_note",
+        return_table: "repair_spare_returns",
+        usage_force_rls: true,
+        usage_table: "repair_spare_usages",
+      },
+    ]);
   });
 });

@@ -5,6 +5,7 @@ import type {
   CustomerReservationStatus,
   PublicRole,
   PublicSandboxReadyResponse,
+  RepairDetailResponse,
   RoleContextReadyResponse,
   StoreInventoryResponse,
   StaffOrderDetailResponse,
@@ -235,6 +236,14 @@ test.beforeEach(async ({ context }) => {
     },
   ];
   const commandReasons = new Map<string, string>();
+  const repairId = "00000000-0000-4000-8000-000000000916";
+  const repairInventoryItemId = "00000000-0000-4000-8000-000000000917";
+  const repairUsageId = "00000000-0000-4000-8000-000000000918";
+  let repairStatus: RepairDetailResponse["status"] = "processing";
+  let repairClaimedQuantity = 0;
+  let repairReturnedQuantity = 0;
+  let repairResolution: RepairDetailResponse["resolution"] = null;
+  let latestVerification: RepairDetailResponse["latestVerification"] = null;
   const staffOrderRows: MutableStaffOrderSummary[] = [
     {
       amountCents: 1_100,
@@ -520,6 +529,125 @@ test.beforeEach(async ({ context }) => {
     };
   }
 
+  function repairDetail(): RepairDetailResponse {
+    const consumedQuantity = repairClaimedQuantity - repairReturnedQuantity;
+    return {
+      actions: {
+        canAssign: false,
+        canClaimSpare: repairStatus === "processing",
+        canReturnSpare:
+          (repairStatus === "processing" || repairStatus === "verification") &&
+          consumedQuantity > 0,
+        canStart: false,
+        canSubmitResolution: repairStatus === "processing",
+        canVerify: repairStatus === "verification" && currentRole === "manager",
+      },
+      assignedTo: {
+        displayName: "周宁",
+        personaId: "00000000-0000-4000-8000-000000000921",
+        role: "staff",
+      },
+      currentTime: businessTime,
+      description: "耳机右声道无声",
+      impacts: [],
+      internal: {
+        audits: [
+          {
+            action: "repair.spare.claim",
+            actor: {
+              displayName: "周宁",
+              personaId: "00000000-0000-4000-8000-000000000921",
+            },
+            occurredAt: "2026-08-10T11:49:00.000Z",
+            recordedAt: "2026-08-10T11:49:02.000Z",
+            result: "allowed",
+          },
+        ],
+        events: [
+          {
+            actor: {
+              displayName: "周宁",
+              personaId: "00000000-0000-4000-8000-000000000921",
+            },
+            occurredAt: "2026-08-10T11:49:00.000Z",
+            recordedAt: "2026-08-10T11:49:02.000Z",
+            type: "repair.spare-claimed",
+          },
+        ],
+        notes: ["已复现右声道无声，准备更换备用耳机。"],
+      },
+      latestVerification,
+      machineProfile: { code: "competitive", displayName: "竞技机型" },
+      priority: "high",
+      publicUpdates: [
+        {
+          note: "设备正在检修，座位暂时维护。",
+          occurredAt: "2026-08-10T11:48:00.000Z",
+          type: "repair.processing",
+        },
+      ],
+      repairId,
+      reservationId: "00000000-0000-4000-8000-000000000903",
+      resolution: repairResolution,
+      seat: {
+        code: "A-18",
+        operationalStatus: repairStatus === "closed" ? "normal" : "maintenance",
+      },
+      source: "customer",
+      spares: {
+        available: [
+          {
+            availableQuantity:
+              2 - repairClaimedQuantity + repairReturnedQuantity,
+            displayName: "无品牌替换耳机",
+            inventoryItemId: repairInventoryItemId,
+            onHandQuantity: 2 - repairClaimedQuantity + repairReturnedQuantity,
+          },
+        ],
+        usages:
+          repairClaimedQuantity > 0
+            ? [
+                {
+                  claimedAt: "2026-08-10T11:49:00.000Z",
+                  claimedBy: {
+                    displayName: "周宁",
+                    personaId: "00000000-0000-4000-8000-000000000921",
+                  },
+                  consumedQuantity,
+                  inventoryItem: {
+                    displayName: "无品牌替换耳机",
+                    inventoryItemId: repairInventoryItemId,
+                  },
+                  movementId: "00000000-0000-4000-8000-000000000919",
+                  quantity: repairClaimedQuantity,
+                  recordedAt: "2026-08-10T11:49:02.000Z",
+                  returnedQuantity: repairReturnedQuantity,
+                  returns:
+                    repairReturnedQuantity > 0
+                      ? [
+                          {
+                            movementId: "00000000-0000-4000-8000-000000000920",
+                            quantity: repairReturnedQuantity,
+                            recordedAt: "2026-08-10T11:51:01.000Z",
+                            returnedAt: "2026-08-10T11:51:00.000Z",
+                            returnedBy: {
+                              displayName: "周宁",
+                              personaId: "00000000-0000-4000-8000-000000000921",
+                            },
+                            returnId: "00000000-0000-4000-8000-000000000922",
+                          },
+                        ]
+                      : [],
+                  usageId: repairUsageId,
+                },
+              ]
+            : [],
+      },
+      status: repairStatus,
+      store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+    };
+  }
+
   await context.route("**/api/v1/staff/workbench", async (route) => {
     await route.fulfill({
       json: {
@@ -720,6 +848,179 @@ test.beforeEach(async ({ context }) => {
       json: row ? staffOrderDetail(row) : { error: { message: "订单不存在" } },
       status: row ? 200 : 404,
     });
+  });
+  await context.route("**/api/v1/staff/repair-intake", async (route) => {
+    await route.fulfill({
+      json: {
+        handlers: [
+          {
+            displayName: "周宁",
+            personaId: "00000000-0000-4000-8000-000000000921",
+            role: "staff",
+          },
+          {
+            displayName: "许知远",
+            personaId: "00000000-0000-4000-8000-000000000923",
+            role: "manager",
+          },
+        ],
+        seats: [
+          {
+            area: { code: "competitive-a", displayName: "竞技区 A" },
+            code: "A-18",
+            existingRepair: { repairId, status: repairStatus },
+            id: "00000000-0000-4000-8000-000000000924",
+            machineProfile: { code: "competitive", displayName: "竞技机型" },
+            operationalStatus:
+              repairStatus === "closed" ? "normal" : "maintenance",
+            store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+          },
+        ],
+        status: "ready",
+        store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+      },
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/staff/repairs**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      url.pathname !== "/api/v1/staff/repairs"
+    ) {
+      expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+      expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+      const body = request.postDataJSON() as Record<string, unknown>;
+      if (url.pathname.endsWith("/spares/claim")) {
+        repairClaimedQuantity += Number(body.quantity);
+        await route.fulfill({
+          json: {
+            action: "claim",
+            businessOccurredAt: businessTime,
+            inventoryItem: {
+              displayName: "无品牌替换耳机",
+              inventoryItemId: repairInventoryItemId,
+            },
+            movementId: "00000000-0000-4000-8000-000000000919",
+            onHandAfter: 2 - repairClaimedQuantity,
+            quantity: Number(body.quantity),
+            recordedAt: businessTime,
+            repairId,
+            replayed: false,
+            returnedQuantity: repairReturnedQuantity,
+            usageId: repairUsageId,
+          },
+          status: 200,
+        });
+        return;
+      }
+      if (url.pathname.endsWith("/spares/return")) {
+        repairReturnedQuantity += Number(body.quantity);
+        await route.fulfill({
+          json: {
+            action: "return",
+            businessOccurredAt: businessTime,
+            inventoryItem: {
+              displayName: "无品牌替换耳机",
+              inventoryItemId: repairInventoryItemId,
+            },
+            movementId: "00000000-0000-4000-8000-000000000920",
+            onHandAfter: 2 - repairClaimedQuantity + repairReturnedQuantity,
+            quantity: Number(body.quantity),
+            recordedAt: businessTime,
+            repairId,
+            replayed: false,
+            returnedQuantity: repairReturnedQuantity,
+            usageId: repairUsageId,
+          },
+          status: 200,
+        });
+        return;
+      }
+      if (url.pathname.endsWith("/resolution")) {
+        repairStatus = "verification";
+        repairResolution = {
+          note: String(body.resolutionNote),
+          submittedAt: businessTime,
+          submittedBy: {
+            displayName: "周宁",
+            personaId: "00000000-0000-4000-8000-000000000921",
+          },
+        };
+        await route.fulfill({
+          json: {
+            occurredAt: businessTime,
+            recordedAt: businessTime,
+            repairId,
+            replayed: false,
+            seatOperationalStatus: "maintenance",
+            status: repairStatus,
+          },
+          status: 200,
+        });
+        return;
+      }
+      if (url.pathname.endsWith("/verification")) {
+        const outcome = body.outcome as "failure" | "success";
+        repairStatus = outcome === "success" ? "closed" : "processing";
+        latestVerification = {
+          outcome,
+          reason: String(body.reason),
+          verifiedAt: businessTime,
+          verifiedBy: {
+            displayName: "许知远",
+            personaId: "00000000-0000-4000-8000-000000000923",
+          },
+        };
+        await route.fulfill({
+          json: {
+            occurredAt: businessTime,
+            outcome,
+            recordedAt: businessTime,
+            repairId,
+            replayed: false,
+            seatOperationalStatus:
+              outcome === "success" ? "normal" : "maintenance",
+            status: repairStatus,
+          },
+          status: 200,
+        });
+        return;
+      }
+    }
+    await route.fulfill({
+      json: {
+        currentTime: businessTime,
+        rows: [
+          {
+            createdAt: "2026-08-10T11:42:00.000Z",
+            description: "耳机右声道无声",
+            machineProfile: { code: "competitive", displayName: "竞技机型" },
+            priority: "high",
+            repairId,
+            seat: { code: "A-18" },
+            source: "customer",
+            status: repairStatus,
+            waitingMinutes: 7,
+          },
+        ],
+        status: "ready",
+        store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+      },
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/repairs/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.endsWith("/images")) {
+      await route.fulfill({
+        json: { images: [], status: "ready" },
+        status: 200,
+      });
+      return;
+    }
+    await route.fulfill({ json: repairDetail(), status: 200 });
   });
   await context.route("**/api/v1/store/inventory**", async (route) => {
     const request = route.request();
@@ -1086,7 +1387,7 @@ async function enterStaffShell(page: Page) {
 test("staff reads inventory while manager stocktakes, receives and compensates with dedicated dialogs", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 1440, height: 1024 });
+  await page.setViewportSize({ width: 1024, height: 768 });
   await enterStaffShell(page);
   await page.getByRole("button", { name: "库存", exact: true }).click();
   await expect(page.getByRole("heading", { name: "库存" })).toBeVisible();
@@ -1152,6 +1453,70 @@ test("staff reads inventory while manager stocktakes, receives and compensates w
     scrollWidth: document.body.scrollWidth,
   }));
   expect(layout.scrollWidth).toBe(layout.clientWidth);
+});
+
+test("repair spares, resolution, independent failure retry, and close remain state-specific", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "报修", exact: true }).click();
+  await expect(page.getByText("处理中", { exact: true }).last()).toBeVisible();
+
+  await page.getByRole("button", { name: "领用备件" }).click();
+  const claim = page.getByRole("dialog", { name: "领用维修备件" });
+  await expect(claim.getByLabel("本店可用备件")).toHaveValue(
+    "00000000-0000-4000-8000-000000000917",
+  );
+  await claim.getByRole("button", { name: "确认提交" }).click();
+  await expect(page.getByText(/领用 1 · 退回 0 ·\s*消耗 1/u)).toBeVisible();
+  await expect(page.getByText(/业务发生.*入库记录/u).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "退回未用备件" }).click();
+  const returned = page.getByRole("dialog", { name: "退回未使用备件" });
+  await returned.getByRole("button", { name: "确认提交" }).click();
+  await expect(page.getByText(/领用 1 · 退回 1 ·\s*消耗 0/u)).toBeVisible();
+
+  await page.getByRole("button", { name: "提交解决说明" }).click();
+  const resolution = page.getByRole("dialog", { name: "提交解决说明" });
+  await resolution.getByRole("button", { name: "确认提交" }).click();
+  await expect(page.getByText("待验证", { exact: true }).last()).toBeVisible();
+  await expect(
+    page.getByText("已更换无品牌备用耳机并完成左右声道测试。"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "验证成功并关闭" }),
+  ).toHaveCount(0);
+
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "店长 许知远 · 虚构人物 棱镜旗舰店",
+    })
+    .click();
+  await page.getByRole("button", { name: "报修", exact: true }).click();
+  await page.getByRole("button", { name: "验证失败并退回" }).click();
+  const failure = page.getByRole("dialog", { name: "验证失败并退回" });
+  await failure.getByRole("button", { name: "确认提交" }).click();
+  await expect(page.getByText("最近验证 · 失败")).toBeVisible();
+  await expect(page.getByText("处理中", { exact: true }).last()).toBeVisible();
+
+  await page.getByRole("button", { name: "提交解决说明" }).click();
+  await page
+    .getByRole("dialog", { name: "提交解决说明" })
+    .getByRole("button", { name: "确认提交" })
+    .click();
+  await page.getByRole("button", { name: "验证成功并关闭" }).click();
+  const success = page.getByRole("dialog", { name: "验证成功并关闭" });
+  await success.getByLabel("独立复测结论（成功可选）").fill("");
+  await success.getByRole("button", { name: "确认提交" }).click();
+  await expect(page.getByText("已关闭", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("最近验证 · 成功")).toBeVisible();
+  await expect(page.getByText("正常（验证后已恢复）")).toBeVisible();
+  await expect(page.getByRole("button", { name: "领用备件" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "提交解决说明" })).toHaveCount(
+    0,
+  );
 });
 
 test("shared shell exposes the signed persona, role, scope, lifecycle, and freshness", async ({

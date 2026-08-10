@@ -18,7 +18,12 @@ if (!databaseUrl) {
 
 const { Client } = pg;
 const publicOrigin = "https://arena.example";
-const wallTime = new Date("2026-08-09T12:00:00.000Z");
+const wallTime = new Date();
+wallTime.setMilliseconds(0);
+const initialWallTime = wallTime.toISOString();
+const nextEventTime = new Date(wallTime.getTime() + 15 * 60_000).toISOString();
+const halfHourTime = new Date(wallTime.getTime() + 30 * 60_000).toISOString();
+const expiresAt = new Date(wallTime.getTime() + 24 * 60 * 60_000).toISOString();
 const handlerOrder = [
   "pending-reservation-expiration",
   "pending-order-expiration",
@@ -124,10 +129,10 @@ describe("sandbox demo time", () => {
       sandbox: {
         businessClock: {
           advancedMilliseconds: 0,
-          currentTime: "2026-08-09T12:00:00.000Z",
+          currentTime: initialWallTime,
           timeZone: "Asia/Shanghai",
         },
-        expiresAt: "2026-08-10T12:00:00.000Z",
+        expiresAt,
       },
     });
 
@@ -138,14 +143,14 @@ describe("sandbox demo time", () => {
     await expect(preview.json()).resolves.toMatchObject({
       clock: {
         advancedMilliseconds: 0,
-        currentTime: "2026-08-09T12:00:00.000Z",
+        currentTime: initialWallTime,
         remainingAdvanceMilliseconds: 86_400_000,
       },
       halfHour: {
-        afterTime: "2026-08-09T12:30:00.000Z",
+        afterTime: halfHourTime,
       },
       nextEvent: {
-        afterTime: "2026-08-09T12:15:00.000Z",
+        afterTime: nextEventTime,
       },
       status: "ready",
     });
@@ -168,8 +173,8 @@ describe("sandbox demo time", () => {
     expect(first.status).toBe(200);
     const firstBody = await first.json();
     expect(firstBody).toEqual({
-      afterTime: "2026-08-09T12:30:00.000Z",
-      beforeTime: "2026-08-09T12:00:00.000Z",
+      afterTime: halfHourTime,
+      beforeTime: initialWallTime,
       clock: {
         advanceLimitMilliseconds: 86_400_000,
         advancedMilliseconds: 1_800_000,
@@ -197,9 +202,9 @@ describe("sandbox demo time", () => {
       sandbox: {
         businessClock: {
           advancedMilliseconds: 1_800_000,
-          currentTime: "2026-08-09T12:30:00.000Z",
+          currentTime: halfHourTime,
         },
-        expiresAt: "2026-08-10T12:00:00.000Z",
+        expiresAt,
       },
     });
 
@@ -220,7 +225,7 @@ describe("sandbox demo time", () => {
       );
       expect(audit.rows).toEqual([
         {
-          business_occurred_at: new Date("2026-08-09T12:30:00.000Z"),
+          business_occurred_at: new Date(halfHourTime),
           recorded_at: wallTime,
         },
       ]);
@@ -272,7 +277,7 @@ describe("sandbox demo time", () => {
     await expect(afterFailureClock.json()).resolves.toMatchObject({
       clock: {
         advancedMilliseconds: 0,
-        currentTime: "2026-08-09T12:00:00.000Z",
+        currentTime: initialWallTime,
       },
     });
     const after = await client.query<{ count: string }>(
@@ -380,11 +385,11 @@ describe("sandbox reset", () => {
         sandbox: {
           businessClock: {
             advancedMilliseconds: 0,
-            currentTime: "2026-08-09T12:00:00.000Z",
+            currentTime: initialWallTime,
           },
-          expiresAt: "2026-08-10T12:00:00.000Z",
-          schemaVersion: "14",
-          seedVersion: "2026-08-10.7",
+          expiresAt,
+          schemaVersion: "15",
+          seedVersion: "2026-08-10.8",
         },
       },
       previousSandboxInvalidated: true,
@@ -394,11 +399,11 @@ describe("sandbox reset", () => {
         sandbox: {
           businessClock: {
             advancedMilliseconds: 0,
-            currentTime: "2026-08-09T12:00:00.000Z",
+            currentTime: initialWallTime,
           },
-          expiresAt: "2026-08-10T12:00:00.000Z",
-          schemaVersion: "14",
-          seedVersion: "2026-08-10.7",
+          expiresAt,
+          schemaVersion: "15",
+          seedVersion: "2026-08-10.8",
         },
       },
       replayed: false,

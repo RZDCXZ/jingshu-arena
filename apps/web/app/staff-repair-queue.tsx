@@ -2,6 +2,7 @@
 
 import {
   ArrowClockwise,
+  ArrowCounterClockwise,
   Camera,
   CaretRight,
   CheckCircle,
@@ -9,6 +10,7 @@ import {
   ImageSquare,
   Info,
   Lock,
+  Package,
   Plus,
   ShieldCheck,
   Trash,
@@ -25,7 +27,10 @@ import type {
   RepairImageCompletionResponse,
   RepairImageListResponse,
   RepairImageSaved,
+  RepairResolutionCommandResponse,
   RepairSampleImageResponse,
+  RepairSpareCommandResponse,
+  RepairVerificationCommandResponse,
   StaffRepairIntakeResponse,
   StaffRepairQueueResponse,
 } from "@jingshu/contracts";
@@ -94,6 +99,24 @@ export function StaffRepairQueue({
   const [actionFailure, setActionFailure] = useState("");
   const [actionSubmitting, setActionSubmitting] = useState(false);
   const actionRetryRef = useRef<{
+    fingerprint: string;
+    idempotencyKey: string;
+  } | null>(null);
+  const [workflowDialog, setWorkflowDialog] = useState<
+    | "claim-spare"
+    | "return-spare"
+    | "resolution"
+    | "verify-success"
+    | "verify-failure"
+    | null
+  >(null);
+  const [workflowInventoryItemId, setWorkflowInventoryItemId] = useState("");
+  const [workflowUsageId, setWorkflowUsageId] = useState("");
+  const [workflowQuantity, setWorkflowQuantity] = useState(1);
+  const [workflowNote, setWorkflowNote] = useState("");
+  const [workflowFailure, setWorkflowFailure] = useState("");
+  const [workflowSubmitting, setWorkflowSubmitting] = useState(false);
+  const workflowRetryRef = useRef<{
     fingerprint: string;
     idempotencyKey: string;
   } | null>(null);
@@ -303,6 +326,139 @@ export function StaffRepairQueue({
       );
     } finally {
       setActionSubmitting(false);
+    }
+  }
+
+  function openWorkflowDialog(
+    action:
+      | "claim-spare"
+      | "return-spare"
+      | "resolution"
+      | "verify-success"
+      | "verify-failure",
+  ) {
+    workflowRetryRef.current = null;
+    setWorkflowFailure("");
+    setWorkflowDialog(action);
+    setWorkflowQuantity(1);
+    setWorkflowInventoryItemId(
+      detail?.spares?.available[0]?.inventoryItemId ?? "",
+    );
+    setWorkflowUsageId(
+      detail?.spares?.usages.find((usage) => usage.consumedQuantity > 0)
+        ?.usageId ?? "",
+    );
+    setWorkflowNote(
+      action === "resolution"
+        ? "已更换无品牌备用耳机并完成左右声道测试。"
+        : action === "verify-success"
+          ? "独立复测通过，座位可以恢复使用。"
+          : action === "verify-failure"
+            ? "复测仍存在右声道无声，退回继续处理。"
+            : "",
+    );
+  }
+
+  async function submitWorkflowAction() {
+    if (!selectedRepairId || !workflowDialog || workflowSubmitting) return;
+
+    const endpoint =
+      workflowDialog === "claim-spare"
+        ? "spares/claim"
+        : workflowDialog === "return-spare"
+          ? "spares/return"
+          : workflowDialog === "resolution"
+            ? "resolution"
+            : "verification";
+    const requestBody =
+      workflowDialog === "claim-spare"
+        ? {
+            inventoryItemId: workflowInventoryItemId,
+            quantity: workflowQuantity,
+          }
+        : workflowDialog === "return-spare"
+          ? { quantity: workflowQuantity, usageId: workflowUsageId }
+          : workflowDialog === "resolution"
+            ? { resolutionNote: workflowNote.trim() }
+            : workflowDialog === "verify-success" && !workflowNote.trim()
+              ? { outcome: "success" }
+              : {
+                  outcome:
+                    workflowDialog === "verify-success" ? "success" : "failure",
+                  reason: workflowNote.trim(),
+                };
+
+    if (
+      (workflowDialog === "claim-spare" && !workflowInventoryItemId) ||
+      (workflowDialog === "return-spare" && !workflowUsageId) ||
+      workflowQuantity < 1 ||
+      ((workflowDialog === "resolution" ||
+        workflowDialog === "verify-failure") &&
+        !workflowNote.trim())
+    ) {
+      return;
+    }
+
+    setWorkflowSubmitting(true);
+    setWorkflowFailure("");
+    try {
+      const fingerprint = JSON.stringify({
+        action: workflowDialog,
+        repairId: selectedRepairId,
+        requestBody,
+      });
+      const retry = workflowRetryRef.current;
+      const idempotencyKey =
+        retry?.fingerprint === fingerprint
+          ? retry.idempotencyKey
+          : crypto.randomUUID();
+      workflowRetryRef.current = { fingerprint, idempotencyKey };
+      const response = await fetch(
+        `/api/v1/staff/repairs/${selectedRepairId}/${endpoint}`,
+        {
+          body: JSON.stringify(requestBody),
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+            "X-CSRF-Token": csrfToken,
+          },
+          method: "POST",
+        },
+      );
+      const payload = (await response.json()) as
+        | ApiErrorResponse
+        | RepairResolutionCommandResponse
+        | RepairSpareCommandResponse
+        | RepairVerificationCommandResponse;
+      if (!response.ok) {
+        throw new Error(
+          "error" in payload ? payload.error.message : "报修操作暂时无法完成。",
+        );
+      }
+
+      workflowRetryRef.current = null;
+      setWorkflowDialog(null);
+      await load();
+      await loadDetail(selectedRepairId);
+      onToast(
+        workflowDialog === "claim-spare"
+          ? "备件已领用，库存流水与报修证据已原子记录"
+          : workflowDialog === "return-spare"
+            ? "未使用备件已退回库存"
+            : workflowDialog === "resolution"
+              ? "解决说明已提交，等待独立人员验证"
+              : workflowDialog === "verify-success"
+                ? "验证成功，报修已关闭且座位恢复正常"
+                : "验证失败，报修已退回处理中",
+      );
+    } catch (error) {
+      setWorkflowFailure(
+        error instanceof Error ? error.message : "报修操作暂时无法完成。",
+      );
+    } finally {
+      setWorkflowSubmitting(false);
     }
   }
 
@@ -613,7 +769,12 @@ export function StaffRepairQueue({
                 <em>{statusLabels[detail.status]}</em>
               </div>
               <p>{detail.description}</p>
-              {detail.actions.canAssign || detail.actions.canStart ? (
+              {detail.actions.canAssign ||
+              detail.actions.canStart ||
+              detail.actions.canClaimSpare ||
+              detail.actions.canReturnSpare ||
+              detail.actions.canSubmitResolution ||
+              detail.actions.canVerify ? (
                 <div className="staff-repair-actions">
                   {detail.actions.canAssign ? (
                     <button
@@ -633,15 +794,65 @@ export function StaffRepairQueue({
                       <Wrench /> 开始处理
                     </button>
                   ) : null}
+                  {detail.actions.canClaimSpare ? (
+                    <button
+                      onClick={() => openWorkflowDialog("claim-spare")}
+                      type="button"
+                    >
+                      <Package /> 领用备件
+                    </button>
+                  ) : null}
+                  {detail.actions.canReturnSpare &&
+                  detail.spares?.usages.some(
+                    (usage) => usage.consumedQuantity > 0,
+                  ) ? (
+                    <button
+                      onClick={() => openWorkflowDialog("return-spare")}
+                      type="button"
+                    >
+                      <ArrowCounterClockwise /> 退回未用备件
+                    </button>
+                  ) : null}
+                  {detail.actions.canSubmitResolution ? (
+                    <button
+                      className="is-primary"
+                      onClick={() => openWorkflowDialog("resolution")}
+                      type="button"
+                    >
+                      <CheckCircle /> 提交解决说明
+                    </button>
+                  ) : null}
+                  {detail.actions.canVerify ? (
+                    <>
+                      <button
+                        className="is-primary"
+                        onClick={() => openWorkflowDialog("verify-success")}
+                        type="button"
+                      >
+                        <CheckCircle /> 验证成功并关闭
+                      </button>
+                      <button
+                        className="is-danger"
+                        onClick={() => openWorkflowDialog("verify-failure")}
+                        type="button"
+                      >
+                        <Warning /> 验证失败并退回
+                      </button>
+                    </>
+                  ) : null}
                 </div>
               ) : null}
-              {detail.status === "processing" ? (
+              {detail.status === "processing" ||
+              detail.status === "verification" ? (
                 <section className="staff-repair-maintenance-notice">
                   <Warning />
                   <span>
                     <strong>座位维护联动已生效</strong>
                     {detail.seat.code}{" "}
                     已进入维护；预约没有自动换座，退款按价格片段计算。
+                    {detail.status === "verification"
+                      ? " 解决说明已提交，须由非原处理人复测。"
+                      : ""}
                   </span>
                 </section>
               ) : null}
@@ -666,7 +877,9 @@ export function StaffRepairQueue({
                   <dd>
                     {detail.seat.operationalStatus === "maintenance"
                       ? "维护中"
-                      : "正常（尚未开始处理）"}
+                      : detail.status === "closed"
+                        ? "正常（验证后已恢复）"
+                        : "正常（尚未开始处理）"}
                   </dd>
                 </div>
               </dl>
@@ -742,6 +955,105 @@ export function StaffRepairQueue({
                   </p>
                 )}
               </section>
+              {detail.spares ? (
+                <section className="staff-repair-detail-section">
+                  <h3>备件领用与退回</h3>
+                  {detail.status !== "closed" ? (
+                    <div className="staff-repair-spare-summary">
+                      {detail.spares.available.map((item) => (
+                        <article key={item.inventoryItemId}>
+                          <Package />
+                          <span>
+                            <strong>{item.displayName}</strong>
+                            <small>
+                              可用 {item.availableQuantity} · 账面
+                              {item.onHandQuantity}
+                            </small>
+                          </span>
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
+                  {detail.spares.usages.length > 0 ? (
+                    <div className="staff-repair-spare-usages">
+                      {detail.spares.usages.map((usage) => (
+                        <article key={usage.usageId}>
+                          <div>
+                            <strong>{usage.inventoryItem.displayName}</strong>
+                            <span>
+                              领用 {usage.quantity} · 退回{" "}
+                              {usage.returnedQuantity} · 消耗{" "}
+                              {usage.consumedQuantity}
+                            </span>
+                          </div>
+                          <small>
+                            流水 {usage.movementId.slice(0, 8)} · 业务发生
+                            {new Date(usage.claimedAt).toLocaleString(
+                              "zh-CN",
+                            )}{" "}
+                            · 入库记录
+                            {new Date(usage.recordedAt).toLocaleString("zh-CN")}
+                          </small>
+                          {usage.returns.map((returned) => (
+                            <small key={returned.returnId}>
+                              退回 {returned.quantity} · 流水
+                              {returned.movementId.slice(0, 8)} ·
+                              {returned.returnedBy.displayName} · 业务发生
+                              {new Date(returned.returnedAt).toLocaleString(
+                                "zh-CN",
+                              )}{" "}
+                              · 入库记录
+                              {new Date(returned.recordedAt).toLocaleString(
+                                "zh-CN",
+                              )}
+                            </small>
+                          ))}
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="staff-repair-muted">尚未领用维修备件。</p>
+                  )}
+                </section>
+              ) : null}
+              {detail.resolution ? (
+                <section className="staff-repair-detail-section staff-repair-resolution">
+                  <h3>解决说明</h3>
+                  <CheckCircle />
+                  <p>{detail.resolution.note}</p>
+                  <small>
+                    {detail.resolution.submittedBy?.displayName ?? "门店人员"} ·
+                    {new Date(detail.resolution.submittedAt).toLocaleString(
+                      "zh-CN",
+                    )}
+                  </small>
+                </section>
+              ) : null}
+              {detail.latestVerification ? (
+                <section
+                  className={`staff-repair-detail-section staff-repair-verification is-${detail.latestVerification.outcome}`}
+                >
+                  <h3>
+                    {detail.latestVerification.outcome === "success"
+                      ? "最近验证 · 成功"
+                      : "最近验证 · 失败"}
+                  </h3>
+                  {detail.latestVerification.outcome === "success" ? (
+                    <CheckCircle />
+                  ) : (
+                    <Warning />
+                  )}
+                  <p>{detail.latestVerification.reason}</p>
+                  <small>
+                    {detail.latestVerification.verifiedBy?.displayName ??
+                      "独立验证人"}{" "}
+                    ·
+                    {new Date(
+                      detail.latestVerification.verifiedAt,
+                    ).toLocaleString("zh-CN")}
+                  </small>
+                </section>
+              ) : null}
               <section className="staff-repair-detail-section">
                 <h3>顾客可见说明</h3>
                 {detail.publicUpdates.length > 0 ? (
@@ -777,9 +1089,16 @@ export function StaffRepairQueue({
                       <li key={`${event.type}-${event.occurredAt}`}>
                         <ShieldCheck />
                         <span>
-                          <strong>{event.type}</strong>
+                          <strong>
+                            {event.type} · {event.actor?.displayName ?? "系统"}
+                          </strong>
                           <small>
-                            {new Date(event.occurredAt).toLocaleString("zh-CN")}
+                            业务发生
+                            {new Date(event.occurredAt).toLocaleString(
+                              "zh-CN",
+                            )}{" "}
+                            · 入库记录
+                            {new Date(event.recordedAt).toLocaleString("zh-CN")}
                           </small>
                         </span>
                       </li>
@@ -788,10 +1107,17 @@ export function StaffRepairQueue({
                       <li key={`${audit.action}-${audit.occurredAt}`}>
                         <ShieldCheck />
                         <span>
-                          <strong>{audit.action}</strong>
+                          <strong>
+                            {audit.action} ·{" "}
+                            {audit.actor?.displayName ?? "系统"}
+                          </strong>
                           <small>
-                            {audit.result} ·{" "}
-                            {new Date(audit.occurredAt).toLocaleString("zh-CN")}
+                            {audit.result} · 业务发生
+                            {new Date(audit.occurredAt).toLocaleString(
+                              "zh-CN",
+                            )}{" "}
+                            · 入库记录
+                            {new Date(audit.recordedAt).toLocaleString("zh-CN")}
                           </small>
                         </span>
                       </li>
@@ -813,6 +1139,187 @@ export function StaffRepairQueue({
           )}
         </aside>
       </section>
+
+      {workflowDialog ? (
+        <div className="staff-repair-dialog-backdrop" role="presentation">
+          <section
+            aria-labelledby="staff-repair-workflow-title"
+            aria-modal="true"
+            className="staff-repair-dialog is-action"
+            role="dialog"
+          >
+            <header>
+              <div>
+                <span className="shell-eyebrow">REPAIR WORKFLOW</span>
+                <h2 id="staff-repair-workflow-title">
+                  {workflowDialog === "claim-spare"
+                    ? "领用维修备件"
+                    : workflowDialog === "return-spare"
+                      ? "退回未使用备件"
+                      : workflowDialog === "resolution"
+                        ? "提交解决说明"
+                        : workflowDialog === "verify-success"
+                          ? "验证成功并关闭"
+                          : "验证失败并退回"}
+                </h2>
+              </div>
+              <button
+                aria-label="关闭报修操作"
+                onClick={() => setWorkflowDialog(null)}
+                type="button"
+              >
+                <X />
+              </button>
+            </header>
+            <div className="staff-repair-dialog-body">
+              {workflowDialog === "claim-spare" ? (
+                <div className="staff-repair-action-fields is-split">
+                  <label>
+                    <span>本店可用备件</span>
+                    <select
+                      onChange={(event) =>
+                        setWorkflowInventoryItemId(event.target.value)
+                      }
+                      value={workflowInventoryItemId}
+                    >
+                      {detail?.spares?.available.map((item) => (
+                        <option
+                          disabled={item.availableQuantity < 1}
+                          key={item.inventoryItemId}
+                          value={item.inventoryItemId}
+                        >
+                          {item.displayName} · 可用 {item.availableQuantity}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>领用数量</span>
+                    <input
+                      min={1}
+                      onChange={(event) =>
+                        setWorkflowQuantity(Number(event.target.value))
+                      }
+                      type="number"
+                      value={workflowQuantity}
+                    />
+                  </label>
+                </div>
+              ) : workflowDialog === "return-spare" ? (
+                <div className="staff-repair-action-fields is-split">
+                  <label>
+                    <span>待退回领用记录</span>
+                    <select
+                      onChange={(event) =>
+                        setWorkflowUsageId(event.target.value)
+                      }
+                      value={workflowUsageId}
+                    >
+                      {detail?.spares?.usages
+                        .filter((usage) => usage.consumedQuantity > 0)
+                        .map((usage) => (
+                          <option key={usage.usageId} value={usage.usageId}>
+                            {usage.inventoryItem.displayName} · 可退
+                            {usage.consumedQuantity}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>退回数量</span>
+                    <input
+                      min={1}
+                      onChange={(event) =>
+                        setWorkflowQuantity(Number(event.target.value))
+                      }
+                      type="number"
+                      value={workflowQuantity}
+                    />
+                  </label>
+                </div>
+              ) : (
+                <div className="staff-repair-action-fields">
+                  <label>
+                    <span>
+                      {workflowDialog === "resolution"
+                        ? "解决说明"
+                        : workflowDialog === "verify-success"
+                          ? "独立复测结论（成功可选）"
+                          : "独立复测结论"}
+                      <small>
+                        {workflowNote.length}/
+                        {workflowDialog === "resolution" ? 500 : 200}
+                      </small>
+                    </span>
+                    <textarea
+                      autoFocus
+                      maxLength={workflowDialog === "resolution" ? 500 : 200}
+                      onChange={(event) => setWorkflowNote(event.target.value)}
+                      value={workflowNote}
+                    />
+                  </label>
+                </div>
+              )}
+              {workflowDialog === "verify-success" ? (
+                <section className="staff-repair-start-warning is-success">
+                  <CheckCircle />
+                  <span>
+                    <strong>成功后立即关闭</strong>
+                    座位会在同一事务恢复正常，关闭后的报修不能重新打开。
+                  </span>
+                </section>
+              ) : workflowDialog === "verify-failure" ? (
+                <section className="staff-repair-start-warning">
+                  <Warning />
+                  <span>
+                    <strong>失败后退回处理中</strong>
+                    座位继续保持维护，可再次领退备件并提交新的解决说明。
+                  </span>
+                </section>
+              ) : null}
+              {workflowFailure ? (
+                <div className="staff-repair-existing is-error" role="alert">
+                  <Warning /> {workflowFailure}
+                </div>
+              ) : null}
+            </div>
+            <footer>
+              <span>
+                <Lock /> 每次提交使用独立幂等键并保留双时钟证据
+              </span>
+              <div>
+                <button onClick={() => setWorkflowDialog(null)} type="button">
+                  取消
+                </button>
+                <button
+                  className="is-primary"
+                  disabled={
+                    workflowSubmitting ||
+                    workflowQuantity < 1 ||
+                    (workflowDialog === "claim-spare" &&
+                      !workflowInventoryItemId) ||
+                    (workflowDialog === "return-spare" && !workflowUsageId) ||
+                    ((workflowDialog === "resolution" ||
+                      workflowDialog === "verify-failure") &&
+                      !workflowNote.trim())
+                  }
+                  onClick={() => void submitWorkflowAction()}
+                  type="button"
+                >
+                  {workflowDialog === "claim-spare" ? (
+                    <Package />
+                  ) : workflowDialog === "return-spare" ? (
+                    <ArrowCounterClockwise />
+                  ) : (
+                    <CheckCircle />
+                  )}
+                  {workflowSubmitting ? "正在提交…" : "确认提交"}
+                </button>
+              </div>
+            </footer>
+          </section>
+        </div>
+      ) : null}
 
       {actionDialog ? (
         <div className="staff-repair-dialog-backdrop" role="presentation">

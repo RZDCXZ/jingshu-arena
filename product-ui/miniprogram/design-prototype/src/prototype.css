@@ -2219,6 +2219,11 @@
   object-fit: cover;
 }
 
+.repair-demo-actions {
+  display: grid;
+  gap: 9px;
+}
+
 .photo-preview button {
   position: absolute;
   top: 8px;

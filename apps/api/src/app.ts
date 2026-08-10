@@ -23,6 +23,7 @@ interface AppOptions {
   repairImageStorage?: RepairImageStorage;
   sessionSecret?: string;
   secureCookies?: boolean;
+  wallClock?: { now(): Date };
 }
 
 export function createApp(options: AppOptions = {}) {
@@ -46,6 +47,7 @@ export function createApp(options: AppOptions = {}) {
       ? { repairImageStorage: options.repairImageStorage }
       : {}),
     ...(options.sessionSecret ? { sessionSecret: options.sessionSecret } : {}),
+    wallClock: options.wallClock ?? { now: () => new Date() },
   };
 
   app.get("/api/v1/health", (context) =>

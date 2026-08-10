@@ -2,8 +2,18 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-10
-- 已验证契约版本：`product-ui/management-system/prod.md` 1.7
-- 验证范围：[`15 — 报修处理联动座位维护、预约中断与模拟退款`](../../../.scratch/jingshu-basic-rc/issues/15-repair-maintenance-refund.md)；保留 ticket 14 报修创建和更早结论
+- 已验证契约版本：`product-ui/management-system/prod.md` 1.8
+- 验证范围：[`16 — 备件领退、解决说明与维修验证闭环`](../../../.scratch/jingshu-basic-rc/issues/16-repair-spares-verification.md)；保留 ticket 15 维修联动和更早结论
+
+## Ticket 16 `WEB-S07/WEB-M02` 对照目标与结论
+
+- 应用内浏览器在精确 `1440 × 1024 CSS px` 分别打开正式夜间运营控制台和真实 Web → Hono → 临时 PostgreSQL 生产页；待验证证据保存在 `design/source-ticket16-web-s07-verification-1440x1024.png`、`design/implementation-ticket16-web-s07-verification-1440x1024.png` 与 `design/qa-ticket16-web-s07-verification-comparison-2880x1024.png`，关闭态证据保存在对应的 `*-closed-*` 三张图片。
+- 另在精确 `1024 × 768 CSS px` 复核正式 `WEB-S07` 与真实生产关闭态：页面 `scrollWidth = clientWidth = 1024px`、warning/error 为 0，领退汇总、实际消耗、解决说明、验证结果及领退双时钟均可读；Chromium 专项 E2E 在同一视口完成领用、退回、提交、失败退回、重提和成功关闭全路径。
+- 真实旅程覆盖 `A-01` 报修：同店分派并开始处理，领用两副无品牌替换耳机、退回一副、提交 500 字内解决说明；切换店长后先验证失败退回处理中，再由处理人重新提交，最终独立验证成功并原子关闭报修、恢复座位正常。关闭后页面不再出现领用、退回、提交或验证动作。
+- 店员详情按“合法主动作 → 已领/实际消耗 → 解决说明 → 最新验证 → 双时钟证据”排序；待验证期间座位持续维护。店长详情只在服务端允许时显示成功/失败验证，专用弹窗对失败强制要求原因、对成功允许省略备注；处理人与验证人、领用/退回业务发生时间及服务器记录时间、报修事件和审计均可追溯。
+- 第 1 轮 P1 已关闭：生产关闭态最初仍先铺满八类可用备件，把实际消耗和验证结果推到首屏以下；关闭态改为优先展示领退汇总、实际消耗、解决说明与验证结果后，正式源和生产页在同一首屏表达相同终态层级。
+- 两侧继续使用海军蓝高密度壳层、青色信息反馈、青柠唯一主动作、琥珀维护/失败风险与右侧证据检查器。页面实测 `scrollWidth = clientWidth = 1440px`，正式源与生产页 warning/error 均为 0；按钮焦点、失败原因保留、原幂等键重试、角色切换与关闭终态均通过，最终没有仍需处理的 P0、P1 或 P2 差异。
+- 完整 `pnpm verify` 通过：261 个 Vitest 单元测试、2 个开发启动测试、113 个真实 PostgreSQL/API 集成测试、2 个设计内容基线测试与 41 个 Chromium E2E 全部通过；全部构建、格式、lint、strict TypeScript、工作区边界、敏感数据扫描和 high 级依赖审计通过，仅报告 1 个不阻塞门禁的 moderate 漏洞。正式管理端原型生产构建与 Sites 包装通过。
 
 ## Ticket 15 `WEB-S07` 对照目标与结论
 

@@ -103,6 +103,8 @@ export function App() {
   const [reservationStatus, setReservationStatus] = useState("已确认");
   const [orderStates, setOrderStates] = useState({});
   const [repairStates, setRepairStates] = useState({});
+  const [repairSpareStates, setRepairSpareStates] = useState({});
+  const [repairVerificationEvidence, setRepairVerificationEvidence] = useState({});
   const [handoverSubmitted, setHandoverSubmitted] = useState(false);
   const [demoStep, setDemoStep] = useState(3);
   const [businessTime, setBusinessTime] = useState(
@@ -224,7 +226,7 @@ export function App() {
     });
   }
 
-  function handleRepairAdvance(id) {
+  function handleRepairAdvance(id, verificationOutcome = "success") {
     if (readonly) return;
     const original =
       id === "RPR-260808-0017"
@@ -235,12 +237,21 @@ export function App() {
             ? "待验证"
             : "处理中";
     const current = repairStates[id] || original;
-    const next = {
+    if (current === "待验证") {
+      setRepairVerificationEvidence((evidence) => ({
+        ...evidence,
+        [id]: verificationOutcome,
+      }));
+    }
+    const next =
+      current === "待验证" && verificationOutcome === "failure"
+        ? "处理中"
+        : {
       待分派: "已分派",
       已分派: "处理中",
       处理中: "待验证",
       待验证: "已关闭",
-    }[current];
+          }[current];
     if (!next) return;
     setRepairStates((states) => ({ ...states, [id]: next }));
     if (id === "RPR-260808-0017")
@@ -250,9 +261,25 @@ export function App() {
     setToast({
       tone: next === "处理中" ? "warning" : "success",
       text:
+        current === "待验证" && verificationOutcome === "failure"
+          ? "验证失败，报修退回处理中且座位继续维护"
+          :
         next === "处理中"
           ? "座位已进入维护，预约与库存联动已原子提交"
           : `报修已推进为“${next}”`,
+    });
+  }
+
+  function handleRepairSpare(id, action) {
+    setRepairSpareStates((states) => {
+      const current = states[id] || { claimed: 0, returned: 0 };
+      return {
+        ...states,
+        [id]: {
+          claimed: current.claimed + (action === "claim" ? 1 : 0),
+          returned: current.returned + (action === "return" ? 1 : 0),
+        },
+      };
     });
   }
 
@@ -302,6 +329,8 @@ export function App() {
       setReservationStatus("已确认");
       setOrderStates({});
       setRepairStates({});
+      setRepairSpareStates({});
+      setRepairVerificationEvidence({});
       setHandoverSubmitted(false);
       setDemoStep(3);
       setBusinessTime("19:30");
@@ -363,7 +392,11 @@ export function App() {
         return (
           <RepairsPage
             repairStates={repairStates}
+            repairSpareStates={repairSpareStates}
+            verificationEvidence={repairVerificationEvidence}
             onAdvance={handleRepairAdvance}
+            onClaimSpare={(id) => handleRepairSpare(id, "claim")}
+            onReturnSpare={(id) => handleRepairSpare(id, "return")}
             onCreate={() => setActionModal("创建座位报修")}
             readonly={readonly}
             role={role}
@@ -398,7 +431,11 @@ export function App() {
             onOrderAdvance={handleOrderAdvance}
             onOrderCancel={handleOrderCancel}
             repairStates={repairStates}
+            repairSpareStates={repairSpareStates}
+            repairVerificationEvidence={repairVerificationEvidence}
             onRepairAdvance={handleRepairAdvance}
+            onRepairClaimSpare={(id) => handleRepairSpare(id, "claim")}
+            onRepairReturnSpare={(id) => handleRepairSpare(id, "return")}
             readonly={readonly}
           />
         );
@@ -799,7 +836,11 @@ function ManagerLiveOps({
   onOrderAdvance,
   onOrderCancel,
   repairStates,
+  repairSpareStates,
+  repairVerificationEvidence,
   onRepairAdvance,
+  onRepairClaimSpare,
+  onRepairReturnSpare,
   readonly,
 }) {
   return (
@@ -849,7 +890,11 @@ function ManagerLiveOps({
         {tab === "repairs" && (
           <RepairsPage
             repairStates={repairStates}
+            repairSpareStates={repairSpareStates}
+            verificationEvidence={repairVerificationEvidence}
             onAdvance={onRepairAdvance}
+            onClaimSpare={onRepairClaimSpare}
+            onReturnSpare={onRepairReturnSpare}
             onCreate={() => onOpenAction("创建座位报修")}
             readonly={readonly}
             role="manager"

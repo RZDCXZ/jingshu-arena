@@ -64,6 +64,40 @@ async function createRepairWorld() {
   return { manager: manager!, repair, staff };
 }
 
+async function createProcessingRepairWorld() {
+  const world = await createRepairWorld();
+  await database.executeRepairCommand({
+    ...world.staff,
+    action: "assign",
+    assigneePersonaId: world.staff.personaId,
+    idempotencyKey: randomUUID(),
+    internalNote: "由当班店员处理耳机故障。",
+    priority: "high",
+    publicNote: "门店已安排处理人。",
+    repairId: world.repair.repairId,
+    requestId: randomUUID(),
+  });
+  await database.executeRepairCommand({
+    ...world.staff,
+    action: "start",
+    assigneePersonaId: null,
+    idempotencyKey: randomUUID(),
+    internalNote: "已复现右声道无声，开始更换耳机。",
+    priority: null,
+    publicNote: "设备已进入检修。",
+    repairId: world.repair.repairId,
+    requestId: randomUUID(),
+  });
+  const inventory = await database.readStoreInventory(world.staff);
+  const headset = inventory.items.find((item) => item.code === "spare-headset");
+  expect(headset).toMatchObject({
+    availableQuantity: 2,
+    displayName: "无品牌替换耳机",
+    kind: "spare",
+  });
+  return { ...world, headset: headset! };
+}
+
 async function createMaintenanceWorld() {
   const world = await database.create({
     creationKey: randomUUID(),
@@ -241,6 +275,492 @@ async function createMaintenanceWorld() {
 }
 
 describe("repair maintenance persistence", () => {
+  it("atomically claims a spare for a processing repair with traceable inventory and repair evidence", async () => {
+    const { headset, repair, staff } = await createProcessingRepairWorld();
+
+    const claimed = await database.executeRepairSpareCommand({
+      ...staff,
+      action: "claim",
+      idempotencyKey: randomUUID(),
+      inventoryItemId: headset.inventoryItemId,
+      quantity: 1,
+      repairId: repair.repairId,
+      requestId: randomUUID(),
+      usageId: null,
+    });
+    const detail = await database.readRepairDetail({
+      ...staff,
+      repairId: repair.repairId,
+    });
+    const inventory = await database.readStoreInventory(staff);
+    const updatedHeadset = inventory.items.find(
+      (item) => item.inventoryItemId === headset.inventoryItemId,
+    );
+
+    expect(claimed).toMatchObject({
+      action: "claim",
+      inventoryItem: {
+        displayName: "无品牌替换耳机",
+        inventoryItemId: headset.inventoryItemId,
+      },
+      onHandAfter: headset.onHandQuantity - 1,
+      quantity: 1,
+      repairId: repair.repairId,
+      replayed: false,
+      returnedQuantity: 0,
+    });
+    expect(claimed.businessOccurredAt).toEqual(wallTime);
+    expect(claimed.recordedAt).toEqual(wallTime);
+    expect(updatedHeadset).toMatchObject({
+      availableQuantity: headset.availableQuantity - 1,
+      onHandQuantity: headset.onHandQuantity - 1,
+      recentMovement: {
+        kind: "spare-usage",
+        movementId: claimed.movementId,
+        onHandDelta: -1,
+      },
+    });
+    expect(detail.actions).toMatchObject({
+      canClaimSpare: true,
+      canReturnSpare: true,
+      canSubmitResolution: true,
+      canVerify: false,
+    });
+    expect(detail.spares).toEqual({
+      available: expect.arrayContaining([
+        expect.objectContaining({
+          availableQuantity: headset.availableQuantity - 1,
+          displayName: "无品牌替换耳机",
+          inventoryItemId: headset.inventoryItemId,
+        }),
+      ]),
+      usages: [
+        expect.objectContaining({
+          claimedAt: wallTime,
+          claimedBy: {
+            displayName: "周宁",
+            personaId: staff.personaId,
+          },
+          consumedQuantity: 1,
+          inventoryItem: {
+            displayName: "无品牌替换耳机",
+            inventoryItemId: headset.inventoryItemId,
+          },
+          movementId: claimed.movementId,
+          quantity: 1,
+          recordedAt: wallTime,
+          returnedQuantity: 0,
+          returns: [],
+          usageId: claimed.usageId,
+        }),
+      ],
+    });
+    expect(detail.internal?.events.at(-1)).toMatchObject({
+      actor: { displayName: "周宁", personaId: staff.personaId },
+      occurredAt: wallTime,
+      recordedAt: wallTime,
+      type: "repair.spare-claimed",
+    });
+    expect(detail.internal?.audits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "repair.spare-claim",
+          actor: { displayName: "周宁", personaId: staff.personaId },
+          occurredAt: wallTime,
+          recordedAt: wallTime,
+          result: "allowed",
+        }),
+      ]),
+    );
+  });
+
+  it("returns an unconsumed claimed spare before closure and rejects cumulative over-return", async () => {
+    const { headset, repair, staff } = await createProcessingRepairWorld();
+    const claimed = await database.executeRepairSpareCommand({
+      ...staff,
+      action: "claim",
+      idempotencyKey: randomUUID(),
+      inventoryItemId: headset.inventoryItemId,
+      quantity: 1,
+      repairId: repair.repairId,
+      requestId: randomUUID(),
+      usageId: null,
+    });
+
+    const returned = await database.executeRepairSpareCommand({
+      ...staff,
+      action: "return",
+      idempotencyKey: randomUUID(),
+      inventoryItemId: null,
+      quantity: 1,
+      repairId: repair.repairId,
+      requestId: randomUUID(),
+      usageId: claimed.usageId,
+    });
+
+    expect(returned).toMatchObject({
+      action: "return",
+      inventoryItem: claimed.inventoryItem,
+      onHandAfter: headset.onHandQuantity,
+      quantity: 1,
+      repairId: repair.repairId,
+      returnedQuantity: 1,
+      usageId: claimed.usageId,
+    });
+    await expect(
+      database.executeRepairSpareCommand({
+        ...staff,
+        action: "return",
+        idempotencyKey: randomUUID(),
+        inventoryItemId: null,
+        quantity: 1,
+        repairId: repair.repairId,
+        requestId: randomUUID(),
+        usageId: claimed.usageId,
+      }),
+    ).rejects.toMatchObject({ reason: "return-exceeds-claim" });
+
+    const detail = await database.readRepairDetail({
+      ...staff,
+      repairId: repair.repairId,
+    });
+    expect(detail.actions.canReturnSpare).toBe(false);
+    expect(detail.spares?.usages).toEqual([
+      expect.objectContaining({
+        consumedQuantity: 0,
+        returnedQuantity: 1,
+        returns: [
+          expect.objectContaining({
+            movementId: returned.movementId,
+            quantity: 1,
+            returnedBy: {
+              displayName: "周宁",
+              personaId: staff.personaId,
+            },
+          }),
+        ],
+      }),
+    ]);
+    const inventory = await database.readStoreInventory(staff);
+    expect(
+      inventory.items.find(
+        (item) => item.inventoryItemId === headset.inventoryItemId,
+      ),
+    ).toMatchObject({
+      availableQuantity: headset.availableQuantity,
+      onHandQuantity: headset.onHandQuantity,
+      recentMovement: {
+        kind: "spare-return",
+        movementId: returned.movementId,
+        onHandDelta: 1,
+      },
+    });
+  });
+
+  it("requires an independent same-store verifier and closes only after a failed verification returns for repair", async () => {
+    const { repair, staff } = await createProcessingRepairWorld();
+    const firstResolution = await database.executeRepairResolutionCommand({
+      ...staff,
+      idempotencyKey: randomUUID(),
+      repairId: repair.repairId,
+      requestId: randomUUID(),
+      resolutionNote: "已更换无品牌替换耳机并完成左右声道试听。",
+    });
+
+    expect(firstResolution).toMatchObject({
+      repairId: repair.repairId,
+      seatOperationalStatus: "maintenance",
+      status: "verification",
+    });
+    await expect(
+      database.executeRepairVerificationCommand({
+        ...staff,
+        idempotencyKey: randomUUID(),
+        outcome: "success",
+        reason: "左右声道试听通过。",
+        repairId: repair.repairId,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ reason: "verifier-not-independent" });
+
+    const managerRole = await database.switchRoleContext({
+      ...staff,
+      requestId: randomUUID(),
+      targetRole: "manager",
+    });
+    const manager = {
+      contextVersion: managerRole.contextVersion,
+      personaId: managerRole.persona.id,
+      role: "manager" as const,
+      sandboxId: managerRole.sandboxId,
+    };
+    const failed = await database.executeRepairVerificationCommand({
+      ...manager,
+      idempotencyKey: randomUUID(),
+      outcome: "failure",
+      reason: "左声道仍有间歇杂音，需要重新压测。",
+      repairId: repair.repairId,
+      requestId: randomUUID(),
+    });
+
+    expect(failed).toMatchObject({
+      outcome: "failure",
+      repairId: repair.repairId,
+      seatOperationalStatus: "maintenance",
+      status: "processing",
+    });
+    const staffRole = await database.switchRoleContext({
+      ...manager,
+      requestId: randomUUID(),
+      targetRole: "staff",
+    });
+    const staffAgain = {
+      contextVersion: staffRole.contextVersion,
+      personaId: staffRole.persona.id,
+      role: "staff" as const,
+      sandboxId: staffRole.sandboxId,
+    };
+    await database.executeRepairResolutionCommand({
+      ...staffAgain,
+      idempotencyKey: randomUUID(),
+      repairId: repair.repairId,
+      requestId: randomUUID(),
+      resolutionNote: "重新固定接头并连续压测 20 分钟，未再出现杂音。",
+    });
+    const managerAgain = await database.switchRoleContext({
+      ...staffAgain,
+      requestId: randomUUID(),
+      targetRole: "manager",
+    });
+    const successCommand = {
+      contextVersion: managerAgain.contextVersion,
+      idempotencyKey: randomUUID(),
+      outcome: "success" as const,
+      personaId: managerAgain.persona.id,
+      reason: "连续试听与插拔复测通过。",
+      repairId: repair.repairId,
+      requestId: randomUUID(),
+      role: "manager" as const,
+      sandboxId: managerAgain.sandboxId,
+    };
+    const closed =
+      await database.executeRepairVerificationCommand(successCommand);
+    const replayed =
+      await database.executeRepairVerificationCommand(successCommand);
+
+    expect(closed).toMatchObject({
+      outcome: "success",
+      repairId: repair.repairId,
+      replayed: false,
+      seatOperationalStatus: "normal",
+      status: "closed",
+    });
+    expect(replayed).toEqual({ ...closed, replayed: true });
+    await expect(
+      database.executeRepairVerificationCommand({
+        ...successCommand,
+        idempotencyKey: randomUUID(),
+        requestId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({
+      currentStatus: "closed",
+      reason: "illegal-transition",
+    });
+
+    const detail = await database.readRepairDetail({
+      contextVersion: managerAgain.contextVersion,
+      personaId: managerAgain.persona.id,
+      repairId: repair.repairId,
+      role: "manager",
+      sandboxId: managerAgain.sandboxId,
+    });
+    expect(detail).toMatchObject({
+      actions: {
+        canAssign: false,
+        canClaimSpare: false,
+        canReturnSpare: false,
+        canStart: false,
+        canSubmitResolution: false,
+        canVerify: false,
+      },
+      latestVerification: {
+        outcome: "success",
+        reason: "连续试听与插拔复测通过。",
+        verifiedAt: wallTime,
+        verifiedBy: {
+          displayName: "许知远",
+          personaId: managerAgain.persona.id,
+        },
+      },
+      resolution: {
+        note: "重新固定接头并连续压测 20 分钟，未再出现杂音。",
+        submittedAt: wallTime,
+        submittedBy: {
+          displayName: "周宁",
+          personaId: staffAgain.personaId,
+        },
+      },
+      seat: { operationalStatus: "normal" },
+      status: "closed",
+    });
+    expect(detail.publicUpdates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          note: "左声道仍有间歇杂音，需要重新压测。",
+          type: "repair.verification-failed",
+        }),
+        expect.objectContaining({
+          note: "连续试听与插拔复测通过。",
+          type: "repair.closed",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects a spare claim above available inventory without changing the ledger", async () => {
+    const { headset, repair, staff } = await createProcessingRepairWorld();
+
+    await expect(
+      database.executeRepairSpareCommand({
+        ...staff,
+        action: "claim",
+        idempotencyKey: randomUUID(),
+        inventoryItemId: headset.inventoryItemId,
+        quantity: headset.availableQuantity + 1,
+        repairId: repair.repairId,
+        requestId: randomUUID(),
+        usageId: null,
+      }),
+    ).rejects.toMatchObject({ reason: "inventory-insufficient" });
+
+    const detail = await database.readRepairDetail({
+      ...staff,
+      repairId: repair.repairId,
+    });
+    const inventory = await database.readStoreInventory(staff);
+    expect(detail.spares?.usages).toEqual([]);
+    expect(
+      inventory.items.find(
+        (item) => item.inventoryItemId === headset.inventoryItemId,
+      ),
+    ).toMatchObject({
+      availableQuantity: headset.availableQuantity,
+      onHandQuantity: headset.onHandQuantity,
+    });
+    expect(detail.internal?.audits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "repair.spare-claim",
+          result: "denied",
+        }),
+      ]),
+    );
+  });
+
+  it.each([
+    {
+      name: "库存流水",
+      table: "inventory_movements",
+      timing: "before insert",
+      when: "new.reason = 'repair-spare-claim'",
+    },
+    {
+      name: "报修事件",
+      table: "repair_business_events",
+      timing: "before insert",
+      when: "new.event_type = 'repair.spare-claimed'",
+    },
+  ])(
+    "rolls back spare inventory, usage, movement, event and audit when $name fails",
+    async ({ table, timing, when }) => {
+      const { headset, repair, staff } = await createProcessingRepairWorld();
+      const suffix = randomUUID().replaceAll("-", "");
+      const functionName = `fail_repair_spare_${suffix}`;
+      const triggerName = `fail_repair_spare_${suffix}`;
+      const command = {
+        ...staff,
+        action: "claim" as const,
+        idempotencyKey: randomUUID(),
+        inventoryItemId: headset.inventoryItemId,
+        quantity: 1,
+        repairId: repair.repairId,
+        requestId: randomUUID(),
+        usageId: null,
+      };
+      const client = new Client({ connectionString: databaseUrl });
+      await client.connect();
+      try {
+        await client.query(
+          `create function ${functionName}() returns trigger language plpgsql as $$
+           begin
+             raise exception 'injected repair spare failure';
+           end
+           $$`,
+        );
+        await client.query(
+          `create trigger ${triggerName} ${timing} on ${table}
+           for each row when (${when}) execute function ${functionName}()`,
+        );
+        await expect(
+          database.executeRepairSpareCommand(command),
+        ).rejects.toThrow("injected repair spare failure");
+
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          staff.sandboxId,
+        ]);
+        const rollbackState = await client.query<{
+          audit_count: number;
+          command_count: number;
+          event_count: number;
+          movement_count: number;
+          on_hand_quantity: number;
+          usage_count: number;
+        }>(
+          `select item.on_hand_quantity,
+            (select count(*)::integer from repair_spare_usages
+              where sandbox_id = $1 and repair_id = $2) as usage_count,
+            (select count(*)::integer from inventory_movements
+              where sandbox_id = $1 and repair_id = $2
+                and movement_kind = 'spare-usage') as movement_count,
+            (select count(*)::integer from repair_business_events
+              where sandbox_id = $1 and repair_id = $2
+                and event_type = 'repair.spare-claimed') as event_count,
+            (select count(*)::integer from audit_events
+              where sandbox_id = $1 and object_id = $2
+                and action = 'repair.spare-claim' and result = 'allowed') as audit_count,
+            (select count(*)::integer from repair_state_command_requests
+              where sandbox_id = $1 and repair_id = $2
+                and command_type = 'spare-claim') as command_count
+           from inventory_items item
+          where item.sandbox_id = $1 and item.id = $3`,
+          [staff.sandboxId, repair.repairId, headset.inventoryItemId],
+        );
+        expect(rollbackState.rows).toEqual([
+          {
+            audit_count: 0,
+            command_count: 0,
+            event_count: 0,
+            movement_count: 0,
+            on_hand_quantity: headset.onHandQuantity,
+            usage_count: 0,
+          },
+        ]);
+        await client.query("commit");
+      } finally {
+        await client.query("rollback").catch(() => undefined);
+        await client.query(`drop trigger if exists ${triggerName} on ${table}`);
+        await client.query(`drop function if exists ${functionName}()`);
+        await client.end();
+      }
+
+      await expect(
+        database.executeRepairSpareCommand(command),
+      ).resolves.toMatchObject({ action: "claim", replayed: false });
+    },
+  );
+
   it("assigns a new repair to a same-store handler with queue priority but leaves the seat normal", async () => {
     const { manager, repair, staff } = await createRepairWorld();
     const command = {
