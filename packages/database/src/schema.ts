@@ -607,6 +607,10 @@ export const repairs = pgTable(
     createdByPersonaId: uuid("created_by_persona_id")
       .notNull()
       .references(() => demoPersonas.id, { onDelete: "restrict" }),
+    assignedToPersonaId: uuid("assigned_to_persona_id").references(
+      () => demoPersonas.id,
+      { onDelete: "restrict" },
+    ),
     source: text("source").notNull(),
     description: text("description").notNull(),
     priority: text("priority").default("normal").notNull(),
@@ -614,6 +618,12 @@ export const repairs = pgTable(
     createdBusinessAt: timestamp("created_business_at", {
       withTimezone: true,
     }).notNull(),
+    assignedBusinessAt: timestamp("assigned_business_at", {
+      withTimezone: true,
+    }),
+    processingBusinessAt: timestamp("processing_business_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -631,6 +641,10 @@ export const repairs = pgTable(
     check(
       "repairs_customer_source",
       sql`(${table.source} = 'customer' AND ${table.customerPersonaId} IS NOT NULL AND ${table.reservationId} IS NOT NULL) OR (${table.source} = 'staff' AND ${table.customerPersonaId} IS NULL)`,
+    ),
+    check(
+      "repairs_assignment_state",
+      sql`(${table.status} = 'new' AND ${table.assignedToPersonaId} IS NULL AND ${table.assignedBusinessAt} IS NULL) OR (${table.status} <> 'new' AND ${table.assignedToPersonaId} IS NOT NULL AND ${table.assignedBusinessAt} IS NOT NULL)`,
     ),
     uniqueIndex("repairs_one_open_per_seat_unique")
       .on(table.sandboxId, table.seatId)
@@ -699,6 +713,47 @@ export const repairCommandRequests = pgTable(
       name: "repair_command_requests_pk",
     }),
     pgPolicy("repair_command_requests_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const repairStateCommandRequests = pgTable(
+  "repair_state_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    actorPersonaId: uuid("actor_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    repairId: uuid("repair_id")
+      .notNull()
+      .references(() => repairs.id, { onDelete: "cascade" }),
+    commandType: text("command_type").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.actorPersonaId,
+        table.commandType,
+        table.idempotencyKeyHash,
+      ],
+      name: "repair_state_command_requests_pk",
+    }),
+    check(
+      "repair_state_command_requests_type",
+      sql`${table.commandType} IN ('assign', 'start')`,
+    ),
+    pgPolicy("repair_state_command_requests_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),

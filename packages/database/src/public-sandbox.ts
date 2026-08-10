@@ -49,6 +49,8 @@ import {
   FrontlineReservationConflictError,
   ManagerInventoryConflictError,
   type ManagerInventoryConflictReason,
+  RepairCommandConflictError,
+  type RepairCommandConflictReason,
   RepairIntakeConflictError,
   RepairImageConflictError,
   StaffOrderConflictError,
@@ -295,7 +297,7 @@ export interface RepairStaffContextInput extends Omit<
   ReadRoleContextInput,
   "role"
 > {
-  readonly role: "staff";
+  readonly role: FrontlineRole;
 }
 
 export type ReadStaffRepairIntakeInput = RepairStaffContextInput;
@@ -308,6 +310,11 @@ export interface CreateStaffRepairInput extends RepairStaffContextInput {
 }
 
 export interface DatabaseStaffRepairIntake {
+  readonly handlers: ReadonlyArray<{
+    readonly displayName: string;
+    readonly personaId: string;
+    readonly role: FrontlineRole;
+  }>;
   readonly seats: ReadonlyArray<{
     readonly area: { readonly code: string; readonly displayName: string };
     readonly code: string;
@@ -320,6 +327,80 @@ export interface DatabaseStaffRepairIntake {
     readonly operationalStatus: "maintenance" | "normal";
     readonly store: DatabaseRepairCreated["store"];
   }>;
+  readonly store: DatabaseRepairCreated["store"];
+}
+
+export type ExecuteRepairCommandInput = RepairStaffContextInput & {
+  readonly action: "assign" | "start";
+  readonly assigneePersonaId: string | null;
+  readonly idempotencyKey: string;
+  readonly internalNote: string;
+  readonly priority: DatabaseRepairCreated["priority"] | null;
+  readonly publicNote: string;
+  readonly repairId: string;
+  readonly requestId: string;
+};
+
+export interface DatabaseRepairCommand {
+  readonly action: ExecuteRepairCommandInput["action"];
+  readonly affectedReservations: ReadonlyArray<{
+    readonly couponRestored: boolean;
+    readonly outcome: "cancelled" | "completed";
+    readonly reservationId: string;
+    readonly simulatedRefundCents: number;
+  }>;
+  readonly occurredAt: Date;
+  readonly repairId: string;
+  readonly replayed: boolean;
+  readonly seatOperationalStatus: "maintenance" | "normal";
+  readonly status: DatabaseRepairCreated["status"];
+}
+
+export interface DatabaseRepairDetail {
+  readonly actions: {
+    readonly canAssign: boolean;
+    readonly canStart: boolean;
+  };
+  readonly assignedTo: {
+    readonly displayName: string;
+    readonly personaId: string;
+    readonly role: FrontlineRole;
+  } | null;
+  readonly currentTime: Date;
+  readonly description: string;
+  readonly internal: {
+    readonly audits: ReadonlyArray<{
+      readonly action: string;
+      readonly occurredAt: Date;
+      readonly result: "allowed" | "denied";
+    }>;
+    readonly events: ReadonlyArray<{
+      readonly occurredAt: Date;
+      readonly type: string;
+    }>;
+    readonly notes: ReadonlyArray<string>;
+  } | null;
+  readonly impacts: ReadonlyArray<{
+    readonly beforeStatus: ReservationStatus;
+    readonly couponRestored: boolean;
+    readonly customerDisplayName: string | null;
+    readonly outcome: "cancelled" | "completed";
+    readonly reservationId: string;
+    readonly simulatedRefundCents: number;
+    readonly window: { readonly endsAt: Date; readonly startsAt: Date };
+  }>;
+  readonly machineProfile: DatabaseRepairCreated["machineProfile"];
+  readonly priority: DatabaseRepairCreated["priority"];
+  readonly publicUpdates: ReadonlyArray<{
+    readonly note: string;
+    readonly occurredAt: Date;
+    readonly type: string;
+  }>;
+  readonly repairId: string;
+  readonly reservationId: string | null;
+  readonly seat: DatabaseRepairCreated["seat"];
+  readonly source: DatabaseRepairCreated["source"];
+  readonly status: DatabaseRepairCreated["status"];
   readonly store: DatabaseRepairCreated["store"];
 }
 
@@ -1123,6 +1204,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   executeStaffOrderCommand(
     input: ExecuteStaffOrderCommandInput,
   ): Promise<DatabaseStaffOrderCommand>;
+  executeRepairCommand(
+    input: ExecuteRepairCommandInput,
+  ): Promise<DatabaseRepairCommand>;
   executeManagerInventoryCommand(
     input: ExecuteManagerInventoryCommandInput,
   ): Promise<DatabaseManagerInventoryCommand>;
@@ -1189,6 +1273,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readStaffRepairQueue(
     input: ReadStaffRepairIntakeInput,
   ): Promise<DatabaseStaffRepairQueue>;
+  readRepairDetail(
+    input: RepairActorContextInput,
+  ): Promise<DatabaseRepairDetail>;
   prepareRepairImageCompletion(
     input: PrepareRepairImageCompletionInput,
   ): Promise<DatabaseRepairImageIntent>;
@@ -1868,6 +1955,34 @@ interface RepairRow {
   store_display_name: string;
 }
 
+interface RepairDetailRow extends RepairRow {
+  assigned_to_display_name: string | null;
+  assigned_to_persona_id: string | null;
+  assigned_to_role: FrontlineRole | null;
+  store_id: string;
+}
+
+interface RepairStateCommandRow {
+  payload_hash: string;
+  result_data: {
+    action: ExecuteRepairCommandInput["action"];
+    affectedReservations: DatabaseRepairCommand["affectedReservations"];
+    occurredAt: string;
+    repairId: string;
+    seatOperationalStatus: DatabaseRepairCommand["seatOperationalStatus"];
+    status: DatabaseRepairCommand["status"];
+  };
+}
+
+interface RepairEventRow {
+  business_occurred_at: Date;
+  event_data: {
+    internalNote?: string;
+    publicNote?: string;
+  };
+  event_type: string;
+}
+
 interface RepairCommandRow {
   payload_hash: string;
   result_data: Omit<DatabaseRepairCreated, "createdAt" | "duplicate"> & {
@@ -1916,6 +2031,13 @@ function repairCreatedFromStored(
   duplicate = value.duplicate,
 ): DatabaseRepairCreated {
   return { ...value, createdAt: new Date(value.createdAt), duplicate };
+}
+
+function repairCommandFromStored(
+  value: RepairStateCommandRow["result_data"],
+  replayed: boolean,
+): DatabaseRepairCommand {
+  return { ...value, occurredAt: new Date(value.occurredAt), replayed };
 }
 
 function repairCreatedFromRow(
@@ -3600,6 +3722,47 @@ async function recordFrontlineReservationDenial(
       input.role,
       `reservation.${input.action}`,
       input.reservationId,
+      input.reason,
+      input.requestId,
+      JSON.stringify({ status: input.currentStatus }),
+      JSON.stringify({ status: input.currentStatus }),
+      input.businessTime,
+      input.recordedAt,
+    ],
+  );
+}
+
+async function recordRepairCommandDenial(
+  client: PoolClient,
+  input: {
+    readonly action: "assign" | "start";
+    readonly actorStoreId: string;
+    readonly businessTime: Date;
+    readonly currentStatus: string | null;
+    readonly personaId: string;
+    readonly reason: RepairCommandConflictReason;
+    readonly recordedAt: Date;
+    readonly repairId: string;
+    readonly requestId: string;
+    readonly role: FrontlineRole;
+    readonly sandboxId: string;
+  },
+) {
+  await client.query(
+    `insert into audit_events (
+       id, sandbox_id, store_id, persona_id, role, action, object_type,
+       object_id, result, reason, request_id, before_data, after_data,
+       business_occurred_at, recorded_at
+     ) values ($1, $2, $3, $4, $5, $6, 'repair', $7, 'denied',
+       $8, $9, $10::jsonb, $11::jsonb, $12, $13)`,
+    [
+      randomUUID(),
+      input.sandboxId,
+      input.actorStoreId,
+      input.personaId,
+      input.role,
+      `repair.${input.action}`,
+      input.repairId,
       input.reason,
       input.requestId,
       JSON.stringify({ status: input.currentStatus }),
@@ -5876,6 +6039,18 @@ export function createPublicSandboxDatabase(
           input.sandboxId,
         ]);
         const context = await assertFrontlineContext(client, input, wallTime);
+        const handlers = await client.query<{
+          display_name: string;
+          persona_id: string;
+          role: FrontlineRole;
+        }>(
+          `select id as persona_id, display_name, role
+             from demo_personas
+            where sandbox_id = $1 and store_id = $2 and protected = true
+              and role in ('staff', 'manager')
+            order by case role when 'staff' then 0 else 1 end, display_name, id`,
+          [input.sandboxId, context.actorStoreId],
+        );
         const rows = await client.query<StaffRepairIntakeRow>(
           `select seat.id as seat_id, seat.code as seat_code,
                   seat.operational_status, seat.machine_profile_id,
@@ -5900,6 +6075,11 @@ export function createPublicSandboxDatabase(
         const first = rows.rows[0];
         if (!first) throw new RepairIntakeConflictError("seat-not-found");
         const result: DatabaseStaffRepairIntake = {
+          handlers: handlers.rows.map((handler) => ({
+            displayName: handler.display_name,
+            personaId: handler.persona_id,
+            role: handler.role,
+          })),
           seats: rows.rows.map((row) => ({
             area: {
               code: row.area_code,
@@ -5931,6 +6111,701 @@ export function createPublicSandboxDatabase(
         };
         await client.query("commit");
         return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readRepairDetail(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        let authorized: Awaited<ReturnType<typeof readAuthorizedRepair>>;
+        try {
+          authorized = await readAuthorizedRepair(
+            client,
+            input,
+            wallTime,
+            "read",
+          );
+        } catch (error) {
+          if (
+            error instanceof RepairImageConflictError &&
+            error.reason === "not-found"
+          ) {
+            throw new RepairCommandConflictError("not-found");
+          }
+          throw error;
+        }
+        const currentTime = businessTimeForSandbox(
+          authorized.actor.sandbox,
+          wallTime,
+        );
+        const result = await client.query<RepairDetailRow>(
+          `select repair.id as repair_id, repair.store_id,
+                  repair.reservation_id, repair.source, repair.description,
+                  repair.priority, repair.status, repair.created_at,
+                  seat.code as seat_code, seat.operational_status,
+                  profile.code as machine_profile_code,
+                  profile.display_name as machine_profile_display_name,
+                  store.code as store_code,
+                  store.display_name as store_display_name,
+                  assignee.id as assigned_to_persona_id,
+                  assignee.display_name as assigned_to_display_name,
+                  assignee.role as assigned_to_role
+             from repairs repair
+             join seats seat on seat.id = repair.seat_id
+             join machine_profiles profile on profile.id = repair.machine_profile_id
+             join stores store on store.id = repair.store_id
+             left join demo_personas assignee
+               on assignee.id = repair.assigned_to_persona_id
+            where repair.sandbox_id = $1 and repair.id = $2`,
+          [input.sandboxId, input.repairId],
+        );
+        const row = result.rows[0];
+        if (!row) throw new RepairCommandConflictError("not-found");
+        const events = await client.query<RepairEventRow>(
+          `select event_type, event_data, business_occurred_at
+             from repair_business_events
+            where sandbox_id = $1 and repair_id = $2
+            order by sequence, id`,
+          [input.sandboxId, input.repairId],
+        );
+        const impacts = await client.query<{
+          before_status: ReservationStatus;
+          coupon_restored: boolean;
+          customer_display_name: string;
+          ends_at: Date;
+          outcome: "cancelled" | "completed";
+          reservation_id: string;
+          simulated_refund_cents: number;
+          starts_at: Date;
+        }>(
+          `select reservation.id as reservation_id,
+                  customer.display_name as customer_display_name,
+                  reservation.starts_at, reservation.ends_at,
+                  event.event_data->>'previousStatus' as before_status,
+                  event.event_data->>'outcome' as outcome,
+                  coalesce((event.event_data->>'couponRestored')::boolean, false)
+                    as coupon_restored,
+                  coalesce((event.event_data->>'simulatedRefundCents')::integer, 0)
+                    as simulated_refund_cents
+             from reservation_business_events event
+             join reservations reservation on reservation.id = event.reservation_id
+             join demo_personas customer
+               on customer.id = reservation.customer_persona_id
+            where event.sandbox_id = $1
+              and event.event_data->>'repairId' = $2
+              and event.event_type in (
+                'reservation.cancelled-for-maintenance',
+                'reservation.completed-for-maintenance'
+              )
+              and ($3::boolean = false or reservation.customer_persona_id = $4)
+            order by reservation.starts_at, reservation.id`,
+          [
+            input.sandboxId,
+            input.repairId,
+            input.role === "customer",
+            input.personaId,
+          ],
+        );
+        const frontline = input.role === "staff" || input.role === "manager";
+        const internal =
+          input.role === "customer"
+            ? null
+            : {
+                audits: (
+                  await client.query<{
+                    action: string;
+                    business_occurred_at: Date;
+                    result: "allowed" | "denied";
+                  }>(
+                    `select action, result, business_occurred_at
+                       from audit_events
+                      where sandbox_id = $1 and (
+                        (object_type = 'repair' and object_id = $2::uuid)
+                        or after_data->>'repairId' = $2::text
+                      )
+                      order by recorded_at, id`,
+                    [input.sandboxId, input.repairId],
+                  )
+                ).rows.map((audit) => ({
+                  action: audit.action,
+                  occurredAt: audit.business_occurred_at,
+                  result: audit.result,
+                })),
+                events: events.rows.map((event) => ({
+                  occurredAt: event.business_occurred_at,
+                  type: event.event_type,
+                })),
+                notes: frontline
+                  ? events.rows.flatMap((event) =>
+                      typeof event.event_data.internalNote === "string" &&
+                      event.event_data.internalNote.length > 0
+                        ? [event.event_data.internalNote]
+                        : [],
+                    )
+                  : [],
+              };
+        const detail: DatabaseRepairDetail = {
+          actions: {
+            canAssign: frontline && row.status === "new",
+            canStart:
+              frontline &&
+              row.status === "assigned" &&
+              (input.role === "manager" ||
+                row.assigned_to_persona_id === input.personaId),
+          },
+          assignedTo:
+            input.role !== "customer" &&
+            row.assigned_to_persona_id &&
+            row.assigned_to_display_name &&
+            row.assigned_to_role
+              ? {
+                  displayName: row.assigned_to_display_name,
+                  personaId: row.assigned_to_persona_id,
+                  role: row.assigned_to_role,
+                }
+              : null,
+          currentTime,
+          description: row.description,
+          impacts: impacts.rows.map((impact) => ({
+            beforeStatus: impact.before_status,
+            couponRestored: impact.coupon_restored,
+            customerDisplayName:
+              input.role === "customer" ? null : impact.customer_display_name,
+            outcome: impact.outcome,
+            reservationId: impact.reservation_id,
+            simulatedRefundCents: impact.simulated_refund_cents,
+            window: {
+              endsAt: impact.ends_at,
+              startsAt: impact.starts_at,
+            },
+          })),
+          internal,
+          machineProfile: {
+            code: row.machine_profile_code,
+            displayName: row.machine_profile_display_name,
+          },
+          priority: row.priority,
+          publicUpdates: events.rows.flatMap((event) =>
+            typeof event.event_data.publicNote === "string" &&
+            event.event_data.publicNote.length > 0
+              ? [
+                  {
+                    note: event.event_data.publicNote,
+                    occurredAt: event.business_occurred_at,
+                    type: event.event_type,
+                  },
+                ]
+              : [],
+          ),
+          repairId: row.repair_id,
+          reservationId: row.reservation_id,
+          seat: {
+            code: row.seat_code,
+            operationalStatus: row.operational_status,
+          },
+          source: row.source,
+          status: row.status,
+          store: {
+            code: row.store_code,
+            displayName: row.store_display_name,
+          },
+        };
+        await client.query("commit");
+        return detail;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async executeRepairCommand(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        const businessTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const deny = async (
+          reason: RepairCommandConflictReason,
+          currentStatus: string | null = null,
+        ): Promise<never> => {
+          await recordRepairCommandDenial(client, {
+            action: input.action,
+            actorStoreId: context.actorStoreId,
+            businessTime,
+            currentStatus,
+            personaId: input.personaId,
+            reason,
+            recordedAt: wallTime,
+            repairId: input.repairId,
+            requestId: input.requestId,
+            role: input.role,
+            sandboxId: input.sandboxId,
+          });
+          await client.query("commit");
+          throw new RepairCommandConflictError(reason, currentStatus);
+        };
+        const publicNote = input.publicNote.normalize("NFC").trim();
+        const internalNote = input.internalNote.normalize("NFC").trim();
+        if (
+          !isSafePlainTextReason(publicNote, 500) ||
+          !isSafePlainTextReason(internalNote, 500)
+        ) {
+          await deny("note-invalid");
+        }
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({
+            action: input.action,
+            assigneePersonaId: input.assigneePersonaId,
+            internalNote,
+            priority: input.priority,
+            publicNote,
+            repairId: input.repairId,
+          }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:repair-state:${input.action}:${idempotencyKeyHash}`,
+          ],
+        );
+        const previous = await client.query<RepairStateCommandRow>(
+          `select payload_hash, result_data
+             from repair_state_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and command_type = $3 and idempotency_key_hash = $4`,
+          [input.sandboxId, input.personaId, input.action, idempotencyKeyHash],
+        );
+        const previousRow = previous.rows[0];
+        if (previousRow) {
+          if (previousRow.payload_hash !== payloadHash) {
+            await deny("idempotency-conflict");
+          }
+          await client.query("commit");
+          return repairCommandFromStored(previousRow.result_data, true);
+        }
+        const repairs = await client.query<{
+          assigned_to_persona_id: string | null;
+          operational_status: "maintenance" | "normal";
+          seat_id: string;
+          status: DatabaseRepairCreated["status"];
+          store_id: string;
+        }>(
+          `select repair.store_id, repair.seat_id, repair.status,
+                  repair.assigned_to_persona_id, seat.operational_status
+             from repairs repair
+             join seats seat on seat.id = repair.seat_id
+            where repair.sandbox_id = $1 and repair.id = $2
+            for update of repair, seat`,
+          [input.sandboxId, input.repairId],
+        );
+        const repair = repairs.rows[0];
+        if (!repair) return await deny("not-found");
+        if (repair.store_id !== context.actorStoreId) {
+          await deny("cross-store");
+        }
+        if (input.action === "assign" && repair.status !== "new") {
+          await deny("illegal-transition", repair.status);
+        }
+        if (
+          input.action === "assign" &&
+          (!input.assigneePersonaId || !input.priority)
+        ) {
+          await deny("assignee-not-found", repair.status);
+        }
+        if (input.action === "assign") {
+          const assignees = await client.query<{
+            display_name: string;
+            role: FrontlineRole;
+          }>(
+            `select display_name, role from demo_personas
+            where sandbox_id = $1 and id = $2 and store_id = $3
+              and protected = true and role in ('staff', 'manager')`,
+            [input.sandboxId, input.assigneePersonaId, context.actorStoreId],
+          );
+          const assignee = assignees.rows[0];
+          if (!assignee) {
+            return await deny("assignee-not-found", repair.status);
+          }
+          const updated = await client.query(
+            `update repairs
+              set status = 'assigned', priority = $3,
+                  assigned_to_persona_id = $4, assigned_business_at = $5
+            where sandbox_id = $1 and id = $2 and status = 'new'`,
+            [
+              input.sandboxId,
+              input.repairId,
+              input.priority,
+              input.assigneePersonaId,
+              businessTime,
+            ],
+          );
+          if (updated.rowCount !== 1) {
+            throw new RepairCommandConflictError(
+              "illegal-transition",
+              repair.status,
+            );
+          }
+          await client.query(
+            `insert into repair_business_events (
+             id, sandbox_id, repair_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, 'repair.assigned', $4::jsonb, $5, $6)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.repairId,
+              JSON.stringify({
+                assigneeDisplayName: assignee.display_name,
+                assigneePersonaId: input.assigneePersonaId,
+                assigneeRole: assignee.role,
+                internalNote,
+                priority: input.priority,
+                publicNote,
+              }),
+              businessTime,
+              wallTime,
+            ],
+          );
+          await client.query(
+            `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, 'repair.assign', 'repair', $6,
+             'allowed', $7, $8::jsonb, $9::jsonb, $10, $11)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              repair.store_id,
+              input.personaId,
+              input.role,
+              input.repairId,
+              input.requestId,
+              JSON.stringify({ status: "new" }),
+              JSON.stringify({
+                assigneePersonaId: input.assigneePersonaId,
+                priority: input.priority,
+                status: "assigned",
+              }),
+              businessTime,
+              wallTime,
+            ],
+          );
+          const stored: RepairStateCommandRow["result_data"] = {
+            action: "assign",
+            affectedReservations: [],
+            occurredAt: businessTime.toISOString(),
+            repairId: input.repairId,
+            seatOperationalStatus: repair.operational_status,
+            status: "assigned",
+          };
+          await client.query(
+            `insert into repair_state_command_requests (
+             sandbox_id, actor_persona_id, repair_id, command_type,
+             idempotency_key_hash, payload_hash, result_data
+           ) values ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+            [
+              input.sandboxId,
+              input.personaId,
+              input.repairId,
+              input.action,
+              idempotencyKeyHash,
+              payloadHash,
+              JSON.stringify(stored),
+            ],
+          );
+          await client.query("commit");
+          return repairCommandFromStored(stored, false);
+        }
+        if (repair.status !== "assigned") {
+          await deny("illegal-transition", repair.status);
+        }
+        if (
+          input.role !== "manager" &&
+          repair.assigned_to_persona_id !== input.personaId
+        ) {
+          await deny("not-assignee", repair.status);
+        }
+        await processFrontlineReservationDeadlines(client, {
+          currentTime: businessTime,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+        });
+        const reservations = await client.query<{
+          coupon_id: string | null;
+          customer_persona_id: string;
+          ends_at: Date;
+          id: string;
+          price_snapshot: ReservationSnapshotRecord;
+          starts_at: Date;
+          status: "arrived" | "confirmed" | "in-use" | "pending-confirmation";
+        }>(
+          `select id, customer_persona_id, coupon_id, status, starts_at,
+                  ends_at, price_snapshot
+            from reservations
+            where sandbox_id = $1 and seat_id = $2
+              and status in ('pending-confirmation', 'confirmed', 'arrived', 'in-use')
+            order by starts_at, id
+            for update`,
+          [input.sandboxId, repair.seat_id],
+        );
+        const affectedReservations: Array<
+          DatabaseRepairCommand["affectedReservations"][number]
+        > = [];
+        for (const reservation of reservations.rows) {
+          const isInUse = reservation.status === "in-use";
+          const couponRestored = reservation.coupon_id !== null && !isInUse;
+          if (couponRestored) {
+            const expectedCouponStatus =
+              reservation.status === "pending-confirmation"
+                ? "reserved"
+                : "redeemed";
+            const restored = await client.query(
+              `update experience_coupons
+                  set status = 'available', reserved_reservation_id = null,
+                      reserved_until = null
+                where sandbox_id = $1 and reserved_reservation_id = $2
+                  and status = $3`,
+              [input.sandboxId, reservation.id, expectedCouponStatus],
+            );
+            if (restored.rowCount !== 1) {
+              throw new Error(
+                "The repair maintenance coupon could not be restored.",
+              );
+            }
+          }
+          const simulatedRefundCents =
+            reservation.status === "pending-confirmation"
+              ? 0
+              : isInUse
+                ? Math.min(
+                    reservation.price_snapshot.price.payableCents,
+                    reservation.price_snapshot.price.segments
+                      .filter(
+                        (segment) =>
+                          new Date(segment.startsAt).getTime() >=
+                          businessTime.getTime(),
+                      )
+                      .reduce(
+                        (total, segment) => total + segment.amountCents,
+                        0,
+                      ),
+                  )
+                : reservation.price_snapshot.price.payableCents;
+          if (simulatedRefundCents > 0) {
+            await client.query(
+              `insert into reservation_simulated_refunds (
+                 id, sandbox_id, reservation_id, amount_cents, reason,
+                 business_occurred_at, recorded_at
+               ) values ($1, $2, $3, $4, 'repair-device-failure', $5, $6)`,
+              [
+                randomUUID(),
+                input.sandboxId,
+                reservation.id,
+                simulatedRefundCents,
+                businessTime,
+                wallTime,
+              ],
+            );
+          }
+          const nextStatus = isInUse ? "completed" : "cancelled";
+          const updatedReservation = await client.query(
+            isInUse
+              ? `update reservations
+                    set status = 'completed', completed_business_at = $3,
+                        terminal_reason = 'repair-device-failure'
+                  where sandbox_id = $1 and id = $2 and status = $4`
+              : `update reservations
+                    set status = 'cancelled', cancelled_business_at = $3,
+                        terminal_reason = 'repair-device-failure'
+                  where sandbox_id = $1 and id = $2 and status = $4`,
+            [input.sandboxId, reservation.id, businessTime, reservation.status],
+          );
+          if (updatedReservation.rowCount !== 1) {
+            throw new Error(
+              "The repair maintenance reservation could not be updated.",
+            );
+          }
+          await processCustomerOrderDeadlines(client, {
+            recordedAt: wallTime,
+            reservationId: reservation.id,
+            sandboxId: input.sandboxId,
+            targetBusinessTime: businessTime,
+          });
+          const growthPoints = isInUse
+            ? await awardCompletedReservationGrowth(client, {
+                businessOccurredAt: businessTime,
+                customerPersonaId: reservation.customer_persona_id,
+                payableCents: reservation.price_snapshot.price.payableCents,
+                recordedAt: wallTime,
+                reservationId: reservation.id,
+                sandboxId: input.sandboxId,
+              })
+            : 0;
+          await client.query(
+            `insert into reservation_business_events (
+               id, sandbox_id, reservation_id, event_type, event_data,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              reservation.id,
+              isInUse
+                ? "reservation.completed-for-maintenance"
+                : "reservation.cancelled-for-maintenance",
+              JSON.stringify({
+                couponRestored,
+                growthPoints,
+                outcome: nextStatus,
+                previousStatus: reservation.status,
+                repairId: input.repairId,
+                simulatedRefundCents,
+              }),
+              businessTime,
+              wallTime,
+            ],
+          );
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action, object_type,
+               object_id, result, reason, request_id, before_data, after_data,
+               business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, $5, $6, 'reservation', $7, 'allowed',
+               'repair-device-failure', $8, $9::jsonb, $10::jsonb, $11, $12)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              repair.store_id,
+              input.personaId,
+              input.role,
+              isInUse
+                ? "reservation.repair-maintenance-complete"
+                : "reservation.repair-maintenance-cancel",
+              reservation.id,
+              input.requestId,
+              JSON.stringify({ status: reservation.status }),
+              JSON.stringify({
+                couponRestored,
+                repairId: input.repairId,
+                simulatedRefundCents,
+                status: nextStatus,
+              }),
+              businessTime,
+              wallTime,
+            ],
+          );
+          affectedReservations.push({
+            couponRestored,
+            outcome: nextStatus,
+            reservationId: reservation.id,
+            simulatedRefundCents,
+          });
+        }
+        const maintained = await client.query(
+          `update seats set operational_status = 'maintenance'
+            where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, repair.seat_id],
+        );
+        if (maintained.rowCount !== 1) {
+          throw new Error("The repair seat could not enter maintenance.");
+        }
+        const started = await client.query(
+          `update repairs
+              set status = 'processing', processing_business_at = $3
+            where sandbox_id = $1 and id = $2 and status = 'assigned'`,
+          [input.sandboxId, input.repairId, businessTime],
+        );
+        if (started.rowCount !== 1) {
+          throw new RepairCommandConflictError(
+            "illegal-transition",
+            repair.status,
+          );
+        }
+        await client.query(
+          `insert into repair_business_events (
+             id, sandbox_id, repair_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, 'repair.processing-started', $4::jsonb, $5, $6)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            input.repairId,
+            JSON.stringify({ affectedReservations, internalNote, publicNote }),
+            businessTime,
+            wallTime,
+          ],
+        );
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, 'repair.start', 'repair', $6,
+             'allowed', $7, $8::jsonb, $9::jsonb, $10, $11)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            repair.store_id,
+            input.personaId,
+            input.role,
+            input.repairId,
+            input.requestId,
+            JSON.stringify({
+              seatOperationalStatus: repair.operational_status,
+              status: repair.status,
+            }),
+            JSON.stringify({
+              affectedReservations,
+              seatOperationalStatus: "maintenance",
+              status: "processing",
+            }),
+            businessTime,
+            wallTime,
+          ],
+        );
+        const stored: RepairStateCommandRow["result_data"] = {
+          action: "start",
+          affectedReservations,
+          occurredAt: businessTime.toISOString(),
+          repairId: input.repairId,
+          seatOperationalStatus: "maintenance",
+          status: "processing",
+        };
+        await client.query(
+          `insert into repair_state_command_requests (
+             sandbox_id, actor_persona_id, repair_id, command_type,
+             idempotency_key_hash, payload_hash, result_data
+           ) values ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+          [
+            input.sandboxId,
+            input.personaId,
+            input.repairId,
+            input.action,
+            idempotencyKeyHash,
+            payloadHash,
+            JSON.stringify(stored),
+          ],
+        );
+        await client.query("commit");
+        return repairCommandFromStored(stored, false);
       } catch (error) {
         await client.query("rollback").catch(() => undefined);
         throw error;
@@ -7885,7 +8760,8 @@ export function createPublicSandboxDatabase(
           `select id, code, operational_status
              from seats
             where sandbox_id = $1 and store_id = $2 and area_id = $3
-              and machine_profile_id = $4 and code = $5`,
+              and machine_profile_id = $4 and code = $5
+            for update`,
           [input.sandboxId, store.id, area.id, machine.id, input.seatCode],
         );
         const seat = seatResult.rows[0];

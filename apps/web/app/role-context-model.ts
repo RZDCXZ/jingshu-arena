@@ -106,6 +106,7 @@ export const roleMeta = {
     navigation: [
       ["store-dashboard", "经营看板", Gauge],
       ["live-ops", "现场运营", Pulse],
+      ["manager-repairs", "报修", Wrench],
       ["manager-inventory", "库存", Cube],
       ["store-config", "门店配置", SlidersHorizontal],
       ["people-schedule", "员工与排班", UsersThree],

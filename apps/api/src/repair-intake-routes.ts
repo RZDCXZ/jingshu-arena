@@ -3,19 +3,25 @@ import { randomUUID } from "node:crypto";
 import type { Context, Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import type {
+  AssignRepairRequest,
   CreateCustomerRepairRequest,
   CreateRepairImageIntentRequest,
   CreateStaffRepairRequest,
+  RepairCommandResponse,
   RepairCreatedResponse,
+  RepairDetailResponse,
   RepairImageCompletionResponse,
   RepairImageContentType,
   RepairImageIntentResponse,
   RepairImageListResponse,
   RepairSampleImageResponse,
+  StartRepairRequest,
   StaffRepairIntakeResponse,
   StaffRepairQueueResponse,
 } from "@jingshu/contracts";
 import type {
+  RepairCommandConflictError,
+  RepairCommandConflictReason,
   RepairImageConflictError,
   RepairImageConflictReason,
   RepairIntakeConflictError,
@@ -48,6 +54,19 @@ function isRepairConflict(error: unknown): error is RepairIntakeConflictError {
     error !== null &&
     "code" in error &&
     error.code === "REPAIR_INTAKE_CONFLICT" &&
+    "reason" in error &&
+    typeof error.reason === "string"
+  );
+}
+
+function isRepairCommandConflict(
+  error: unknown,
+): error is RepairCommandConflictError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "REPAIR_COMMAND_CONFLICT" &&
     "reason" in error &&
     typeof error.reason === "string"
   );
@@ -115,6 +134,53 @@ function repairFailure(error: unknown, requestId: string) {
       "seat-not-found": {
         code: "REPAIR_SEAT_NOT_FOUND",
         message: "未找到当前门店可报修的座位。",
+        status: 404,
+      },
+    };
+    const failure = failures[error.reason];
+    return {
+      body: errorBody(failure.code, failure.message, requestId),
+      status: failure.status,
+    };
+  }
+  if (isRepairCommandConflict(error)) {
+    const failures: Record<
+      RepairCommandConflictReason,
+      { code: string; message: string; status: 403 | 404 | 409 | 422 }
+    > = {
+      "assignee-not-found": {
+        code: "REPAIR_ASSIGNEE_NOT_FOUND",
+        message: "请选择本店可用的店员或店长作为处理人。",
+        status: 422,
+      },
+      "cross-store": {
+        code: "REPAIR_NOT_FOUND",
+        message: "未找到当前角色可访问的报修。",
+        status: 404,
+      },
+      "idempotency-conflict": {
+        code: "REPAIR_COMMAND_IDEMPOTENCY_CONFLICT",
+        message: "本次操作标识已用于其他报修内容，请刷新后重试。",
+        status: 409,
+      },
+      "illegal-transition": {
+        code: "REPAIR_ILLEGAL_TRANSITION",
+        message: "报修状态已经变化，请刷新详情后继续。",
+        status: 409,
+      },
+      "note-invalid": {
+        code: "REPAIR_NOTE_INVALID",
+        message: "公开说明与内部说明均需为 1–500 字规范纯文本。",
+        status: 422,
+      },
+      "not-assignee": {
+        code: "REPAIR_ASSIGNEE_REQUIRED",
+        message: "只有当前处理人或店长可以开始处理。",
+        status: 403,
+      },
+      "not-found": {
+        code: "REPAIR_NOT_FOUND",
+        message: "未找到当前角色可访问的报修。",
         status: 404,
       },
     };
@@ -485,7 +551,7 @@ async function staffSession(
       session: null,
     };
   }
-  if (session.role !== "staff") {
+  if (session.role !== "staff" && session.role !== "manager") {
     await recordRoleContextDenial(
       services,
       session,
@@ -495,8 +561,8 @@ async function staffSession(
     return {
       response: context.json(
         errorBody(
-          "STAFF_ROLE_REQUIRED",
-          "请切换到店员角色后为本店座位创建报修。",
+          "FRONTLINE_ROLE_REQUIRED",
+          "请切换到店员或店长角色后处理本店报修。",
           requestId,
         ),
         403,
@@ -569,6 +635,67 @@ async function staffWriteFence(
 }
 
 export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
+  app.get("/api/v1/repairs/:repairId", async (context) => {
+    const requestId = randomUUID();
+    context.header("X-Request-Id", requestId);
+    context.header("Cache-Control", "no-store");
+    if (!services.sandboxDatabase || !services.sessionSecret) {
+      const unavailable = repairFailure(null, requestId);
+      return context.json(unavailable.body, unavailable.status);
+    }
+    const session = repairSession(context, services);
+    const repairId = context.req.param("repairId");
+    if (!session) {
+      return context.json(
+        errorBody("ROLE_CONTEXT_REQUIRED", "请先选择演示角色。", requestId),
+        401,
+      );
+    }
+    if (!UUID_V4_PATTERN.test(repairId)) {
+      const failure = repairFailure(
+        { code: "REPAIR_COMMAND_CONFLICT", reason: "not-found" },
+        requestId,
+      );
+      return context.json(failure.body, failure.status);
+    }
+    try {
+      const result = await services.sandboxDatabase.readRepairDetail({
+        ...repairContext(session, repairId),
+      });
+      return context.json({
+        ...result,
+        currentTime: result.currentTime.toISOString(),
+        impacts: result.impacts.map((impact) => ({
+          ...impact,
+          window: {
+            endsAt: impact.window.endsAt.toISOString(),
+            startsAt: impact.window.startsAt.toISOString(),
+          },
+        })),
+        internal: result.internal
+          ? {
+              audits: result.internal.audits.map((audit) => ({
+                ...audit,
+                occurredAt: audit.occurredAt.toISOString(),
+              })),
+              events: result.internal.events.map((event) => ({
+                ...event,
+                occurredAt: event.occurredAt.toISOString(),
+              })),
+              notes: result.internal.notes,
+            }
+          : null,
+        publicUpdates: result.publicUpdates.map((update) => ({
+          ...update,
+          occurredAt: update.occurredAt.toISOString(),
+        })),
+      } satisfies RepairDetailResponse);
+    } catch (error) {
+      const failure = repairFailure(error, requestId);
+      return context.json(failure.body, failure.status);
+    }
+  });
+
   app.post("/api/v1/repairs/:repairId/images/proxy", async (context) => {
     const requestId = randomUUID();
     context.header("X-Request-Id", requestId);
@@ -1228,10 +1355,11 @@ export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
       const result = await services.sandboxDatabase.readStaffRepairIntake({
         contextVersion: auth.session.contextVersion,
         personaId: auth.session.personaId,
-        role: "staff",
+        role: auth.session.role === "manager" ? "manager" : "staff",
         sandboxId: auth.session.sandboxId,
       });
       return context.json({
+        handlers: result.handlers,
         seats: result.seats,
         status: "ready",
         store: result.store,
@@ -1256,7 +1384,7 @@ export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
       const result = await services.sandboxDatabase.readStaffRepairQueue({
         contextVersion: auth.session.contextVersion,
         personaId: auth.session.personaId,
-        role: "staff",
+        role: auth.session.role === "manager" ? "manager" : "staff",
         sandboxId: auth.session.sandboxId,
       });
       return context.json({
@@ -1318,7 +1446,7 @@ export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
         idempotencyKey: fence.idempotencyKey!,
         personaId: auth.session.personaId,
         requestId,
-        role: "staff",
+        role: auth.session.role === "manager" ? "manager" : "staff",
         sandboxId: auth.session.sandboxId,
         seatId: request.seatId,
       });
@@ -1334,6 +1462,98 @@ export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
       return context.json(failure.body, failure.status);
     }
   });
+
+  for (const action of ["assign", "start"] as const) {
+    app.post(`/api/v1/staff/repairs/:repairId/${action}`, async (context) => {
+      const requestId = randomUUID();
+      context.header("X-Request-Id", requestId);
+      context.header("Cache-Control", "no-store");
+      if (!services.sandboxDatabase || !services.sessionSecret) {
+        const unavailable = repairFailure(null, requestId);
+        return context.json(unavailable.body, unavailable.status);
+      }
+      const auth = await staffSession(context, services, requestId);
+      if (!auth.session) return auth.response;
+      const fence = await staffWriteFence(
+        context,
+        services,
+        requestId,
+        auth.session,
+      );
+      if (fence.response) return fence.response;
+      const repairId = context.req.param("repairId");
+      const parsed: unknown = await context.req.json().catch(() => null);
+      const body = isPlainRecord(parsed) ? parsed : null;
+      const allowed =
+        action === "assign"
+          ? new Set([
+              "assigneePersonaId",
+              "internalNote",
+              "priority",
+              "publicNote",
+            ])
+          : new Set(["internalNote", "publicNote"]);
+      const publicNote =
+        typeof body?.publicNote === "string"
+          ? normalizeRepairDescription(body.publicNote)
+          : null;
+      const internalNote =
+        typeof body?.internalNote === "string"
+          ? normalizeRepairDescription(body.internalNote)
+          : null;
+      const validAssign =
+        action === "start" ||
+        (UUID_V4_PATTERN.test(String(body?.assigneePersonaId ?? "")) &&
+          (body?.priority === "normal" ||
+            body?.priority === "high" ||
+            body?.priority === "urgent"));
+      if (
+        !UUID_V4_PATTERN.test(repairId) ||
+        !body ||
+        Object.keys(body).some((key) => !allowed.has(key)) ||
+        !publicNote ||
+        !internalNote ||
+        !validAssign
+      ) {
+        const invalid = repairFailure(
+          { code: "REPAIR_COMMAND_CONFLICT", reason: "note-invalid" },
+          requestId,
+        );
+        return context.json(invalid.body, invalid.status);
+      }
+      try {
+        const request = body as unknown as
+          AssignRepairRequest | StartRepairRequest;
+        const result = await services.sandboxDatabase.executeRepairCommand({
+          action,
+          assigneePersonaId:
+            action === "assign"
+              ? (request as AssignRepairRequest).assigneePersonaId
+              : null,
+          contextVersion: auth.session.contextVersion,
+          idempotencyKey: fence.idempotencyKey!,
+          internalNote,
+          personaId: auth.session.personaId,
+          priority:
+            action === "assign"
+              ? (request as AssignRepairRequest).priority
+              : null,
+          publicNote,
+          repairId,
+          requestId,
+          role: auth.session.role === "manager" ? "manager" : "staff",
+          sandboxId: auth.session.sandboxId,
+        });
+        return context.json({
+          ...result,
+          occurredAt: result.occurredAt.toISOString(),
+        } satisfies RepairCommandResponse);
+      } catch (error) {
+        const failure = repairFailure(error, requestId);
+        return context.json(failure.body, failure.status);
+      }
+    });
+  }
 
   app.post("/api/v1/customer/repairs", async (context) => {
     const requestId = randomUUID();

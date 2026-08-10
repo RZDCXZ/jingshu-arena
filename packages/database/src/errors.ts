@@ -246,6 +246,31 @@ export class RepairIntakeConflictError extends Error {
   }
 }
 
+export type RepairCommandConflictReason =
+  | "assignee-not-found"
+  | "cross-store"
+  | "idempotency-conflict"
+  | "illegal-transition"
+  | "note-invalid"
+  | "not-assignee"
+  | "not-found";
+
+export class RepairCommandConflictError extends Error {
+  readonly code = "REPAIR_COMMAND_CONFLICT";
+  readonly currentStatus: string | null;
+  readonly reason: RepairCommandConflictReason;
+
+  constructor(
+    reason: RepairCommandConflictReason,
+    currentStatus: string | null = null,
+  ) {
+    super(`Repair command was rejected: ${reason}.`);
+    this.name = "RepairCommandConflictError";
+    this.currentStatus = currentStatus;
+    this.reason = reason;
+  }
+}
+
 export type RepairImageConflictReason =
   | "content-type-mismatch"
   | "image-invalid"

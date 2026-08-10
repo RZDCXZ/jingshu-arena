@@ -8102,6 +8102,77 @@ strong {
   text-align: right;
 }
 
+.customer-repair-impact-notice {
+  display: flex;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid #765b2d;
+  border-radius: 8px;
+  background: #261f13;
+  color: #dfca83;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.customer-repair-impact-notice > svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  color: var(--amber);
+}
+
+.customer-repair-impact-notice span {
+  display: grid;
+  gap: 3px;
+}
+
+.customer-repair-impact-notice strong {
+  color: #f5e6af;
+}
+
+.customer-repair-public-impact {
+  display: grid;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid #31515f;
+  border-radius: 8px;
+  background: #0b1c25;
+}
+
+.customer-repair-public-impact article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  padding: 11px;
+  border: 1px solid #2c4652;
+  border-radius: 7px;
+  background: #081720;
+}
+
+.customer-repair-public-impact article > span {
+  display: grid;
+  gap: 3px;
+}
+
+.customer-repair-public-impact article > em {
+  color: var(--lime);
+  font-size: 15px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.customer-repair-public-impact article small {
+  color: #7f959f;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.customer-repair-public-impact article > small {
+  grid-column: 1 / -1;
+  padding-top: 5px;
+  border-top: 1px solid #263d48;
+}
+
 @media (max-width: 390px) {
   .customer-repair-image-actions {
     grid-template-columns: 1fr;
@@ -8844,6 +8915,251 @@ strong {
   opacity: 0.45;
 }
 
+/* Ticket 15 — WEB-S07 repair assignment, maintenance impact and evidence */
+
+.staff-repair-layout {
+  grid-template-columns: minmax(0, 1fr) 390px;
+}
+
+.staff-repair-inspector.is-detail {
+  max-height: calc(100vh - 152px);
+  overflow: auto;
+}
+
+.staff-repair-inspector.is-detail > h3,
+.staff-repair-detail-section h3 {
+  margin: 17px 0 9px;
+  color: #b9c8cf;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.staff-repair-actions {
+  display: grid;
+  margin: 0 0 12px;
+}
+
+.staff-repair-actions button {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #9dce40;
+  border-radius: 6px;
+  background: var(--lime);
+  color: var(--lime-ink);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.staff-repair-inspector.is-detail > .staff-repair-maintenance-notice,
+.staff-repair-start-warning {
+  display: flex;
+  gap: 9px;
+  margin: 12px 0;
+  padding: 11px;
+  border: 1px solid #735a2c;
+  border-radius: 6px;
+  background: #251f13;
+  color: #dec87d;
+  font-size: 8px;
+  line-height: 1.55;
+}
+
+.staff-repair-maintenance-notice > svg,
+.staff-repair-start-warning > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--amber);
+}
+
+.staff-repair-maintenance-notice span,
+.staff-repair-start-warning span {
+  display: grid;
+  gap: 3px;
+}
+
+.staff-repair-maintenance-notice strong,
+.staff-repair-start-warning strong {
+  color: #f4e4ad;
+}
+
+.staff-repair-inspector.is-detail > .staff-repair-detail-section {
+  display: block;
+  margin-top: 15px;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+}
+
+.staff-repair-detail-section.is-internal {
+  padding: 0 11px 11px !important;
+  border: 1px solid #344a56 !important;
+  border-radius: 6px !important;
+  background: #0a1922 !important;
+}
+
+.staff-repair-detail-section.is-internal h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.staff-repair-detail-section.is-internal h3 svg {
+  color: var(--lime);
+}
+
+.staff-repair-detail-section.is-internal > p {
+  margin: 6px 0;
+  color: #c5d1d6;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.staff-repair-impact-list {
+  display: grid;
+  gap: 7px;
+}
+
+.staff-repair-impact-list article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid #2c4552;
+  border-radius: 5px;
+  background: #0b1c26;
+}
+
+.staff-repair-impact-list article > span,
+.staff-repair-impact-list article > em {
+  display: grid;
+  gap: 3px;
+}
+
+.staff-repair-impact-list article > em {
+  color: var(--cyan);
+  font-size: 9px;
+  font-style: normal;
+  text-align: right;
+}
+
+.staff-repair-impact-list small,
+.staff-repair-muted {
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.staff-repair-timeline {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.staff-repair-timeline li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.staff-repair-timeline li:last-child {
+  border-bottom: 0;
+}
+
+.staff-repair-timeline svg {
+  width: 16px;
+  height: 16px;
+  color: var(--cyan);
+}
+
+.staff-repair-timeline span {
+  display: grid;
+  gap: 3px;
+}
+
+.staff-repair-timeline strong {
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.staff-repair-timeline small {
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.staff-repair-dialog.is-action {
+  width: min(660px, 100%);
+}
+
+.staff-repair-action-fields {
+  display: grid;
+  gap: 11px;
+}
+
+.staff-repair-action-fields.is-split {
+  grid-template-columns: 1fr 1fr;
+}
+
+.staff-repair-action-fields label {
+  display: grid;
+  gap: 7px;
+  color: #cbd7dc;
+  font-size: 9px;
+}
+
+.staff-repair-action-fields label > span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.staff-repair-action-fields small {
+  color: var(--muted);
+}
+
+.staff-repair-action-fields select,
+.staff-repair-action-fields textarea {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid #35515f;
+  border-radius: 6px;
+  outline: 0;
+  background: #07131c;
+  color: var(--text);
+  font: inherit;
+}
+
+.staff-repair-action-fields textarea {
+  min-height: 84px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.staff-repair-dialog.is-action footer > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.staff-repair-dialog footer button:disabled,
+.staff-repair-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 @media (max-width: 1080px) {
   .staff-repair-layout {
     grid-template-columns: 1fr;
@@ -8871,6 +9187,10 @@ strong {
   }
 
   .staff-repair-seat-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .staff-repair-action-fields.is-split {
     grid-template-columns: 1fr;
   }
 }

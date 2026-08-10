@@ -63,6 +63,7 @@ import type {
   CustomerReservationStatus,
   CustomerStoreCatalogResponse,
   RepairCreatedResponse,
+  RepairDetailResponse,
   RepairImageCompletionResponse,
   RepairImageSaved,
   RepairImageIntentResponse,
@@ -521,6 +522,10 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
   const [repairUploadNotice, setRepairUploadNotice] = useState("");
   const [createdRepair, setCreatedRepair] =
     useState<RepairCreatedResponse | null>(null);
+  const [repairDetail, setRepairDetail] = useState<RepairDetailResponse | null>(
+    null,
+  );
+  const [repairDetailFailure, setRepairDetailFailure] = useState("");
   const [savedRepairImages, setSavedRepairImages] = useState<
     ReadonlyArray<RepairImageSaved>
   >([]);
@@ -1290,6 +1295,8 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     setRepairFailure("");
     setRepairUploadNotice("");
     setCreatedRepair(null);
+    setRepairDetail(null);
+    setRepairDetailFailure("");
     setSavedRepairImages([]);
     repairKeyRef.current = null;
     setView("repair-create");
@@ -1310,6 +1317,26 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     const images = (payload as RepairImageListResponse).images;
     setSavedRepairImages(images);
     return images;
+  }
+
+  async function readRepairPublicDetail(repairId: string) {
+    setRepairDetailFailure("");
+    const response = await fetch(`/api/v1/repairs/${repairId}`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    const payload = (await response.json()) as
+      ApiErrorResponse | RepairDetailResponse;
+    if (!response.ok) {
+      throw new Error(
+        "error" in payload
+          ? payload.error.message
+          : "公开处理动态暂时无法读取。",
+      );
+    }
+    const nextDetail = payload as RepairDetailResponse;
+    setRepairDetail(nextDetail);
+    return nextDetail;
   }
 
   function openExistingRepair(
@@ -1339,10 +1366,15 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     setRepairFiles([]);
     setRepairSampleSelected(false);
     setSavedRepairImages([]);
+    setRepairDetail(null);
+    setRepairDetailFailure("");
     setRepairUploadNotice("正在重新签发私有图片读取地址…");
     setView("repair-detail");
-    void readRepairImages(repair.id)
-      .then((images) => {
+    void Promise.all([
+      readRepairImages(repair.id),
+      readRepairPublicDetail(repair.id),
+    ])
+      .then(([images]) => {
         setRepairUploadNotice(
           images.length > 0
             ? `已打开现有报修，并重新授权读取 ${images.length} 张私有图片。`
@@ -1350,7 +1382,7 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
         );
       })
       .catch((error) => {
-        setRepairUploadNotice(
+        setRepairDetailFailure(
           error instanceof Error ? error.message : "报修图片暂时无法读取。",
         );
       });
@@ -1605,6 +1637,11 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
               : "文字报修已保存；图片为可选项。",
       );
       setView("repair-detail");
+      await readRepairPublicDetail(repair.repairId).catch((error) =>
+        setRepairDetailFailure(
+          error instanceof Error ? error.message : "公开处理动态暂时无法读取。",
+        ),
+      );
       await readReservationDetail(activeReservationId);
       setJourneyAttempt((attempt) => attempt + 1);
     } catch (error) {
@@ -1993,16 +2030,32 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
             <div>
               <CheckCircle weight="fill" />
             </div>
-            <span className="customer-eyebrow">REPAIR CREATED</span>
-            <h1>{createdRepair.duplicate ? "已打开现有报修" : "报修已创建"}</h1>
+            <span className="customer-eyebrow">REPAIR PUBLIC STATUS</span>
+            <h1>
+              {repairDetail?.status === "processing"
+                ? "设备正在检修"
+                : createdRepair.duplicate
+                  ? "已打开现有报修"
+                  : "报修已创建"}
+            </h1>
             <p>{repairUploadNotice}</p>
           </section>
           <section className="customer-repair-ticket-card">
             <div>
-              <span className="is-active">新建</span>
+              <span className="is-active">
+                {repairDetail?.status === "assigned"
+                  ? "已分派"
+                  : repairDetail?.status === "processing"
+                    ? "处理中"
+                    : repairDetail?.status === "verification"
+                      ? "待验证"
+                      : repairDetail?.status === "closed"
+                        ? "已关闭"
+                        : "新建"}
+              </span>
               <small>报修单 {createdRepair.repairId.slice(0, 8)}</small>
             </div>
-            <h2>{createdRepair.description}</h2>
+            <h2>{repairDetail?.description ?? createdRepair.description}</h2>
             <dl>
               <div>
                 <dt>座位</dt>
@@ -2014,10 +2067,59 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
               </div>
               <div>
                 <dt>座位状态</dt>
-                <dd>正常 · 尚未进入维护</dd>
+                <dd>
+                  {(repairDetail?.seat.operationalStatus ??
+                    createdRepair.seat.operationalStatus) === "maintenance"
+                    ? "维护中 · 不会自动换座"
+                    : "正常 · 尚未进入维护"}
+                </dd>
               </div>
             </dl>
           </section>
+          {repairDetail?.seat.operationalStatus === "maintenance" ? (
+            <section className="customer-repair-impact-notice">
+              <Warning />
+              <span>
+                <strong>本座位已进入维护</strong>
+                系统不会自动换座；你的预约影响与模拟退款如下，均不涉及真实资金。
+              </span>
+            </section>
+          ) : null}
+          {repairDetail?.impacts.length ? (
+            <section className="customer-repair-public-impact">
+              <div className="customer-section-title">
+                <div>
+                  <span>YOUR RESERVATION IMPACT</span>
+                  <h2>我的预约与模拟退款</h2>
+                </div>
+                <CurrencyCny />
+              </div>
+              {repairDetail.impacts.map((impact) => (
+                <article key={impact.reservationId}>
+                  <span>
+                    <strong>
+                      {impact.outcome === "completed"
+                        ? "预约已提前完成"
+                        : "预约已取消"}
+                    </strong>
+                    <small>
+                      原状态{" "}
+                      {reservationStatusLabels[impact.beforeStatus].label} ·
+                      {formatFullWindow(
+                        impact.window.startsAt,
+                        impact.window.endsAt,
+                      )}
+                    </small>
+                  </span>
+                  <em>{formatMoney(impact.simulatedRefundCents)}</em>
+                  <small>
+                    模拟退款 · 不对应真实资金
+                    {impact.couponRestored ? " · 体验券已恢复" : ""}
+                  </small>
+                </article>
+              ))}
+            </section>
+          ) : null}
           {savedRepairImages.length > 0 ? (
             <section className="customer-repair-saved-images">
               <div className="customer-section-title">
@@ -2110,15 +2212,54 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
               <Clock />
             </div>
             <ol className="customer-lifecycle-timeline">
-              <li>
-                <i />
-                <span>
-                  <strong>报修已创建，等待门店确认</strong>
-                  <small>{formatWindow(createdRepair.createdAt)}</small>
-                </span>
-              </li>
+              {repairDetail?.publicUpdates.length ? (
+                repairDetail.publicUpdates.map((update) => (
+                  <li key={`${update.type}-${update.occurredAt}`}>
+                    <i />
+                    <span>
+                      <strong>{update.note}</strong>
+                      <small>
+                        {new Date(update.occurredAt).toLocaleString("zh-CN")}
+                      </small>
+                    </span>
+                  </li>
+                ))
+              ) : (
+                <li>
+                  <i />
+                  <span>
+                    <strong>报修已创建，等待门店确认</strong>
+                    <small>{formatWindow(createdRepair.createdAt)}</small>
+                  </span>
+                </li>
+              )}
             </ol>
           </section>
+          {repairDetailFailure ? (
+            <section className="customer-feedback is-error" role="alert">
+              <Warning />
+              <span>
+                <strong>公开动态刷新未完成</strong>
+                {repairDetailFailure}
+              </span>
+            </section>
+          ) : null}
+          <button
+            className="customer-secondary-button"
+            onClick={() =>
+              void readRepairPublicDetail(createdRepair.repairId).catch(
+                (error) =>
+                  setRepairDetailFailure(
+                    error instanceof Error
+                      ? error.message
+                      : "公开处理动态暂时无法读取。",
+                  ),
+              )
+            }
+            type="button"
+          >
+            <ArrowClockwise /> 刷新公开动态
+          </button>
           <button
             className="customer-primary-button"
             onClick={() => setView("detail")}

@@ -2,8 +2,16 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-10
-- 已验证契约版本：`product-ui/miniprogram/prod.md` 1.2
-- 验证范围：[`14 — 顾客与店员创建座位报修及私有图片`](../../../.scratch/jingshu-basic-rc/issues/14-repair-intake-private-images.md)；保留 ticket 10 与 ticket 02 的跨端视觉基线结论
+- 已验证契约版本：`product-ui/miniprogram/prod.md` 1.3
+- 验证范围：[`15 — 报修处理联动座位维护、预约中断与模拟退款`](../../../.scratch/jingshu-basic-rc/issues/15-repair-maintenance-refund.md)；保留 ticket 14 与 ticket 10 的跨端视觉基线结论
+
+## Ticket 15 `MP-15` Web H5 公开结果复核
+
+- 应用内浏览器在真实 Web → Hono → 临时 PostgreSQL 路径以精确 `360 × 800 CSS px` 完成“使用中预约 → 报修 → 同店分派 → 开始处理 → 顾客历史预约 → 公开报修详情”。页面实测 `scrollWidth = clientWidth = 360px`，正式源与生产页控制台 warning/error 均为 0。
+- 正式 `MP-15` 处理中状态和生产顾客公开详情分别保存在 `design/source-ticket15-mp15-repair-public-360x800.png` 与 `design/implementation-ticket15-customer-repair-public-360x800.png`；`design/qa-ticket15-customer-repair-public-comparison-720x800.png` 把同一状态、同一视口的两侧证据置于同一比较输入。
+- 生产详情显示“设备正在检修”、座位维护且不自动换座、当前顾客使用中预约提前完成、未来三个完整片段 `¥27.00` 模拟退款和两条公开动态；页面正文明确不包含处理人“周宁”、内部笔记“已复现黑屏”/“断电后”或库存成本。
+- 受控差异：正式小程序参考保留 iPhone 设备框、五步进度与本机演示推进卡，生产 Web H5 保留共享沙箱工具栏、真实服务端状态和图片恢复入口；两侧的深海军蓝表面、青色眉题、青柠当前状态、琥珀维护影响、公开时间线和退款层级一致。
+- 复核信息隔离、状态层级、维护说明、退款金额、时间线、移动滚动与触控可达性后，最终没有仍需处理的 P0、P1 或 P2 差异。
 
 ## Ticket 14 `MP-13/MP-14/MP-15` Web H5 复核
 

@@ -267,6 +267,10 @@ export const REPAIR_STATUSES = [
 
 export type RepairStatus = (typeof REPAIR_STATUSES)[number];
 
+export const REPAIR_PRIORITIES = ["normal", "high", "urgent"] as const;
+
+export type RepairPriority = (typeof REPAIR_PRIORITIES)[number];
+
 export interface CreateCustomerRepairRequest {
   readonly description: string;
   readonly reservationId: string;
@@ -278,6 +282,11 @@ export interface CreateStaffRepairRequest {
 }
 
 export interface StaffRepairIntakeResponse {
+  readonly handlers: ReadonlyArray<{
+    readonly displayName: string;
+    readonly personaId: string;
+    readonly role: "manager" | "staff";
+  }>;
   readonly seats: ReadonlyArray<{
     readonly area: { readonly code: string; readonly displayName: string };
     readonly code: string;
@@ -398,6 +407,87 @@ export interface StaffRepairQueueResponse {
     readonly waitingMinutes: number;
   }>;
   readonly status: "ready";
+  readonly store: { readonly code: string; readonly displayName: string };
+}
+
+export interface AssignRepairRequest {
+  readonly assigneePersonaId: string;
+  readonly internalNote: string;
+  readonly priority: RepairPriority;
+  readonly publicNote: string;
+}
+
+export interface StartRepairRequest {
+  readonly internalNote: string;
+  readonly publicNote: string;
+}
+
+export interface RepairCommandResponse {
+  readonly action: "assign" | "start";
+  readonly affectedReservations: ReadonlyArray<{
+    readonly couponRestored: boolean;
+    readonly outcome: "cancelled" | "completed";
+    readonly reservationId: string;
+    readonly simulatedRefundCents: number;
+  }>;
+  readonly occurredAt: string;
+  readonly repairId: string;
+  readonly replayed: boolean;
+  readonly seatOperationalStatus: "maintenance" | "normal";
+  readonly status: RepairStatus;
+}
+
+export interface RepairDetailResponse {
+  readonly actions: {
+    readonly canAssign: boolean;
+    readonly canStart: boolean;
+  };
+  readonly assignedTo: {
+    readonly displayName: string;
+    readonly personaId: string;
+    readonly role: "manager" | "staff";
+  } | null;
+  readonly currentTime: string;
+  readonly description: string;
+  readonly impacts: ReadonlyArray<{
+    readonly beforeStatus: CustomerReservationStatus;
+    readonly couponRestored: boolean;
+    readonly customerDisplayName: string | null;
+    readonly outcome: "cancelled" | "completed";
+    readonly reservationId: string;
+    readonly simulatedRefundCents: number;
+    readonly window: { readonly endsAt: string; readonly startsAt: string };
+  }>;
+  readonly internal: {
+    readonly audits: ReadonlyArray<{
+      readonly action: string;
+      readonly occurredAt: string;
+      readonly result: "allowed" | "denied";
+    }>;
+    readonly events: ReadonlyArray<{
+      readonly occurredAt: string;
+      readonly type: string;
+    }>;
+    readonly notes: ReadonlyArray<string>;
+  } | null;
+  readonly machineProfile: {
+    readonly code: CustomerMachineProfileCode;
+    readonly displayName: string;
+  };
+  readonly priority: RepairPriority;
+  readonly publicUpdates: ReadonlyArray<{
+    readonly note: string;
+    readonly occurredAt: string;
+    readonly type: string;
+  }>;
+  readonly repairId: string;
+  readonly reservationId: string | null;
+  readonly seat: {
+    readonly code: string;
+    readonly operationalStatus: "maintenance" | "normal";
+  };
+  readonly source: "customer" | "staff";
+  readonly status: RepairStatus;
   readonly store: { readonly code: string; readonly displayName: string };
 }
 

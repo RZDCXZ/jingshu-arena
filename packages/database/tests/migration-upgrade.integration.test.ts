@@ -346,5 +346,36 @@ describe("role-context expand migration", () => {
         repair_table: "repairs",
       },
     ]);
+
+    await applyMigration("0017_repair_maintenance_refund.sql");
+    const maintenanceMetadata = await client.query<{ value: string }>(
+      "select value from jingshu_schema_metadata where key = 'schema_version'",
+    );
+    expect(maintenanceMetadata.rows).toEqual([{ value: "14" }]);
+    const maintenanceStructures = await client.query<{
+      assigned_column: string | null;
+      command_table: string | null;
+      force_rls: boolean;
+      processing_column: string | null;
+    }>(
+      `select
+         to_regclass('public.repair_state_command_requests')::text as command_table,
+         (select column_name from information_schema.columns
+           where table_schema = 'public' and table_name = 'repairs'
+             and column_name = 'assigned_to_persona_id') as assigned_column,
+         (select column_name from information_schema.columns
+           where table_schema = 'public' and table_name = 'repairs'
+             and column_name = 'processing_business_at') as processing_column,
+         (select relforcerowsecurity from pg_class
+           where oid = 'public.repair_state_command_requests'::regclass) as force_rls`,
+    );
+    expect(maintenanceStructures.rows).toEqual([
+      {
+        assigned_column: "assigned_to_persona_id",
+        command_table: "repair_state_command_requests",
+        force_rls: true,
+        processing_column: "processing_business_at",
+      },
+    ]);
   });
 });

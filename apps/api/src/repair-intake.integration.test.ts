@@ -3,6 +3,7 @@ import pg from "pg";
 import sharp from "sharp";
 
 import type {
+  RepairDetailResponse,
   RepairImageListResponse,
   RoleContextReadyResponse,
 } from "@jingshu/contracts";
@@ -101,15 +102,19 @@ async function createStaffSession() {
   const contextResponse = await app.request("/api/v1/demo/context", {
     headers: { Cookie: cookie },
   });
+  const token = decodeURIComponent(cookie.slice(cookie.indexOf("=") + 1));
+  const roleSession = readRoleSession(token, sessionSecret);
+  expect(roleSession).not.toBeNull();
   return {
     context: (await contextResponse.json()) as RoleContextReadyResponse,
     cookie,
+    sandboxId: roleSession!.sandboxId,
   };
 }
 
 async function switchRole(
   session: Awaited<ReturnType<typeof createCustomerSession>>,
-  targetRole: "customer" | "hq" | "staff",
+  targetRole: "customer" | "hq" | "manager" | "staff",
 ) {
   const switched = await app.request("/api/v1/demo/context/switch", {
     body: JSON.stringify({ targetRole }),
@@ -310,6 +315,165 @@ describe("repair intake API", () => {
     });
   });
 
+  it("assigns and starts a repair through guarded staff commands while exposing only public impact data to the customer", async () => {
+    const customer = await createInUseReservation();
+    const repairResponse = await app.request("/api/v1/customer/repairs", {
+      body: JSON.stringify({
+        description: "使用中显示器突然黑屏",
+        reservationId: customer.reservationId,
+      }),
+      headers: writeHeaders(customer),
+      method: "POST",
+    });
+    expect(repairResponse.status, await repairResponse.clone().text()).toBe(
+      201,
+    );
+    const repair = (await repairResponse.json()) as { repairId: string };
+    const staff = await switchRole(customer, "staff");
+    const intakeResponse = await app.request("/api/v1/staff/repair-intake", {
+      headers: { Cookie: staff.cookie },
+    });
+    const intake = (await intakeResponse.json()) as {
+      handlers: Array<{
+        displayName: string;
+        personaId: string;
+        role: "manager" | "staff";
+      }>;
+    };
+    const handler = intake.handlers.find(
+      (candidate) =>
+        candidate.displayName === staff.context.persona.displayName,
+    );
+    expect(handler).toBeDefined();
+
+    const assigned = await app.request(
+      `/api/v1/staff/repairs/${repair.repairId}/assign`,
+      {
+        body: JSON.stringify({
+          assigneePersonaId: handler!.personaId,
+          internalNote: "检查显示线与电源，必要时更换备件。",
+          priority: "urgent",
+          publicNote: "门店已安排紧急检修。",
+        }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(assigned.status, await assigned.clone().text()).toBe(200);
+    await expect(assigned.json()).resolves.toMatchObject({
+      action: "assign",
+      seatOperationalStatus: "normal",
+      status: "assigned",
+    });
+
+    wallTime = new Date("2026-08-10T12:47:23.000Z");
+    const started = await app.request(
+      `/api/v1/staff/repairs/${repair.repairId}/start`,
+      {
+        body: JSON.stringify({
+          internalNote: "黑屏可复现，断电后开始检修。",
+          publicNote: "设备已进入检修，使用中预约已提前完成并生成模拟退款。",
+        }),
+        headers: writeHeaders(staff),
+        method: "POST",
+      },
+    );
+    expect(started.status, await started.clone().text()).toBe(200);
+    await expect(started.json()).resolves.toMatchObject({
+      action: "start",
+      affectedReservations: [
+        expect.objectContaining({
+          couponRestored: false,
+          outcome: "completed",
+          reservationId: customer.reservationId,
+        }),
+      ],
+      seatOperationalStatus: "maintenance",
+      status: "processing",
+    });
+
+    const staffDetailResponse = await app.request(
+      `/api/v1/repairs/${repair.repairId}`,
+      { headers: { Cookie: staff.cookie } },
+    );
+    const staffDetail =
+      (await staffDetailResponse.json()) as RepairDetailResponse;
+    expect(staffDetail).toMatchObject({
+      assignedTo: { personaId: handler!.personaId },
+      internal: {
+        notes: [
+          "检查显示线与电源，必要时更换备件。",
+          "黑屏可复现，断电后开始检修。",
+        ],
+      },
+      seat: { operationalStatus: "maintenance" },
+    });
+
+    const headquarters = await switchRole(staff, "hq");
+    const headquartersDetailResponse = await app.request(
+      `/api/v1/repairs/${repair.repairId}`,
+      { headers: { Cookie: headquarters.cookie } },
+    );
+    expect(headquartersDetailResponse.status).toBe(200);
+    const headquartersDetail =
+      (await headquartersDetailResponse.json()) as RepairDetailResponse;
+    expect(headquartersDetail.internal).toMatchObject({
+      audits: expect.any(Array),
+      events: expect.any(Array),
+      notes: [],
+    });
+    expect(JSON.stringify(headquartersDetail)).not.toContain("显示线");
+    expect(JSON.stringify(headquartersDetail)).not.toContain("断电后");
+
+    const customerAgain = await switchRole(headquarters, "customer");
+    const publicDetailResponse = await app.request(
+      `/api/v1/repairs/${repair.repairId}`,
+      { headers: { Cookie: customerAgain.cookie } },
+    );
+    expect(publicDetailResponse.status).toBe(200);
+    const publicDetail =
+      (await publicDetailResponse.json()) as RepairDetailResponse;
+    expect(publicDetail).toMatchObject({
+      assignedTo: null,
+      impacts: [
+        expect.objectContaining({
+          customerDisplayName: null,
+          outcome: "completed",
+          reservationId: customer.reservationId,
+        }),
+      ],
+      internal: null,
+      publicUpdates: [
+        expect.objectContaining({ note: "门店已安排紧急检修。" }),
+        expect.objectContaining({
+          note: "设备已进入检修，使用中预约已提前完成并生成模拟退款。",
+        }),
+      ],
+    });
+    expect(JSON.stringify(publicDetail)).not.toContain("显示线");
+    expect(JSON.stringify(publicDetail)).not.toContain("断电后");
+
+    const missing = await app.request(
+      `/api/v1/repairs/${crypto.randomUUID()}`,
+      {
+        headers: { Cookie: customerAgain.cookie },
+      },
+    );
+    expect(missing.status).toBe(404);
+    await expect(missing.json()).resolves.toMatchObject({
+      error: { code: "REPAIR_NOT_FOUND" },
+    });
+
+    const otherSandbox = await createCustomerSession();
+    const foreign = await app.request(`/api/v1/repairs/${repair.repairId}`, {
+      headers: { Cookie: otherSandbox.cookie },
+    });
+    expect(foreign.status).toBe(404);
+    await expect(foreign.json()).resolves.toMatchObject({
+      error: { code: "REPAIR_NOT_FOUND" },
+    });
+  });
+
   it("sanitizes a scoped one-time direct upload before private signed reading", async () => {
     const session = await createInUseReservation();
     const repairResponse = await app.request("/api/v1/customer/repairs", {
@@ -417,6 +581,7 @@ describe("repair intake API", () => {
     expect(metadata.exif).toBeUndefined();
     expect(sanitized.includes(Buffer.from("Private Person"))).toBe(false);
 
+    wallTime = new Date(Date.now() + 1_000);
     const cleanupJobs = await database.readDueRepairImageCleanupJobs(10);
     expect(cleanupJobs).toEqual([
       expect.objectContaining({
@@ -830,5 +995,72 @@ describe("repair intake API", () => {
         .keys()
         .some((key) => key.startsWith(`finished/${session.sandboxId}/`)),
     ).toBe(false);
+  });
+
+  it("uses the same not-found response for missing and cross-store repair commands", async () => {
+    const session = await createStaffSession();
+    const intakeResponse = await app.request("/api/v1/staff/repair-intake", {
+      headers: { Cookie: session.cookie },
+    });
+    const intake = (await intakeResponse.json()) as {
+      handlers: Array<{ personaId: string }>;
+      seats: Array<{ code: string; id: string }>;
+    };
+    const createdResponse = await app.request("/api/v1/staff/repairs", {
+      body: JSON.stringify({
+        description: "用于验证跨店命令信息隔离",
+        seatId: intake.seats.find((seat) => seat.code === "A-17")!.id,
+      }),
+      headers: writeHeaders(session),
+      method: "POST",
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = (await createdResponse.json()) as { repairId: string };
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      await client.query("begin");
+      await client.query("set local role jingshu_runtime");
+      await client.query("select set_config('app.sandbox_id', $1, true)", [
+        session.sandboxId,
+      ]);
+      await client.query(
+        `update repairs
+            set store_id = (
+              select id from stores
+               where sandbox_id = $1 and code = 'starbridge-standard'
+            )
+          where sandbox_id = $1 and id = $2`,
+        [session.sandboxId, created.repairId],
+      );
+      await client.query("commit");
+    } finally {
+      await client.end();
+    }
+
+    const requestAssign = (repairId: string) =>
+      app.request(`/api/v1/staff/repairs/${repairId}/assign`, {
+        body: JSON.stringify({
+          assigneePersonaId: intake.handlers[0]!.personaId,
+          internalNote: "当前门店不应获得对象存在信息。",
+          priority: "normal",
+          publicNote: "门店正在核对报修。",
+        }),
+        headers: writeHeaders(session),
+        method: "POST",
+      });
+    const [crossStore, missing] = await Promise.all([
+      requestAssign(created.repairId),
+      requestAssign(crypto.randomUUID()),
+    ]);
+    expect(crossStore.status).toBe(404);
+    expect(missing.status).toBe(404);
+    await expect(crossStore.json()).resolves.toMatchObject({
+      error: { code: "REPAIR_NOT_FOUND" },
+    });
+    await expect(missing.json()).resolves.toMatchObject({
+      error: { code: "REPAIR_NOT_FOUND" },
+    });
   });
 });

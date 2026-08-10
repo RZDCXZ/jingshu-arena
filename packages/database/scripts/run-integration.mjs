@@ -103,6 +103,7 @@ async function main() {
         "packages/database/tests/customer-order-inventory.integration.test.ts",
         "packages/database/tests/manager-inventory.integration.test.ts",
         "packages/database/tests/staff-reservation-operations.integration.test.ts",
+        "packages/database/tests/repair-maintenance.integration.test.ts",
         "apps/api/src/public-sandbox.integration.test.ts",
         "apps/api/src/customer-seat-browse.integration.test.ts",
         "apps/api/src/staff-reservation.integration.test.ts",
