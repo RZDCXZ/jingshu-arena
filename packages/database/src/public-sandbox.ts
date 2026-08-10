@@ -1409,7 +1409,10 @@ export interface DatabaseHandover {
 export interface DatabaseOwnHandovers {
   readonly currentTime: Date;
   readonly employee: DatabaseOwnShiftAttendance["employee"];
-  readonly incoming: ReadonlyArray<DatabaseHandover>;
+  readonly incoming: ReadonlyArray<{
+    readonly canConfirm: boolean;
+    readonly handover: DatabaseHandover;
+  }>;
   readonly outgoing: {
     readonly canSubmit: boolean;
     readonly handover: DatabaseHandover | null;
@@ -4425,6 +4428,44 @@ async function processDueHandoverExceptions(
     }
   }
   return processed;
+}
+
+async function recordHandoverCommandDenial(
+  client: PoolClient,
+  input: {
+    readonly action: "handover.confirm" | "handover.submit";
+    readonly businessTime: Date;
+    readonly objectId: string;
+    readonly personaId: string;
+    readonly reason: string;
+    readonly recordedAt: Date;
+    readonly requestId: string;
+    readonly role: FrontlineRole;
+    readonly sandboxId: string;
+    readonly storeId: string;
+  },
+) {
+  await client.query(
+    `insert into audit_events (
+       id, sandbox_id, store_id, persona_id, role, action, object_type,
+       object_id, result, reason, request_id, before_data, after_data,
+       business_occurred_at, recorded_at
+     ) values ($1, $2, $3, $4, $5, $6, 'handover', $7, 'denied',
+       $8, $9, null, null, $10, $11)`,
+    [
+      randomUUID(),
+      input.sandboxId,
+      input.storeId,
+      input.personaId,
+      input.role,
+      input.action,
+      input.objectId,
+      input.reason,
+      input.requestId,
+      input.businessTime,
+      input.recordedAt,
+    ],
+  );
 }
 
 function handoverDueHandlers(): DemoTimeDueHandlerRegistry {
@@ -9659,7 +9700,12 @@ export function createPublicSandboxDatabase(
             employeeCode: context.employee.employee_code,
             role: context.employee.role,
           },
-          incoming: incomingRows.rows.map(handoverFromRow),
+          incoming: incomingRows.rows.map((handover) => ({
+            canConfirm: shifts.rows.some(
+              (shift) => shift.attendance_status === "checked-in",
+            ),
+            handover: handoverFromRow(handover),
+          })),
           outgoing:
             outgoingShift && snapshotPreview
               ? {
@@ -9758,6 +9804,19 @@ export function createPublicSandboxDatabase(
           shiftRow.store_id !== context.employee.store_id ||
           shiftRow.attendance_status !== "checked-in"
         ) {
+          await recordHandoverCommandDenial(client, {
+            action: "handover.submit",
+            businessTime: currentTime,
+            objectId: input.shiftId,
+            personaId: input.personaId,
+            reason: "shift-not-eligible",
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            role: input.role,
+            sandboxId: input.sandboxId,
+            storeId: context.employee.store_id,
+          });
+          await client.query("commit");
           throw new HandoverConflictError("shift-not-eligible");
         }
         const existing = await client.query<{ id: string }>(
@@ -9765,6 +9824,19 @@ export function createPublicSandboxDatabase(
           [input.sandboxId, input.shiftId],
         );
         if (existing.rows[0]) {
+          await recordHandoverCommandDenial(client, {
+            action: "handover.submit",
+            businessTime: currentTime,
+            objectId: existing.rows[0].id,
+            personaId: input.personaId,
+            reason: "already-submitted",
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            role: input.role,
+            sandboxId: input.sandboxId,
+            storeId: context.employee.store_id,
+          });
+          await client.query("commit");
           throw new HandoverConflictError("already-submitted");
         }
         const snapshot = await readHandoverSnapshot(client, {
@@ -9948,30 +10020,35 @@ export function createPublicSandboxDatabase(
           !handoverRow ||
           handoverRow.store_id !== context.employee.store_id
         ) {
-          await client.query(
-            `insert into audit_events (
-               id, sandbox_id, store_id, persona_id, role, action,
-               object_type, object_id, result, reason, request_id,
-               before_data, after_data, business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, $5, 'handover.confirm', 'handover',
-               $6, 'denied', $7, $8, null, null, $9, $10)`,
-            [
-              randomUUID(),
-              input.sandboxId,
-              context.employee.store_id,
-              input.personaId,
-              input.role,
-              input.handoverId,
-              handoverRow ? "cross-store" : "handover-not-found",
-              input.requestId,
-              currentTime,
-              wallTime,
-            ],
-          );
+          await recordHandoverCommandDenial(client, {
+            action: "handover.confirm",
+            businessTime: currentTime,
+            objectId: input.handoverId,
+            personaId: input.personaId,
+            reason: handoverRow ? "cross-store" : "handover-not-found",
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            role: input.role,
+            sandboxId: input.sandboxId,
+            storeId: context.employee.store_id,
+          });
           await client.query("commit");
           throw new HandoverConflictError("handover-not-found");
         }
         if (handoverRow.confirmation_business_at) {
+          await recordHandoverCommandDenial(client, {
+            action: "handover.confirm",
+            businessTime: currentTime,
+            objectId: input.handoverId,
+            personaId: input.personaId,
+            reason: "already-confirmed",
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            role: input.role,
+            sandboxId: input.sandboxId,
+            storeId: context.employee.store_id,
+          });
+          await client.query("commit");
           throw new HandoverConflictError("already-confirmed");
         }
         const eligibility = await client.query<{ shift_id: string }>(
@@ -9982,10 +10059,26 @@ export function createPublicSandboxDatabase(
             order by attendance.check_in_business_at desc limit 1`,
           [input.sandboxId, context.employee.id],
         );
-        if (
-          handoverRow.submitted_by_employee_id === context.employee.id ||
-          !eligibility.rows[0]
-        ) {
+        const denialReason =
+          handoverRow.submitted_by_employee_id === context.employee.id
+            ? "self-confirmation"
+            : !eligibility.rows[0]
+              ? "confirmation-not-checked-in"
+              : null;
+        if (denialReason) {
+          await recordHandoverCommandDenial(client, {
+            action: "handover.confirm",
+            businessTime: currentTime,
+            objectId: input.handoverId,
+            personaId: input.personaId,
+            reason: denialReason,
+            recordedAt: wallTime,
+            requestId: input.requestId,
+            role: input.role,
+            sandboxId: input.sandboxId,
+            storeId: context.employee.store_id,
+          });
+          await client.query("commit");
           throw new HandoverConflictError("confirmation-not-eligible");
         }
         await client.query(

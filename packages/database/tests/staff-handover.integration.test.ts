@@ -154,8 +154,11 @@ describe("staff handover persistence", () => {
     });
     const incoming = await database.readOwnHandovers(manager);
     expect(incoming.incoming[0]).toMatchObject({
-      handoverId: submitted.handoverId,
-      submittedBy: { displayName: "周宁" },
+      canConfirm: true,
+      handover: {
+        handoverId: submitted.handoverId,
+        submittedBy: { displayName: "周宁" },
+      },
     });
 
     const confirmed = await database.confirmHandover({
@@ -173,6 +176,166 @@ describe("staff handover persistence", () => {
       handoverId: submitted.handoverId,
       replayed: false,
     });
+  });
+
+  it("marks confirmation eligibility and audits rejected handover commands", async () => {
+    const world = await database.create({
+      creationKey: randomUUID(),
+      selectedRole: "staff",
+      visitorKey: `visitor-${randomUUID()}`,
+    });
+    const staff = {
+      contextVersion: world.roleContext.contextVersion,
+      personaId: world.roleContext.persona.id,
+      role: "staff" as const,
+      sandboxId: world.sandboxId,
+    };
+    const staffSchedule = await database.readOwnShiftAttendance(staff);
+    const staffShift = staffSchedule.shifts.current!;
+    await database.executeOwnAttendanceCommand({
+      ...staff,
+      action: "simulated-check-in",
+      idempotencyKey: randomUUID(),
+      requestId: randomUUID(),
+      shiftId: staffShift.shiftId,
+    });
+    const handover = await database.submitOwnHandover({
+      ...staff,
+      idempotencyKey: randomUUID(),
+      note: "等待同店接班员工确认。",
+      requestId: randomUUID(),
+      shiftId: staffShift.shiftId,
+    });
+
+    const duplicateSubmissionRequestId = randomUUID();
+    await expect(
+      database.submitOwnHandover({
+        ...staff,
+        idempotencyKey: randomUUID(),
+        note: "重复提交应保留原始交接。",
+        requestId: duplicateSubmissionRequestId,
+        shiftId: staffShift.shiftId,
+      }),
+    ).rejects.toMatchObject({ reason: "already-submitted" });
+
+    const selfConfirmationRequestId = randomUUID();
+    await expect(
+      database.confirmHandover({
+        ...staff,
+        handoverId: handover.handoverId,
+        idempotencyKey: randomUUID(),
+        requestId: selfConfirmationRequestId,
+      }),
+    ).rejects.toMatchObject({ reason: "confirmation-not-eligible" });
+
+    const managerRole = await database.switchRoleContext({
+      ...staff,
+      requestId: randomUUID(),
+      targetRole: "manager",
+    });
+    const manager = {
+      contextVersion: managerRole.contextVersion,
+      personaId: managerRole.persona.id,
+      role: "manager" as const,
+      sandboxId: managerRole.sandboxId,
+    };
+    const managerSchedule = await database.readOwnShiftAttendance(manager);
+    const managerIncoming = await database.readOwnHandovers(manager);
+    expect(managerIncoming.incoming[0]).toMatchObject({
+      canConfirm: false,
+      handover: { handoverId: handover.handoverId },
+    });
+
+    const uncheckedConfirmationRequestId = randomUUID();
+    await expect(
+      database.confirmHandover({
+        ...manager,
+        handoverId: handover.handoverId,
+        idempotencyKey: randomUUID(),
+        requestId: uncheckedConfirmationRequestId,
+      }),
+    ).rejects.toMatchObject({ reason: "confirmation-not-eligible" });
+
+    const ineligibleSubmissionRequestId = randomUUID();
+    await expect(
+      database.submitOwnHandover({
+        ...manager,
+        idempotencyKey: randomUUID(),
+        note: "尚未签到时不可提交。",
+        requestId: ineligibleSubmissionRequestId,
+        shiftId: managerSchedule.shifts.current!.shiftId,
+      }),
+    ).rejects.toMatchObject({ reason: "shift-not-eligible" });
+
+    await database.executeOwnAttendanceCommand({
+      ...manager,
+      action: "simulated-check-in",
+      idempotencyKey: randomUUID(),
+      requestId: randomUUID(),
+      shiftId: managerSchedule.shifts.current!.shiftId,
+    });
+    await database.confirmHandover({
+      ...manager,
+      handoverId: handover.handoverId,
+      idempotencyKey: randomUUID(),
+      requestId: randomUUID(),
+    });
+    const duplicateConfirmationRequestId = randomUUID();
+    await expect(
+      database.confirmHandover({
+        ...manager,
+        handoverId: handover.handoverId,
+        idempotencyKey: randomUUID(),
+        requestId: duplicateConfirmationRequestId,
+      }),
+    ).rejects.toMatchObject({ reason: "already-confirmed" });
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      const audits = await client.query<{ reason: string; request_id: string }>(
+        `select request_id, reason from audit_events
+          where request_id = any($1::uuid[])
+          order by request_id`,
+        [
+          [
+            selfConfirmationRequestId,
+            uncheckedConfirmationRequestId,
+            ineligibleSubmissionRequestId,
+            duplicateSubmissionRequestId,
+            duplicateConfirmationRequestId,
+          ],
+        ],
+      );
+      expect(audits.rows).toEqual(
+        [
+          {
+            reason: "self-confirmation",
+            request_id: selfConfirmationRequestId,
+          },
+          {
+            reason: "confirmation-not-checked-in",
+            request_id: uncheckedConfirmationRequestId,
+          },
+          {
+            reason: "shift-not-eligible",
+            request_id: ineligibleSubmissionRequestId,
+          },
+          {
+            reason: "already-submitted",
+            request_id: duplicateSubmissionRequestId,
+          },
+          {
+            reason: "already-confirmed",
+            request_id: duplicateConfirmationRequestId,
+          },
+        ].toSorted((left, right) =>
+          left.request_id.localeCompare(right.request_id),
+        ),
+      );
+    } finally {
+      await client.end();
+    }
   });
 
   it("materializes missing, late, and long-unconfirmed handovers as separate operating exceptions", async () => {

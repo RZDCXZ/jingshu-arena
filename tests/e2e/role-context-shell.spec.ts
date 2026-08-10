@@ -817,12 +817,15 @@ test.beforeEach(async ({ context }) => {
         incoming: incomingConfirmed
           ? []
           : [
-              buildHandover({
-                confirmed: false,
-                id: incomingHandoverId,
-                note: "晚高峰到店窗口集中。",
-                submitter: "赵一航",
-              }),
+              {
+                canConfirm: attendanceStatus === "checked-in",
+                handover: buildHandover({
+                  confirmed: false,
+                  id: incomingHandoverId,
+                  note: "晚高峰到店窗口集中。",
+                  submitter: "赵一航",
+                }),
+              },
             ],
         outgoing: {
           canSubmit: attendanceStatus === "checked-in",
@@ -1853,16 +1856,15 @@ test("staff freezes a handover snapshot, signs out immediately, and confirms ano
     page.getByText("真实服务器记录", { exact: false }).first(),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "本人班次" }).click();
-  await page.getByRole("button", { name: "手动签退" }).click();
-  await expect(page.getByText("当前没有可执行动作")).toBeVisible();
-
-  await page.getByRole("button", { name: "交接班" }).click();
   await page.getByRole("button", { name: "确认承接" }).click();
   await expect(page.getByText("当前没有待本人确认的同店交接。")).toBeVisible();
   await expect(
     page.getByText("接班确认已记录，业务时间与真实服务器时间均可追溯。"),
   ).toBeVisible();
+
+  await page.getByRole("button", { name: "本人班次" }).click();
+  await page.getByRole("button", { name: "手动签退" }).click();
+  await expect(page.getByText("当前没有可执行动作")).toBeVisible();
 });
 
 test("manager reads three store-scoped handover exception kinds without edit controls", async ({

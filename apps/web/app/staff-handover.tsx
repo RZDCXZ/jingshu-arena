@@ -414,7 +414,7 @@ export function StaffHandoverPanel({
         </header>
         {data?.incoming.length ? (
           <div className="handover-incoming-list">
-            {data.incoming.map((handover) => (
+            {data.incoming.map(({ canConfirm, handover }) => (
               <article key={handover.handoverId}>
                 <div>
                   <strong>{handover.submittedBy.displayName} 的交接</strong>
@@ -426,7 +426,10 @@ export function StaffHandoverPanel({
                 <SnapshotCounts snapshot={handover.snapshot} />
                 {handover.note ? <p>{handover.note}</p> : null}
                 <button
-                  disabled={busyTarget === `confirm:${handover.handoverId}`}
+                  disabled={
+                    !canConfirm ||
+                    busyTarget === `confirm:${handover.handoverId}`
+                  }
                   onClick={() =>
                     void runCommand("confirm", handover.handoverId)
                   }
@@ -435,7 +438,9 @@ export function StaffHandoverPanel({
                   <UserCheck />
                   {busyTarget === `confirm:${handover.handoverId}`
                     ? "正在确认…"
-                    : "确认承接"}
+                    : canConfirm
+                      ? "确认承接"
+                      : "本人已签到后可确认"}
                 </button>
               </article>
             ))}

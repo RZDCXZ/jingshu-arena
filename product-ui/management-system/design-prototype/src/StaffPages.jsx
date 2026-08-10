@@ -1877,51 +1877,47 @@ export function ShiftPage({
               )}
             </Surface>
             <Surface className="handover-prototype-card">
-              <SectionHeading title="接班确认" icon={User} />
+              <SectionHeading title="待本人确认的同店交接" icon={User} />
               <InlineNotice
-                tone={handoverConfirmed ? "success" : handoverSubmitted ? "warning" : "info"}
+                tone={handoverConfirmed ? "success" : "warning"}
                 title={
                   handoverConfirmed
-                    ? "接班确认已记录"
-                    : handoverSubmitted
-                      ? "等待另一名同店员工确认"
-                      : "交接尚未提交"
+                    ? "本人确认已记录"
+                    : "赵一航的交接待本人确认"
                 }
               >
                 {handoverConfirmed
-                  ? "赵一航已承接；原始提交和确认事实保持只读。"
-                  : handoverSubmitted
-                    ? "赵一航已签到，可以查看冻结快照并确认承接。"
-                  : "提交后接班人可查看冻结快照并确认承接。"}
+                  ? "周宁已确认赵一航的交接；原始提交和确认事实保持只读。"
+                  : "当前登录人物周宁已签到，可以确认另一名同店员工的冻结交接。"}
               </InlineNotice>
               <dl className="detail-list">
                 <div>
-                  <dt>接班人</dt>
+                  <dt>交班员工</dt>
                   <dd>赵一航 · 虚构人物</dd>
                 </div>
                 <div>
-                  <dt>计划班次</dt>
-                  <dd>22:00–次日06:00</dd>
+                  <dt>冻结于</dt>
+                  <dd>08月08日 21:38</dd>
                 </div>
                 <div>
-                  <dt>异常门槛</dt>
-                  <dd>交班班次结束后 30 分钟</dd>
+                  <dt>确认资格</dt>
+                  <dd>周宁已签到 · 同店他人</dd>
                 </div>
               </dl>
-              {handoverSubmitted && !handoverConfirmed && (
+              {!handoverConfirmed && (
                 <Button
                   tone="primary"
                   icon={User}
                   disabled={readonly}
                   onClick={onHandoverConfirm}
                 >
-                  以赵一航确认承接
+                  确认赵一航的交接
                 </Button>
               )}
               {handoverConfirmed && (
                 <div className="handover-prototype-evidence">
                   <span>
-                    <small>接班确认 · 赵一航</small>
+                    <small>接班确认 · 周宁</small>
                     <strong>业务时间 08月08日 21:49</strong>
                     <em>真实服务器记录 21:49:01</em>
                   </span>

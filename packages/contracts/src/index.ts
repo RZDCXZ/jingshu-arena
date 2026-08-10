@@ -1348,7 +1348,10 @@ export interface StaffHandover {
 export interface StaffHandoversResponse {
   readonly currentTime: string;
   readonly employee: StaffShiftAttendanceResponse["employee"];
-  readonly incoming: ReadonlyArray<StaffHandover>;
+  readonly incoming: ReadonlyArray<{
+    readonly canConfirm: boolean;
+    readonly handover: StaffHandover;
+  }>;
   readonly outgoing: {
     readonly canSubmit: boolean;
     readonly handover: StaffHandover | null;

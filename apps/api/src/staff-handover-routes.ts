@@ -267,7 +267,10 @@ export function registerStaffHandoverRoutes(app: Hono, services: AppServices) {
       return context.json({
         currentTime: result.currentTime.toISOString(),
         employee: result.employee,
-        incoming: result.incoming.map(handoverResponse),
+        incoming: result.incoming.map((incoming) => ({
+          canConfirm: incoming.canConfirm,
+          handover: handoverResponse(incoming.handover),
+        })),
         outgoing: result.outgoing
           ? {
               ...result.outgoing,

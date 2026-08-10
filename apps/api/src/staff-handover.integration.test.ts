@@ -187,7 +187,12 @@ describe("staff handover API", () => {
       headers: { Cookie: manager.cookie },
     });
     await expect(incoming.json()).resolves.toMatchObject({
-      incoming: [{ handoverId: handover.handoverId }],
+      incoming: [
+        {
+          canConfirm: true,
+          handover: { handoverId: handover.handoverId },
+        },
+      ],
     });
     const confirmed = await app.request(
       `/api/v1/staff/handovers/${handover.handoverId}/confirmation`,
