@@ -14,12 +14,12 @@ import {
   type CustomerSeatAvailabilityResponse,
   type CustomerStoreCatalogResponse,
 } from "@jingshu/contracts";
-import {
-  type CustomerReservationCreateConflictError,
-  type CustomerReservationLifecycleConflictError,
-  type CustomerReservationLifecycleConflictReason,
-  type CustomerSeatBrowseValidationError,
-  type CustomerSeatBrowseValidationReason,
+import type {
+  CustomerReservationCreateConflictError,
+  CustomerReservationLifecycleConflictError,
+  CustomerReservationLifecycleConflictReason,
+  CustomerSeatBrowseValidationError,
+  CustomerSeatBrowseValidationReason,
 } from "@jingshu/database";
 
 import { readRoleSession } from "./role-session.js";
