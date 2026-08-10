@@ -1203,6 +1203,84 @@ export interface StaffReservationCommandResponse {
   readonly status: CustomerReservationStatus;
 }
 
+export const STAFF_ATTENDANCE_ACTIONS = [
+  "simulated-check-in",
+  "manual-check-out",
+] as const;
+
+export type StaffAttendanceAction = (typeof STAFF_ATTENDANCE_ACTIONS)[number];
+export type StaffAttendanceStatus = "absent" | "checked-in" | "checked-out";
+
+export interface StaffShiftAttendanceSummary {
+  readonly attendance: {
+    readonly absence: {
+      readonly businessOccurredAt: string;
+      readonly recordedAt: string;
+    } | null;
+    readonly checkIn: {
+      readonly businessOccurredAt: string;
+      readonly outcome: "late" | "on-time";
+      readonly recordedAt: string;
+      readonly source: "simulated";
+    } | null;
+    readonly checkOut: {
+      readonly businessOccurredAt: string;
+      readonly recordedAt: string;
+      readonly source: "manual";
+    } | null;
+    readonly status: StaffAttendanceStatus;
+  } | null;
+  readonly canManageSchedule: boolean;
+  readonly facts: ReadonlyArray<{
+    readonly businessOccurredAt: string;
+    readonly data: unknown;
+    readonly recordedAt: string;
+    readonly type:
+      | "attendance.absence-recorded"
+      | "attendance.manual-check-out"
+      | "attendance.simulated-check-in";
+  }>;
+  readonly nextAction: {
+    readonly kind: StaffAttendanceAction;
+    readonly label: "手动签退" | "模拟签到";
+  } | null;
+  readonly shiftId: string;
+  readonly signInWindow: {
+    readonly closesAt: string;
+    readonly opensAt: string;
+  };
+  readonly window: { readonly endsAt: string; readonly startsAt: string };
+}
+
+export interface StaffShiftAttendanceResponse {
+  readonly currentTime: string;
+  readonly employee: {
+    readonly displayName: string;
+    readonly employeeCode: string;
+    readonly role: "manager" | "staff";
+  };
+  readonly shifts: {
+    readonly current: StaffShiftAttendanceSummary | null;
+    readonly future: ReadonlyArray<StaffShiftAttendanceSummary>;
+    readonly recent: ReadonlyArray<StaffShiftAttendanceSummary>;
+  };
+  readonly status: "ready";
+  readonly store: { readonly code: string; readonly displayName: string };
+}
+
+export interface StaffAttendanceCommandRequest {
+  readonly action: StaffAttendanceAction;
+}
+
+export interface StaffAttendanceCommandResponse {
+  readonly action: StaffAttendanceAction;
+  readonly occurredAt: string;
+  readonly outcome: "late" | "on-time" | null;
+  readonly replayed: boolean;
+  readonly shiftId: string;
+  readonly status: StaffAttendanceStatus;
+}
+
 export const DEMO_TIME_DUE_HANDLER_KINDS = [
   "pending-reservation-expiration",
   "pending-order-expiration",

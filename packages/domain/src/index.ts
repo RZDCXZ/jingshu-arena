@@ -1,5 +1,5 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "15";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.8";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "16";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.9";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -1022,6 +1022,130 @@ export function decideFrontlineReservationLifecycle(
   return { reason: "illegal-transition", status: "invalid" };
 }
 
+export type ShiftScheduleValidationReason =
+  "duration" | "half-hour-alignment" | "overlap";
+
+interface ShiftWindow {
+  readonly endsAt: Date;
+  readonly startsAt: Date;
+}
+
+interface ShiftScheduleValidationInput extends ShiftWindow {
+  readonly existingWindows: ReadonlyArray<ShiftWindow>;
+}
+
+export function validateShiftSchedule(input: ShiftScheduleValidationInput):
+  | { readonly status: "valid" }
+  | {
+      readonly reason: ShiftScheduleValidationReason;
+      readonly status: "invalid";
+    } {
+  const startsAt = input.startsAt.getTime();
+  const endsAt = input.endsAt.getTime();
+  const isHalfHourAligned = (value: Date) =>
+    value.getUTCMinutes() % 30 === 0 &&
+    value.getUTCSeconds() === 0 &&
+    value.getUTCMilliseconds() === 0;
+
+  if (!isHalfHourAligned(input.startsAt) || !isHalfHourAligned(input.endsAt)) {
+    return { reason: "half-hour-alignment", status: "invalid" };
+  }
+
+  const durationMilliseconds = endsAt - startsAt;
+  if (
+    durationMilliseconds < 4 * 60 * 60 * 1_000 ||
+    durationMilliseconds > 12 * 60 * 60 * 1_000
+  ) {
+    return { reason: "duration", status: "invalid" };
+  }
+
+  if (
+    input.existingWindows.some(
+      (window) =>
+        startsAt < window.endsAt.getTime() &&
+        endsAt > window.startsAt.getTime(),
+    )
+  ) {
+    return { reason: "overlap", status: "invalid" };
+  }
+
+  return { status: "valid" };
+}
+
+export type AttendanceStatus = "absent" | "checked-in" | "checked-out";
+export type AttendanceAction =
+  "manual-check-out" | "mark-absent" | "simulated-check-in";
+export type AttendanceActionInvalidReason =
+  | "already-checked-in"
+  | "attendance-finalized"
+  | "not-checked-in"
+  | "not-due"
+  | "shift-ended"
+  | "sign-in-window-not-open";
+
+interface AttendanceActionInput extends ShiftWindow {
+  readonly action: AttendanceAction;
+  readonly businessTime: Date;
+  readonly status: AttendanceStatus | null;
+}
+
+export function decideAttendanceAction(input: AttendanceActionInput):
+  | {
+      readonly nextStatus: AttendanceStatus;
+      readonly outcome: "late" | "on-time" | null;
+      readonly status: "ready";
+    }
+  | {
+      readonly reason: AttendanceActionInvalidReason;
+      readonly status: "invalid";
+    } {
+  const businessTime = input.businessTime.getTime();
+  const startsAt = input.startsAt.getTime();
+  const endsAt = input.endsAt.getTime();
+
+  if (input.action === "simulated-check-in") {
+    if (input.status === "checked-in") {
+      return { reason: "already-checked-in", status: "invalid" };
+    }
+    if (input.status !== null) {
+      return { reason: "attendance-finalized", status: "invalid" };
+    }
+    if (businessTime < startsAt - 30 * 60 * 1_000) {
+      return { reason: "sign-in-window-not-open", status: "invalid" };
+    }
+    if (businessTime >= endsAt) {
+      return { reason: "shift-ended", status: "invalid" };
+    }
+    return {
+      nextStatus: "checked-in",
+      outcome: businessTime > startsAt ? "late" : "on-time",
+      status: "ready",
+    };
+  }
+
+  if (input.action === "manual-check-out") {
+    if (input.status !== "checked-in") {
+      return {
+        reason:
+          input.status === null ? "not-checked-in" : "attendance-finalized",
+        status: "invalid",
+      };
+    }
+    return { nextStatus: "checked-out", outcome: null, status: "ready" };
+  }
+
+  if (input.status === "checked-in") {
+    return { reason: "already-checked-in", status: "invalid" };
+  }
+  if (input.status !== null) {
+    return { reason: "attendance-finalized", status: "invalid" };
+  }
+  if (businessTime < endsAt) {
+    return { reason: "not-due", status: "invalid" };
+  }
+  return { nextStatus: "absent", outcome: null, status: "ready" };
+}
+
 export type SandboxBusinessTimeAdvanceMode = "next-event" | "half-hour";
 
 interface SandboxBusinessTimeInput {
@@ -1128,6 +1252,7 @@ interface PublicSandboxStoreSeed {
 interface PublicSandboxPersonaSeed {
   readonly role: PublicSandboxRole;
   readonly displayName: string;
+  readonly employeeCode?: string;
   readonly scope: string;
   readonly protected: true;
   readonly storeCode?: PublicSandboxStoreSeed["code"];
@@ -1299,6 +1424,7 @@ const personaSeeds = [
   {
     role: "staff",
     displayName: "周宁",
+    employeeCode: "PRISM-S001",
     scope: "棱镜旗舰店",
     protected: true,
     storeCode: "prism-flagship",
@@ -1306,6 +1432,7 @@ const personaSeeds = [
   {
     role: "manager",
     displayName: "许知远",
+    employeeCode: "PRISM-M001",
     scope: "棱镜旗舰店",
     protected: true,
     storeCode: "prism-flagship",

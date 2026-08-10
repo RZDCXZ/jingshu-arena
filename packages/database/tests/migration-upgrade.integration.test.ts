@@ -273,6 +273,7 @@ describe("role-context expand migration", () => {
 
     const rollingOperatorId = "00000000-0000-4000-8000-000000000613";
     const rollingStoreId = "00000000-0000-4000-8000-000000000614";
+    const rollingStaffPersonaId = "00000000-0000-4000-8000-000000000617";
     const rollingInventoryItemId = "00000000-0000-4000-8000-000000000615";
     const rollingMovementId = "00000000-0000-4000-8000-000000000616";
     await client.query("begin");
@@ -292,6 +293,12 @@ describe("role-context expand migration", () => {
        ) values ($1, $2, $3, 'rolling-store', '滚动部署门店', 1,
          '00:00', '00:00', true)`,
       [rollingStoreId, rollingSandboxId, rollingOperatorId],
+    );
+    await client.query(
+      `insert into demo_personas (
+         id, sandbox_id, store_id, role, display_name, scope, protected
+       ) values ($1, $2, $3, 'staff', '滚动部署店员', 'rolling-store', true)`,
+      [rollingStaffPersonaId, rollingSandboxId, rollingStoreId],
     );
     await client.query(
       `insert into inventory_items (
@@ -409,6 +416,68 @@ describe("role-context expand migration", () => {
         return_table: "repair_spare_returns",
         usage_force_rls: true,
         usage_table: "repair_spare_usages",
+      },
+    ]);
+
+    await client.query(
+      "alter table demo_personas owner to ticket04_migration_owner",
+    );
+    await client.query("set role ticket04_migration_owner");
+    try {
+      await applyMigration("0019_staff_shift_attendance.sql");
+    } finally {
+      await client.query("reset role");
+    }
+    const attendanceMetadata = await client.query<{ value: string }>(
+      "select value from jingshu_schema_metadata where key = 'schema_version'",
+    );
+    expect(attendanceMetadata.rows).toEqual([{ value: "16" }]);
+    const attendanceStructures = await client.query<{
+      attendance_table: string | null;
+      employee_force_rls: boolean;
+      employee_table: string | null;
+      open_attendance_index: string | null;
+      persona_force_rls: boolean;
+      shift_table: string | null;
+    }>(
+      `select
+         to_regclass('public.employees')::text as employee_table,
+         to_regclass('public.shifts')::text as shift_table,
+         to_regclass('public.attendance_records')::text as attendance_table,
+         to_regclass('public.attendance_records_one_open_per_employee')::text as open_attendance_index,
+         (select relforcerowsecurity from pg_class
+           where oid = 'public.demo_personas'::regclass) as persona_force_rls,
+         (select relforcerowsecurity from pg_class
+           where oid = 'public.employees'::regclass) as employee_force_rls`,
+    );
+    expect(attendanceStructures.rows).toEqual([
+      {
+        attendance_table: "attendance_records",
+        employee_force_rls: true,
+        employee_table: "employees",
+        open_attendance_index: "attendance_records_one_open_per_employee",
+        persona_force_rls: true,
+        shift_table: "shifts",
+      },
+    ]);
+    const backfilledEmployee = await client.query<{
+      display_name: string;
+      employee_code: string;
+      persona_id: string;
+      role: string;
+      store_id: string;
+    }>(
+      `select display_name, employee_code, persona_id, role, store_id
+         from employees where sandbox_id = $1 and persona_id = $2`,
+      [rollingSandboxId, rollingStaffPersonaId],
+    );
+    expect(backfilledEmployee.rows).toEqual([
+      {
+        display_name: "滚动部署店员",
+        employee_code: "LEGACY-S-00000000",
+        persona_id: rollingStaffPersonaId,
+        role: "staff",
+        store_id: rollingStoreId,
       },
     ]);
   });

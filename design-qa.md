@@ -1,6 +1,6 @@
 # Product Design QA
 
-当前 Product Design image-to-code 与 design-qa 报告由管理系统正式设计参考维护，最新覆盖 ticket 12 店员商品订单履约：
+当前 Product Design image-to-code 与 design-qa 报告由管理系统正式设计参考维护，最新覆盖 ticket 17 店员班次、模拟考勤与手动签退：
 
 - [管理端与顾客 H5 设计 QA](product-ui/management-system/design-prototype/design-qa.md)
 

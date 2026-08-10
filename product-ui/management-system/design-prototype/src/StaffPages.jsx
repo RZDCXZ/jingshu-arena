@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Pulse,
   ArrowCounterClockwise,
@@ -1560,6 +1560,62 @@ export function InventoryPage({
 
 export function ShiftPage({ onHandover, handoverSubmitted, readonly }) {
   const [tab, setTab] = useState("shift");
+  const initialAttendanceState =
+    new URLSearchParams(window.location.search).get("attendanceState") ||
+    "checked-in";
+  const [attendanceState, setAttendanceState] = useState(
+    initialAttendanceState === "duplicate"
+      ? "checked-in"
+      : initialAttendanceState === "failure"
+        ? "ready"
+        : initialAttendanceState,
+  );
+  const [attendanceResult, setAttendanceResult] = useState(
+    initialAttendanceState === "duplicate"
+      ? "duplicate"
+      : initialAttendanceState === "failure"
+        ? "failure"
+        : null,
+  );
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
+  const checkedIn =
+    attendanceState === "checked-in" || attendanceState === "late";
+  const attendanceOutcome = attendanceState === "late" ? "迟到" : "准时";
+
+  useEffect(() => {
+    if (!attendanceResult) return undefined;
+    const timer = window.setTimeout(() => setAttendanceResult(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [attendanceResult]);
+
+  function submitAttendance() {
+    if (attendanceLoading || readonly) return;
+    const previousState = attendanceState;
+    const simulatedResult = new URLSearchParams(window.location.search).get(
+      "attendanceResult",
+    );
+    setAttendanceLoading(true);
+    setAttendanceResult(null);
+    window.setTimeout(() => {
+      if (simulatedResult === "failure") {
+        setAttendanceState(previousState);
+        setAttendanceResult("failure");
+      } else if (simulatedResult === "duplicate") {
+        setAttendanceState(
+          previousState === "ready" ? "checked-in" : previousState,
+        );
+        setAttendanceResult("duplicate");
+      } else if (previousState === "ready") {
+        setAttendanceState("checked-in");
+        setAttendanceResult("check-in");
+      } else if (previousState === "checked-in" || previousState === "late") {
+        setAttendanceState("checked-out");
+        setAttendanceResult("check-out");
+      }
+      setAttendanceLoading(false);
+    }, 720);
+  }
+
   return (
     <div className="view-shell">
       <main className="page-main standard-page wide-page">
@@ -1581,33 +1637,121 @@ export function ShiftPage({ onHandover, handoverSubmitted, readonly }) {
         {tab === "shift" ? (
           <div className="split-layout">
             <Surface className="shift-focus">
-              <SectionHeading title="当前班次" icon={Clock} />
+              <SectionHeading
+                title="当前班次"
+                icon={Clock}
+                action={
+                  <StatusPill
+                    tone={
+                      attendanceState === "absent"
+                        ? "danger"
+                        : attendanceState === "late"
+                          ? "warning"
+                          : checkedIn
+                            ? "success"
+                            : attendanceState === "checked-out"
+                              ? "info"
+                              : "neutral"
+                    }
+                  >
+                    {attendanceState === "absent"
+                      ? "缺勤"
+                      : attendanceState === "late"
+                        ? "迟到 · 已签到"
+                        : attendanceState === "checked-out"
+                          ? "已手动签退"
+                          : checkedIn
+                            ? "已模拟签到"
+                            : attendanceState === "too-early"
+                              ? "签到窗口未开启"
+                              : "可模拟签到"}
+                  </StatusPill>
+                }
+              />
               <div className="shift-time">
                 <span>08月08日</span>
                 <strong>18:00</strong>
                 <i />
                 <strong>次日 02:00</strong>
               </div>
+              <p className="shift-sign-in-window">
+                签到窗口 17:30 开启 · 当前业务时间 19:30
+              </p>
               <div className="shift-facts">
                 <div>
-                  <CheckCircle weight="fill" />
+                  {attendanceState === "absent" ? (
+                    <WarningCircle weight="fill" />
+                  ) : (
+                    <CheckCircle weight="fill" />
+                  )}
                   <span>
-                    已模拟签到<strong>18:02 · 准时</strong>
+                    原始签到事实
+                    <strong>
+                      {attendanceState === "absent"
+                        ? "班次结束仍未签到 · 缺勤"
+                        : checkedIn || attendanceState === "checked-out"
+                          ? `18:02 · ${attendanceOutcome}`
+                          : "尚未产生"}
+                    </strong>
                   </span>
                 </div>
                 <div>
                   <SignOut />
                   <span>
-                    签退状态<strong>待本班次结束前手动签退</strong>
+                    原始签退事实
+                    <strong>
+                      {attendanceState === "checked-out"
+                        ? "21:46 · 员工手动签退"
+                        : checkedIn
+                          ? "待本人手动签退 · 不自动补写"
+                          : "尚未签到，无签退动作"}
+                    </strong>
                   </span>
                 </div>
               </div>
-              <Button tone="secondary" icon={SignOut} disabled={readonly}>
-                手动签退
-              </Button>
+              {attendanceState === "too-early" && (
+                <InlineNotice tone="info" title="签到窗口尚未开启">
+                  当前业务时间早于 17:30；到班次开始前 30 分钟后再模拟签到。
+                </InlineNotice>
+              )}
+              {attendanceResult === "duplicate" && (
+                <InlineNotice tone="info" title="重复提交已安全重放">
+                  原始考勤事实没有重复写入，页面已保持服务端当前状态。
+                </InlineNotice>
+              )}
+              {attendanceResult === "failure" && (
+                <InlineNotice tone="danger" title="提交未完成">
+                  考勤状态没有被部分修改；保留同一提交标识即可安全重试。
+                </InlineNotice>
+              )}
+              {attendanceResult === "check-in" && (
+                <InlineNotice tone="success" title="模拟签到已记录">
+                  业务时间与系统记录时间均已写入，下一合法动作是手动签退。
+                </InlineNotice>
+              )}
+              {attendanceResult === "check-out" && (
+                <InlineNotice tone="success" title="手动签退已记录">
+                  签退由员工本人触发，系统没有自动伪造签退时间。
+                </InlineNotice>
+              )}
+              {(attendanceState === "ready" || checkedIn) && (
+                <Button
+                  tone={attendanceState === "ready" ? "primary" : "secondary"}
+                  icon={attendanceState === "ready" ? SignIn : SignOut}
+                  disabled={readonly || attendanceLoading}
+                  loading={attendanceLoading}
+                  onClick={submitAttendance}
+                >
+                  {attendanceLoading
+                    ? "处理中"
+                    : attendanceState === "ready"
+                      ? "模拟签到"
+                      : "手动签退"}
+                </Button>
+              )}
             </Surface>
             <Surface>
-              <SectionHeading title="未来班次" icon={CalendarBlank} />
+              <SectionHeading title="未来班次与原始事实" icon={CalendarBlank} />
               <div className="future-shifts">
                 <div>
                   <time>08月09日</time>
@@ -1619,6 +1763,19 @@ export function ShiftPage({ onHandover, handoverSubmitted, readonly }) {
                   <strong>14:00–22:00</strong>
                   <span>店员 · 现场支援</span>
                 </div>
+              </div>
+              <div className="shift-raw-facts">
+                <span>不可变记录</span>
+                <strong>
+                  {attendanceState === "absent"
+                    ? "班次结束 · 系统记录缺勤"
+                    : attendanceState === "checked-out"
+                      ? "模拟签到 → 员工手动签退"
+                      : checkedIn
+                        ? `模拟签到 · ${attendanceOutcome}`
+                        : "等待合法考勤动作"}
+                </strong>
+                <small>同时保留业务发生时间与系统记录时间</small>
               </div>
             </Surface>
           </div>

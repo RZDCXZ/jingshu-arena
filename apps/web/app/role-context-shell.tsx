@@ -30,6 +30,7 @@ import { CustomerSeatBrowser } from "./customer-seat-browser";
 import { StaffOrderFulfillment } from "./staff-order-fulfillment";
 import { StoreInventory } from "./store-inventory";
 import { StaffRepairQueue } from "./staff-repair-queue";
+import { StaffShiftAttendance } from "./staff-shift-attendance";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -604,6 +605,12 @@ export function RoleContextShell({
         <section className="role-workspace">
           {context.role.id === "customer" && activePage === "customer-home" ? (
             <CustomerSeatBrowser csrfToken={context.csrfToken} />
+          ) : context.role.id === "staff" && activePage === "shift" ? (
+            <StaffShiftAttendance
+              csrfToken={context.csrfToken}
+              onToast={setToast}
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+            />
           ) : context.role.id === "staff" && activePage === "orders" ? (
             <StaffOrderFulfillment
               csrfToken={context.csrfToken}
@@ -652,6 +659,9 @@ export function RoleContextShell({
                   setActivePage("reservations");
                 }
               }}
+              {...(context.role.id === "staff"
+                ? { onNavigateShift: () => setActivePage("shift" as const) }
+                : {})}
               onNavigateWorkbench={() => {
                 setReservationPreset({});
                 setFilter("");

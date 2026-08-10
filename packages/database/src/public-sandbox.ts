@@ -23,6 +23,9 @@ import {
   deriveSeatAvailability,
   evaluateReservationCoupon,
   isSafePlainTextReason,
+  type AttendanceAction,
+  type AttendanceStatus,
+  decideAttendanceAction,
   normalizeRepairDescription,
   memberTierForGrowth,
   priceCustomerOrder,
@@ -41,6 +44,7 @@ import {
 } from "@jingshu/domain";
 
 import {
+  AttendanceConflictError,
   CustomerOrderConflictError,
   CustomerReservationCreateConflictError,
   CustomerReservationIdempotencyConflictError,
@@ -1265,6 +1269,77 @@ export interface DatabaseStaffReservationCommand {
   readonly status: ReservationStatus;
 }
 
+export type ReadOwnShiftAttendanceInput = ReadStaffReservationWorkbenchInput;
+
+export interface ExecuteOwnAttendanceCommandInput extends ReadOwnShiftAttendanceInput {
+  readonly action: Exclude<AttendanceAction, "mark-absent">;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+  readonly shiftId: string;
+}
+
+export interface DatabaseStaffShift {
+  readonly attendance: {
+    readonly checkIn: {
+      readonly businessOccurredAt: Date;
+      readonly outcome: "late" | "on-time";
+      readonly recordedAt: Date;
+      readonly source: "simulated";
+    } | null;
+    readonly checkOut: {
+      readonly businessOccurredAt: Date;
+      readonly recordedAt: Date;
+      readonly source: "manual";
+    } | null;
+    readonly absence: {
+      readonly businessOccurredAt: Date;
+      readonly recordedAt: Date;
+    } | null;
+    readonly status: AttendanceStatus;
+  } | null;
+  readonly canManageSchedule: boolean;
+  readonly facts: ReadonlyArray<{
+    readonly businessOccurredAt: Date;
+    readonly data: unknown;
+    readonly recordedAt: Date;
+    readonly type:
+      | "attendance.absence-recorded"
+      | "attendance.manual-check-out"
+      | "attendance.simulated-check-in";
+  }>;
+  readonly nextAction: {
+    readonly kind: "manual-check-out" | "simulated-check-in";
+    readonly label: "手动签退" | "模拟签到";
+  } | null;
+  readonly shiftId: string;
+  readonly signInWindow: { readonly opensAt: Date; readonly closesAt: Date };
+  readonly window: { readonly endsAt: Date; readonly startsAt: Date };
+}
+
+export interface DatabaseOwnShiftAttendance {
+  readonly currentTime: Date;
+  readonly employee: {
+    readonly displayName: string;
+    readonly employeeCode: string;
+    readonly role: FrontlineRole;
+  };
+  readonly shifts: {
+    readonly current: DatabaseStaffShift | null;
+    readonly future: ReadonlyArray<DatabaseStaffShift>;
+    readonly recent: ReadonlyArray<DatabaseStaffShift>;
+  };
+  readonly store: { readonly code: string; readonly displayName: string };
+}
+
+export interface DatabaseAttendanceCommand {
+  readonly action: "manual-check-out" | "simulated-check-in";
+  readonly occurredAt: Date;
+  readonly outcome: "late" | "on-time" | null;
+  readonly replayed: boolean;
+  readonly shiftId: string;
+  readonly status: AttendanceStatus;
+}
+
 export interface ReadCurrentRoleContextInput {
   sandboxId: string;
   claimRole?: PublicRole;
@@ -1331,6 +1406,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   executeStaffReservationCommand(
     input: ExecuteStaffReservationCommandInput,
   ): Promise<DatabaseStaffReservationCommand>;
+  executeOwnAttendanceCommand(
+    input: ExecuteOwnAttendanceCommandInput,
+  ): Promise<DatabaseAttendanceCommand>;
   executeStaffOrderCommand(
     input: ExecuteStaffOrderCommandInput,
   ): Promise<DatabaseStaffOrderCommand>;
@@ -1406,6 +1484,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readStaffReservationWorkbench(
     input: ReadStaffReservationWorkbenchInput,
   ): Promise<DatabaseStaffReservationWorkbench>;
+  readOwnShiftAttendance(
+    input: ReadOwnShiftAttendanceInput,
+  ): Promise<DatabaseOwnShiftAttendance>;
   readStaffRepairIntake(
     input: ReadStaffRepairIntakeInput,
   ): Promise<DatabaseStaffRepairIntake>;
@@ -1567,6 +1648,57 @@ interface PersonaRow {
   role: PublicRole;
   scope: string;
   store_id: string | null;
+}
+
+interface EmployeeRow {
+  active: boolean;
+  display_name: string;
+  employee_code: string;
+  id: string;
+  persona_id: string | null;
+  role: FrontlineRole;
+  store_code: string;
+  store_display_name: string;
+  store_id: string;
+}
+
+interface ShiftAttendanceRow {
+  absence_business_at: Date | null;
+  absence_recorded_at: Date | null;
+  attendance_id: string | null;
+  attendance_status: AttendanceStatus | null;
+  check_in_business_at: Date | null;
+  check_in_outcome: "late" | "on-time" | null;
+  check_in_recorded_at: Date | null;
+  check_out_business_at: Date | null;
+  check_out_recorded_at: Date | null;
+  ends_at: Date;
+  shift_id: string;
+  starts_at: Date;
+}
+
+interface LockedShiftRow {
+  employee_id: string;
+  ends_at: Date;
+  shift_id: string;
+  starts_at: Date;
+  store_id: string;
+}
+
+interface AttendanceEventRow {
+  business_occurred_at: Date;
+  event_data: unknown;
+  event_type: DatabaseStaffShift["facts"][number]["type"];
+  recorded_at: Date;
+  shift_id: string;
+}
+
+interface StoredAttendanceCommand {
+  action: DatabaseAttendanceCommand["action"];
+  occurredAt: string;
+  outcome: DatabaseAttendanceCommand["outcome"];
+  shiftId: string;
+  status: AttendanceStatus;
 }
 
 interface OperatorRow {
@@ -3625,6 +3757,247 @@ async function assertFrontlineContext(
   return { actorStoreId, sandbox: sandboxRow };
 }
 
+async function assertEmployeeContext(
+  client: PoolClient,
+  input: ReadOwnShiftAttendanceInput,
+  wallTime: Date,
+) {
+  const context = await assertFrontlineContext(client, input, wallTime);
+  const employee = await client.query<EmployeeRow>(
+    `select employee.id, employee.store_id, employee.persona_id,
+            employee.employee_code, employee.display_name, employee.role,
+            employee.active, store.code as store_code,
+            store.display_name as store_display_name
+       from employees employee
+       join stores store on store.id = employee.store_id
+      where employee.sandbox_id = $1 and employee.persona_id = $2
+        and employee.role = $3 and employee.active = true`,
+    [input.sandboxId, input.personaId, input.role],
+  );
+  const employeeRow = employee.rows[0];
+  if (!employeeRow || employeeRow.store_id !== context.actorStoreId) {
+    throw new RoleContextUnavailableError();
+  }
+  return { ...context, employee: employeeRow };
+}
+
+interface DueAttendanceShiftRow {
+  employee_id: string;
+  ends_at: Date;
+  persona_id: string | null;
+  role: FrontlineRole;
+  shift_id: string;
+  starts_at: Date;
+  store_id: string;
+}
+
+async function processDueAttendanceAbsences(
+  client: PoolClient,
+  input: {
+    readonly employeeId?: string;
+    readonly recordedAt: Date;
+    readonly sandboxId: string;
+    readonly targetBusinessTime: Date;
+  },
+): Promise<number> {
+  const due = await client.query<DueAttendanceShiftRow>(
+    `select shift.id as shift_id, shift.store_id, shift.employee_id,
+            shift.starts_at, shift.ends_at, employee.persona_id, employee.role
+       from shifts shift
+       join employees employee on employee.id = shift.employee_id
+       left join attendance_records attendance
+         on attendance.sandbox_id = shift.sandbox_id
+        and attendance.shift_id = shift.id
+      where shift.sandbox_id = $1 and shift.status = 'scheduled'
+        and shift.ends_at <= $2 and attendance.id is null
+        and ($3::uuid is null or shift.employee_id = $3)
+      order by shift.ends_at, shift.id
+      for update of shift skip locked`,
+    [input.sandboxId, input.targetBusinessTime, input.employeeId ?? null],
+  );
+
+  let processed = 0;
+  for (const shift of due.rows) {
+    const decision = decideAttendanceAction({
+      action: "mark-absent",
+      businessTime: shift.ends_at,
+      endsAt: shift.ends_at,
+      startsAt: shift.starts_at,
+      status: null,
+    });
+    if (decision.status !== "ready") {
+      throw new Error("A due shift did not have a legal absence result.");
+    }
+    const attendanceId = randomUUID();
+    const inserted = await client.query<{ id: string }>(
+      `insert into attendance_records (
+         id, sandbox_id, store_id, employee_id, shift_id, status,
+         absence_business_at, absence_recorded_at
+       ) values ($1, $2, $3, $4, $5, 'absent', $6, $7)
+       on conflict (sandbox_id, shift_id) do nothing
+       returning id`,
+      [
+        attendanceId,
+        input.sandboxId,
+        shift.store_id,
+        shift.employee_id,
+        shift.shift_id,
+        shift.ends_at,
+        input.recordedAt,
+      ],
+    );
+    if (!inserted.rows[0]) continue;
+    await client.query(
+      `insert into attendance_events (
+         id, sandbox_id, store_id, employee_id, shift_id,
+         attendance_record_id, event_type, event_data,
+         business_occurred_at, recorded_at
+       ) values ($1, $2, $3, $4, $5, $6,
+         'attendance.absence-recorded', $7::jsonb, $8, $9)`,
+      [
+        randomUUID(),
+        input.sandboxId,
+        shift.store_id,
+        shift.employee_id,
+        shift.shift_id,
+        attendanceId,
+        JSON.stringify({ reason: "shift-ended-without-check-in" }),
+        shift.ends_at,
+        input.recordedAt,
+      ],
+    );
+    await client.query(
+      `insert into audit_events (
+         id, sandbox_id, store_id, persona_id, role, action, object_type,
+         object_id, result, reason, request_id, before_data, after_data,
+         business_occurred_at, recorded_at
+       ) values ($1, $2, $3, $4, $5, 'attendance.absence-record',
+         'shift', $6, 'allowed', 'shift-ended-without-check-in', $7,
+         $8::jsonb, $9::jsonb, $10, $11)`,
+      [
+        randomUUID(),
+        input.sandboxId,
+        shift.store_id,
+        shift.persona_id,
+        shift.role,
+        shift.shift_id,
+        randomUUID(),
+        JSON.stringify({ status: null }),
+        JSON.stringify({ status: "absent" }),
+        shift.ends_at,
+        input.recordedAt,
+      ],
+    );
+    processed += 1;
+  }
+  return processed;
+}
+
+function attendanceDueHandlers(): DemoTimeDueHandlerRegistry {
+  return {
+    "attendance-absence": {
+      nextDueAt: async (context) => {
+        const result = await context.client.query<{ due_at: Date | null }>(
+          `select min(shift.ends_at) as due_at
+             from shifts shift
+             left join attendance_records attendance
+               on attendance.sandbox_id = shift.sandbox_id
+              and attendance.shift_id = shift.id
+            where shift.sandbox_id = $1 and shift.status = 'scheduled'
+              and shift.ends_at > $2 and attendance.id is null`,
+          [context.sandboxId, context.currentBusinessTime],
+        );
+        return result.rows[0]?.due_at ?? null;
+      },
+      previewDue: async (context) => {
+        const result = await context.client.query<{ count: string }>(
+          `select count(*)::text as count
+             from shifts shift
+            left join attendance_records attendance
+               on attendance.sandbox_id = shift.sandbox_id
+              and attendance.shift_id = shift.id
+            where shift.sandbox_id = $1 and shift.status = 'scheduled'
+              and shift.ends_at <= $2
+              and attendance.id is null`,
+          [context.sandboxId, context.targetBusinessTime],
+        );
+        return Number(result.rows[0]?.count ?? 0);
+      },
+      processDue: (context) =>
+        processDueAttendanceAbsences(context.client, {
+          recordedAt: context.recordedAt,
+          sandboxId: context.sandboxId,
+          targetBusinessTime: context.targetBusinessTime,
+        }),
+    },
+  };
+}
+
+function staffShiftFromRows(
+  row: ShiftAttendanceRow,
+  facts: ReadonlyArray<AttendanceEventRow>,
+  currentTime: Date,
+): DatabaseStaffShift {
+  const signInOpensAt = new Date(row.starts_at.getTime() - 30 * 60 * 1_000);
+  const attendance = row.attendance_status
+    ? {
+        absence:
+          row.absence_business_at && row.absence_recorded_at
+            ? {
+                businessOccurredAt: row.absence_business_at,
+                recordedAt: row.absence_recorded_at,
+              }
+            : null,
+        checkIn:
+          row.check_in_business_at &&
+          row.check_in_recorded_at &&
+          row.check_in_outcome
+            ? {
+                businessOccurredAt: row.check_in_business_at,
+                outcome: row.check_in_outcome,
+                recordedAt: row.check_in_recorded_at,
+                source: "simulated" as const,
+              }
+            : null,
+        checkOut:
+          row.check_out_business_at && row.check_out_recorded_at
+            ? {
+                businessOccurredAt: row.check_out_business_at,
+                recordedAt: row.check_out_recorded_at,
+                source: "manual" as const,
+              }
+            : null,
+        status: row.attendance_status,
+      }
+    : null;
+  const nextAction =
+    row.attendance_status === "checked-in"
+      ? ({ kind: "manual-check-out", label: "手动签退" } as const)
+      : row.attendance_status === null &&
+          currentTime.getTime() >= signInOpensAt.getTime() &&
+          currentTime.getTime() < row.ends_at.getTime()
+        ? ({ kind: "simulated-check-in", label: "模拟签到" } as const)
+        : null;
+  return {
+    attendance,
+    canManageSchedule:
+      row.attendance_status === null &&
+      row.starts_at.getTime() > currentTime.getTime(),
+    facts: facts
+      .filter((fact) => fact.shift_id === row.shift_id)
+      .map((fact) => ({
+        businessOccurredAt: fact.business_occurred_at,
+        data: fact.event_data,
+        recordedAt: fact.recorded_at,
+        type: fact.event_type,
+      })),
+    nextAction,
+    shiftId: row.shift_id,
+    signInWindow: { closesAt: row.ends_at, opensAt: signInOpensAt },
+    window: { endsAt: row.ends_at, startsAt: row.starts_at },
+  };
+}
+
 async function assertRepairActorContext(
   client: PoolClient,
   input: ReadRoleContextInput,
@@ -4532,6 +4905,79 @@ async function materializePublicSandbox(input: {
       seededPersonas.map((persona) => persona.displayName),
       seededPersonas.map((persona) => persona.scope),
       seededPersonas.map((persona) => persona.protected),
+    ],
+  );
+
+  const seededEmployees = seededPersonas.flatMap((persona) =>
+    persona.employeeCode &&
+    persona.storeId &&
+    (persona.role === "staff" || persona.role === "manager")
+      ? [
+          {
+            displayName: persona.displayName,
+            employeeCode: persona.employeeCode,
+            id: randomUUID(),
+            personaId: persona.id,
+            protected: persona.protected,
+            role: persona.role,
+            storeId: persona.storeId,
+          },
+        ]
+      : [],
+  );
+  await input.client.query(
+    `insert into employees (
+       id, sandbox_id, store_id, persona_id, employee_code,
+       display_name, role, active, protected
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::text[],
+       $6::text[], $7::text[], $8::boolean[], $9::boolean[]
+     )`,
+    [
+      seededEmployees.map((employee) => employee.id),
+      seededEmployees.map(() => input.sandboxId),
+      seededEmployees.map((employee) => employee.storeId),
+      seededEmployees.map((employee) => employee.personaId),
+      seededEmployees.map((employee) => employee.employeeCode),
+      seededEmployees.map((employee) => employee.displayName),
+      seededEmployees.map((employee) => employee.role),
+      seededEmployees.map(() => true),
+      seededEmployees.map((employee) => employee.protected),
+    ],
+  );
+  const halfHourMilliseconds = 30 * 60 * 1_000;
+  const currentShiftStartsAt = new Date(
+    Math.ceil(input.wallTime.getTime() / halfHourMilliseconds) *
+      halfHourMilliseconds,
+  );
+  const seededShifts = seededEmployees.flatMap((employee) =>
+    [0, 24, 48].map((offsetHours) => {
+      const startsAt = new Date(
+        currentShiftStartsAt.getTime() + offsetHours * 60 * 60 * 1_000,
+      );
+      return {
+        employeeId: employee.id,
+        endsAt: new Date(startsAt.getTime() + 8 * 60 * 60 * 1_000),
+        id: randomUUID(),
+        startsAt,
+        storeId: employee.storeId,
+      };
+    }),
+  );
+  await input.client.query(
+    `insert into shifts (
+       id, sandbox_id, store_id, employee_id, starts_at, ends_at
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[],
+       $5::timestamptz[], $6::timestamptz[]
+     )`,
+    [
+      seededShifts.map((shift) => shift.id),
+      seededShifts.map(() => input.sandboxId),
+      seededShifts.map((shift) => shift.storeId),
+      seededShifts.map((shift) => shift.employeeId),
+      seededShifts.map((shift) => shift.startsAt),
+      seededShifts.map((shift) => shift.endsAt),
     ],
   );
 
@@ -5552,6 +5998,7 @@ export function createPublicSandboxDatabase(
     {
       dueHandlers: {
         ...reservationDueHandlers(),
+        ...attendanceDueHandlers(),
         ...options.dueHandlers,
       },
       sandboxLifetimeMilliseconds: SANDBOX_LIFETIME_MS,
@@ -8515,6 +8962,431 @@ export function createPublicSandboxDatabase(
             idempotencyKeyHash,
             payloadHash,
             result.repairId,
+            JSON.stringify(storedResult),
+          ],
+        );
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readOwnShiftAttendance(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertEmployeeContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${input.sandboxId}:${context.employee.id}:attendance-state`],
+        );
+        await processDueAttendanceAbsences(client, {
+          employeeId: context.employee.id,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const rows = await client.query<ShiftAttendanceRow>(
+          `select shift.id as shift_id, shift.starts_at, shift.ends_at,
+                  attendance.id as attendance_id,
+                  attendance.status as attendance_status,
+                  attendance.check_in_outcome,
+                  attendance.check_in_business_at,
+                  attendance.check_in_recorded_at,
+                  attendance.check_out_business_at,
+                  attendance.check_out_recorded_at,
+                  attendance.absence_business_at,
+                  attendance.absence_recorded_at
+             from shifts shift
+             left join attendance_records attendance
+               on attendance.sandbox_id = shift.sandbox_id
+              and attendance.shift_id = shift.id
+            where shift.sandbox_id = $1 and shift.employee_id = $2
+              and shift.status = 'scheduled'
+            order by shift.starts_at, shift.id`,
+          [input.sandboxId, context.employee.id],
+        );
+        const shiftIds = rows.rows.map((row) => row.shift_id);
+        const facts =
+          shiftIds.length === 0
+            ? { rows: [] as AttendanceEventRow[] }
+            : await client.query<AttendanceEventRow>(
+                `select shift_id, event_type, event_data,
+                        business_occurred_at, recorded_at
+                   from attendance_events
+                  where sandbox_id = $1 and shift_id = any($2::uuid[])
+                  order by business_occurred_at, recorded_at, id`,
+                [input.sandboxId, shiftIds],
+              );
+        const shifts = rows.rows.map((row) =>
+          staffShiftFromRows(row, facts.rows, currentTime),
+        );
+        const awaitingSignOut = shifts.find(
+          (shift) => shift.attendance?.status === "checked-in",
+        );
+        const active = shifts.find(
+          (shift) =>
+            shift.window.startsAt.getTime() <= currentTime.getTime() &&
+            shift.window.endsAt.getTime() > currentTime.getTime(),
+        );
+        const current =
+          awaitingSignOut ??
+          active ??
+          shifts.find(
+            (shift) =>
+              shift.signInWindow.opensAt.getTime() <= currentTime.getTime() &&
+              shift.window.endsAt.getTime() > currentTime.getTime(),
+          ) ??
+          null;
+        const result: DatabaseOwnShiftAttendance = {
+          currentTime,
+          employee: {
+            displayName: context.employee.display_name,
+            employeeCode: context.employee.employee_code,
+            role: context.employee.role,
+          },
+          shifts: {
+            current,
+            future: shifts.filter(
+              (shift) =>
+                shift.shiftId !== current?.shiftId &&
+                shift.window.startsAt.getTime() > currentTime.getTime(),
+            ),
+            recent: shifts
+              .filter(
+                (shift) =>
+                  shift.shiftId !== current?.shiftId &&
+                  shift.window.endsAt.getTime() <= currentTime.getTime(),
+              )
+              .toReversed()
+              .slice(0, 3),
+          },
+          store: {
+            code: context.employee.store_code,
+            displayName: context.employee.store_display_name,
+          },
+        };
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async executeOwnAttendanceCommand(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertEmployeeContext(client, input, wallTime);
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`${input.sandboxId}:${context.employee.id}:attendance-state`],
+        );
+        await processDueAttendanceAbsences(client, {
+          employeeId: context.employee.id,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(
+          JSON.stringify({ action: input.action, shiftId: input.shiftId }),
+        );
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${context.employee.id}:attendance:${idempotencyKeyHash}`,
+          ],
+        );
+        const previous = await client.query<{
+          payload_hash: string;
+          result_data: StoredAttendanceCommand;
+        }>(
+          `select payload_hash, result_data
+             from attendance_command_requests
+            where sandbox_id = $1 and employee_id = $2
+              and idempotency_key_hash = $3`,
+          [input.sandboxId, context.employee.id, idempotencyKeyHash],
+        );
+        const previousRow = previous.rows[0];
+        if (previousRow) {
+          if (previousRow.payload_hash !== payloadHash) {
+            throw new AttendanceConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return {
+            ...previousRow.result_data,
+            occurredAt: new Date(previousRow.result_data.occurredAt),
+            replayed: true,
+          };
+        }
+        const shiftResult = await client.query<LockedShiftRow>(
+          `select shift.id as shift_id, shift.store_id, shift.employee_id,
+                  shift.starts_at, shift.ends_at
+             from shifts shift
+            where shift.sandbox_id = $1 and shift.id = $2
+              and shift.status = 'scheduled'
+            for update of shift`,
+          [input.sandboxId, input.shiftId],
+        );
+        const lockedShift = shiftResult.rows[0];
+        if (!lockedShift || lockedShift.employee_id !== context.employee.id) {
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, $5, $6, 'shift', $7,
+               'denied', 'not-own-shift', $8, null, null, $9, $10)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              context.employee.store_id,
+              input.personaId,
+              input.role,
+              `attendance.${input.action}`,
+              input.shiftId,
+              input.requestId,
+              currentTime,
+              wallTime,
+            ],
+          );
+          await client.query("commit");
+          throw new AttendanceConflictError("not-own-shift");
+        }
+        const attendanceResult = await client.query<
+          Omit<ShiftAttendanceRow, "ends_at" | "shift_id" | "starts_at">
+        >(
+          `select attendance.id as attendance_id,
+                  attendance.status as attendance_status,
+                  attendance.check_in_outcome,
+                  attendance.check_in_business_at,
+                  attendance.check_in_recorded_at,
+                  attendance.check_out_business_at,
+                  attendance.check_out_recorded_at,
+                  attendance.absence_business_at,
+                  attendance.absence_recorded_at
+             from attendance_records attendance
+            where attendance.sandbox_id = $1 and attendance.shift_id = $2`,
+          [input.sandboxId, input.shiftId],
+        );
+        const attendance = attendanceResult.rows[0];
+        const shift: ShiftAttendanceRow & LockedShiftRow = {
+          absence_business_at: attendance?.absence_business_at ?? null,
+          absence_recorded_at: attendance?.absence_recorded_at ?? null,
+          attendance_id: attendance?.attendance_id ?? null,
+          attendance_status: attendance?.attendance_status ?? null,
+          check_in_business_at: attendance?.check_in_business_at ?? null,
+          check_in_outcome: attendance?.check_in_outcome ?? null,
+          check_in_recorded_at: attendance?.check_in_recorded_at ?? null,
+          check_out_business_at: attendance?.check_out_business_at ?? null,
+          check_out_recorded_at: attendance?.check_out_recorded_at ?? null,
+          ...lockedShift,
+        };
+        if (
+          input.action === "simulated-check-in" &&
+          shift.attendance_status === null
+        ) {
+          const otherOpenAttendance = await client.query<{ shift_id: string }>(
+            `select shift_id from attendance_records
+              where sandbox_id = $1 and employee_id = $2
+                and status = 'checked-in' and shift_id <> $3
+              order by shift_id limit 1`,
+            [input.sandboxId, context.employee.id, input.shiftId],
+          );
+          if (otherOpenAttendance.rows[0]) {
+            await client.query(
+              `insert into audit_events (
+                 id, sandbox_id, store_id, persona_id, role, action,
+                 object_type, object_id, result, reason, request_id,
+                 before_data, after_data, business_occurred_at, recorded_at
+               ) values ($1, $2, $3, $4, $5, $6, 'shift', $7,
+                 'denied', 'employee-already-checked-in', $8, $9::jsonb,
+                 null, $10, $11)`,
+              [
+                randomUUID(),
+                input.sandboxId,
+                context.employee.store_id,
+                input.personaId,
+                input.role,
+                `attendance.${input.action}`,
+                input.shiftId,
+                input.requestId,
+                JSON.stringify({
+                  openShiftId: otherOpenAttendance.rows[0].shift_id,
+                }),
+                currentTime,
+                wallTime,
+              ],
+            );
+            await client.query("commit");
+            throw new AttendanceConflictError("employee-already-checked-in");
+          }
+        }
+        const decision = decideAttendanceAction({
+          action: input.action,
+          businessTime: currentTime,
+          endsAt: shift.ends_at,
+          startsAt: shift.starts_at,
+          status: shift.attendance_status,
+        });
+        if (decision.status === "invalid") {
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, $5, $6, 'shift', $7,
+               'denied', $8, $9, $10::jsonb, null, $11, $12)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              context.employee.store_id,
+              input.personaId,
+              input.role,
+              `attendance.${input.action}`,
+              input.shiftId,
+              decision.reason,
+              input.requestId,
+              JSON.stringify({ status: shift.attendance_status }),
+              currentTime,
+              wallTime,
+            ],
+          );
+          await client.query("commit");
+          throw new AttendanceConflictError(
+            decision.reason,
+            shift.attendance_status,
+          );
+        }
+        let attendanceId = shift.attendance_id;
+        if (input.action === "simulated-check-in") {
+          attendanceId = randomUUID();
+          await client.query(
+            `insert into attendance_records (
+               id, sandbox_id, store_id, employee_id, shift_id, status,
+               check_in_outcome, check_in_business_at, check_in_recorded_at
+             ) values ($1, $2, $3, $4, $5, 'checked-in', $6, $7, $8)`,
+            [
+              attendanceId,
+              input.sandboxId,
+              context.employee.store_id,
+              context.employee.id,
+              input.shiftId,
+              decision.outcome,
+              currentTime,
+              wallTime,
+            ],
+          );
+        } else {
+          if (!attendanceId) {
+            throw new Error("A checked-in shift has no attendance record.");
+          }
+          const updated = await client.query(
+            `update attendance_records
+                set status = 'checked-out', check_out_business_at = $3,
+                    check_out_recorded_at = $4
+              where sandbox_id = $1 and id = $2 and status = 'checked-in'`,
+            [input.sandboxId, attendanceId, currentTime, wallTime],
+          );
+          if (updated.rowCount !== 1) {
+            throw new Error("The attendance record could not be checked out.");
+          }
+        }
+        const outcome =
+          input.action === "simulated-check-in"
+            ? decision.outcome
+            : shift.check_in_outcome;
+        if (!attendanceId) {
+          throw new Error("The attendance command has no record identifier.");
+        }
+        await client.query(
+          `insert into attendance_events (
+             id, sandbox_id, store_id, employee_id, shift_id,
+             attendance_record_id, event_type, event_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            context.employee.store_id,
+            context.employee.id,
+            input.shiftId,
+            attendanceId,
+            `attendance.${input.action}`,
+            JSON.stringify(
+              input.action === "simulated-check-in"
+                ? { outcome, simulated: true }
+                : { source: "manual" },
+            ),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const result: DatabaseAttendanceCommand = {
+          action: input.action,
+          occurredAt: currentTime,
+          outcome,
+          replayed: false,
+          shiftId: input.shiftId,
+          status: decision.nextStatus,
+        };
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action,
+             object_type, object_id, result, request_id, before_data,
+             after_data, business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, $6, 'shift', $7, 'allowed',
+             $8, $9::jsonb, $10::jsonb, $11, $12)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            context.employee.store_id,
+            input.personaId,
+            input.role,
+            `attendance.${input.action}`,
+            input.shiftId,
+            input.requestId,
+            JSON.stringify({ status: shift.attendance_status }),
+            JSON.stringify({ outcome, status: result.status }),
+            currentTime,
+            wallTime,
+          ],
+        );
+        const storedResult = {
+          action: result.action,
+          occurredAt: result.occurredAt.toISOString(),
+          outcome: result.outcome,
+          shiftId: result.shiftId,
+          status: result.status,
+        } satisfies StoredAttendanceCommand;
+        await client.query(
+          `insert into attendance_command_requests (
+             sandbox_id, employee_id, idempotency_key_hash, payload_hash,
+             result_data
+           ) values ($1, $2, $3, $4, $5::jsonb)`,
+          [
+            input.sandboxId,
+            context.employee.id,
+            idempotencyKeyHash,
+            payloadHash,
             JSON.stringify(storedResult),
           ],
         );

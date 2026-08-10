@@ -2,8 +2,18 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-10
-- 已验证契约版本：`product-ui/management-system/prod.md` 1.8
-- 验证范围：[`16 — 备件领退、解决说明与维修验证闭环`](../../../.scratch/jingshu-basic-rc/issues/16-repair-spares-verification.md)；保留 ticket 15 维修联动和更早结论
+- 已验证契约版本：`product-ui/management-system/prod.md` 1.9
+- 验证范围：[`17 — 店员班次、模拟考勤与手动签退`](../../../.scratch/jingshu-basic-rc/issues/17-staff-shift-attendance.md)；保留 ticket 16 维修闭环和更早结论
+
+## Ticket 17 `WEB-S01/WEB-S09` 对照目标与结论
+
+- 应用内浏览器在精确 `1440 × 1024 CSS px` 与 `1024 × 768 CSS px` 分别打开正式夜间运营控制台和真实 Web → Hono → 临时 PostgreSQL 生产页。`design/source-ticket17-web-s09-ready-*`、`design/implementation-ticket17-web-s09-ready-*` 与 `design/qa-ticket17-web-s09-ready-comparison-*` 保留班次页两侧和合并对照；同名 `web-s01-shift-summary` 证据覆盖工作台本人班次摘要。
+- `WEB-S09` 首屏按“模拟边界 → 固定员工/门店/业务时间 → 当前班次与下一合法动作 → 不可变原始事实 → 未来/最近班次”排序。模拟边界持续声明不读取定位、人脸、门禁或真实考勤连接器；服务端只返回当前员工本人班次，不以客户端筛选代替授权。
+- 正式原型固定覆盖可签到、处理中、迟到、缺勤、已签退、过早、重复提交与失败；生产真实旅程完成业务时钟下的模拟签到、原键安全重放和员工手动签退。签到后即使计划结束仍只显示手动签退，签退后没有后续动作，系统不会自动补写签退时间；跨午夜班次在班次页和工作台摘要均明确显示“次日”。
+- 第 1 轮 P1 已关闭：生产 `1024px` 当前班次事实原先纵向堆叠，把青柠主动作推到首屏底边；断点改为保留三列紧凑事实后，主要动作、原始事实空态和未来班次标题重新同屏可见。
+- 两档生产页面均实测 `scrollWidth = innerWidth`（分别为 `1024px` 与 `1440px`），没有页面横向溢出。自动化在 `1024 × 768` 通过键盘聚焦并按 `Enter` 提交签到，随后验证处理中禁用、手动签退、不可变事实和无自动签退；`1440 × 1024` 验证重复提交明确反馈且没有重复写入。
+- 正式源和生产实现继续使用海军蓝高密度壳层、青色时间与信息反馈、青柠唯一主动作、琥珀模拟边界和右侧事实表面；时间层级、主动作、状态文本与键盘路径逐项复核后，没有仍需处理的 P0、P1 或 P2 差异。
+- 完整 `JINGSHU_E2E_WEB_ORIGIN=http://127.0.0.1:3017 pnpm verify` 通过：276 个 Vitest 单元测试、2 个开发启动测试、127 个真实 PostgreSQL/API 集成测试、2 个设计内容基线测试与 43 个 Chromium E2E 全部通过；全部构建、格式、lint、strict TypeScript、工作区边界、敏感数据扫描和 high 级依赖审计通过，仅报告 1 个不阻塞门禁的 moderate 漏洞。正式管理端原型生产构建与 Sites 包装通过。
 
 ## Ticket 16 `WEB-S07/WEB-M02` 对照目标与结论
 

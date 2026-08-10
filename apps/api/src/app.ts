@@ -11,6 +11,7 @@ import { registerCustomerSeatBrowseRoutes } from "./customer-seat-browse-routes.
 import { registerCustomerMembershipRoutes } from "./customer-membership-routes.js";
 import { registerCustomerOrderRoutes } from "./customer-order-routes.js";
 import { registerStaffReservationRoutes } from "./staff-reservation-routes.js";
+import { registerStaffShiftRoutes } from "./staff-shift-routes.js";
 import { registerStaffOrderRoutes } from "./staff-order-routes.js";
 import { registerManagerInventoryRoutes } from "./manager-inventory-routes.js";
 import { registerRepairIntakeRoutes } from "./repair-intake-routes.js";
@@ -63,6 +64,7 @@ export function createApp(options: AppOptions = {}) {
   registerCustomerMembershipRoutes(app, services);
   registerCustomerOrderRoutes(app, services);
   registerStaffReservationRoutes(app, services);
+  registerStaffShiftRoutes(app, services);
   registerStaffOrderRoutes(app, services);
   registerManagerInventoryRoutes(app, services);
   registerRepairIntakeRoutes(app, services);

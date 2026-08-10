@@ -12,6 +12,7 @@ import type {
   StaffOrderSummaryResponse,
   StaffReservationDetailResponse,
   StaffReservationSummary,
+  StaffShiftAttendanceResponse,
 } from "@jingshu/contracts";
 
 type MutableStaffReservationSummary = Omit<
@@ -161,6 +162,12 @@ test.beforeEach(async ({ context }) => {
   let csrfToken = "csrf-context-version-1-token-value";
   let businessTime = "2026-08-09T11:30:00.000Z";
   let advancedMilliseconds = 0;
+  const attendanceShiftId = "00000000-0000-4000-8000-000000000971";
+  let attendanceStatus: "checked-in" | "checked-out" | null = null;
+  let attendanceOutcome: "late" | "on-time" | null = null;
+  let attendanceCheckInAt: string | null = null;
+  let attendanceCheckOutAt: string | null = null;
+  const attendanceFacts: StaffShiftAttendanceResponse["shifts"]["future"] = [];
   const staffRows: MutableStaffReservationSummary[] = [
     {
       anomaly: null,
@@ -666,6 +673,140 @@ test.beforeEach(async ({ context }) => {
         status: "ready",
         store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
       },
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/staff/shifts**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === "POST" && pathname.endsWith("/attendance")) {
+      expect(currentRole).toBe("staff");
+      expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+      expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+      if (request.headers()["x-test-attendance-slow"] === "1") {
+        await new Promise((resolve) => setTimeout(resolve, 160));
+      }
+      const body = request.postDataJSON() as {
+        action: "manual-check-out" | "simulated-check-in";
+      };
+      if (body.action === "simulated-check-in") {
+        attendanceStatus = "checked-in";
+        attendanceOutcome = "on-time";
+        attendanceCheckInAt = businessTime;
+      } else {
+        attendanceStatus = "checked-out";
+        attendanceCheckOutAt = businessTime;
+      }
+      await route.fulfill({
+        json: {
+          action: body.action,
+          occurredAt: businessTime,
+          outcome: attendanceOutcome,
+          replayed: request.headers()["x-test-attendance-replay"] === "1",
+          shiftId: attendanceShiftId,
+          status: attendanceStatus,
+        },
+        status: 200,
+      });
+      return;
+    }
+    const currentFacts: StaffShiftAttendanceResponse["shifts"]["current"] extends infer Current
+      ? Current extends { facts: infer Facts }
+        ? Facts
+        : never
+      : never = [
+      ...(attendanceCheckInAt
+        ? [
+            {
+              businessOccurredAt: attendanceCheckInAt,
+              data: { outcome: attendanceOutcome, simulated: true },
+              recordedAt: attendanceCheckInAt,
+              type: "attendance.simulated-check-in" as const,
+            },
+          ]
+        : []),
+      ...(attendanceCheckOutAt
+        ? [
+            {
+              businessOccurredAt: attendanceCheckOutAt,
+              data: { source: "manual" },
+              recordedAt: attendanceCheckOutAt,
+              type: "attendance.manual-check-out" as const,
+            },
+          ]
+        : []),
+    ];
+    await route.fulfill({
+      json: {
+        currentTime: businessTime,
+        employee: {
+          displayName: "周宁",
+          employeeCode: "PRISM-S001",
+          role: "staff",
+        },
+        shifts: {
+          current: {
+            attendance: attendanceStatus
+              ? {
+                  absence: null,
+                  checkIn: attendanceCheckInAt
+                    ? {
+                        businessOccurredAt: attendanceCheckInAt,
+                        outcome: attendanceOutcome,
+                        recordedAt: attendanceCheckInAt,
+                        source: "simulated",
+                      }
+                    : null,
+                  checkOut: attendanceCheckOutAt
+                    ? {
+                        businessOccurredAt: attendanceCheckOutAt,
+                        recordedAt: attendanceCheckOutAt,
+                        source: "manual",
+                      }
+                    : null,
+                  status: attendanceStatus,
+                }
+              : null,
+            canManageSchedule: attendanceStatus === null,
+            facts: currentFacts,
+            nextAction:
+              attendanceStatus === "checked-in"
+                ? { kind: "manual-check-out", label: "手动签退" }
+                : attendanceStatus === null
+                  ? { kind: "simulated-check-in", label: "模拟签到" }
+                  : null,
+            shiftId: attendanceShiftId,
+            signInWindow: {
+              closesAt: "2026-08-09T20:00:00.000Z",
+              opensAt: "2026-08-09T11:30:00.000Z",
+            },
+            window: {
+              endsAt: "2026-08-09T20:00:00.000Z",
+              startsAt: "2026-08-09T12:00:00.000Z",
+            },
+          },
+          future: [
+            {
+              attendance: null,
+              canManageSchedule: true,
+              facts: [],
+              nextAction: null,
+              shiftId: "00000000-0000-4000-8000-000000000972",
+              signInWindow: {
+                closesAt: "2026-08-10T20:00:00.000Z",
+                opensAt: "2026-08-10T11:30:00.000Z",
+              },
+              window: {
+                endsAt: "2026-08-10T20:00:00.000Z",
+                startsAt: "2026-08-10T12:00:00.000Z",
+              },
+            },
+          ],
+          recent: attendanceFacts,
+        },
+        status: "ready",
+        store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+      } satisfies StaffShiftAttendanceResponse,
       status: 200,
     });
   });
@@ -1383,6 +1524,69 @@ async function enterStaffShell(page: Page) {
   await page.getByRole("button", { name: "进入店员视图" }).click();
   await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
 }
+
+test("staff sees own shift summary, explicit simulation boundary and manual attendance actions", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.route("**/api/v1/staff/shifts/*/attendance", async (route) => {
+    await route.fallback({
+      headers: {
+        ...route.request().headers(),
+        "x-test-attendance-slow": "1",
+      },
+    });
+  });
+  await enterStaffShell(page);
+  await expect(page.getByText("本人班次", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "班次与交接" }).click();
+  await expect(page.getByRole("heading", { name: "班次与考勤" })).toBeVisible();
+  await expect(page.getByText("模拟考勤，不连接真实设备")).toBeVisible();
+  await expect(page.getByText(/不读取定位、人脸或门禁/u)).toBeVisible();
+  await expect(page.getByText("周宁 · PRISM-S001")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "未来班次" })).toBeVisible();
+
+  const checkIn = page.getByRole("button", { name: "模拟签到" });
+  await checkIn.focus();
+  await expect(checkIn).toBeFocused();
+  await checkIn.press("Enter");
+  const processing = page.getByRole("button", { name: "处理中…" });
+  await expect(processing).toBeDisabled();
+  await expect(page.getByRole("button", { name: "手动签退" })).toBeVisible();
+  await expect(page.getByText("员工模拟签到")).toBeVisible();
+  await page.getByRole("button", { name: "手动签退" }).click();
+  await expect(page.getByText("当前没有可执行动作")).toBeVisible();
+  await expect(
+    page.getByText("员工手动签退", { exact: true }).first(),
+  ).toBeVisible();
+  await expect(page.getByText("系统未自动补写时间")).toBeVisible();
+
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.body.clientWidth,
+    scrollWidth: document.body.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBe(layout.clientWidth);
+});
+
+test("staff receives explicit safe-replay feedback for a duplicate attendance submission", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await page.route("**/api/v1/staff/shifts/*/attendance", async (route) => {
+    await route.fallback({
+      headers: {
+        ...route.request().headers(),
+        "x-test-attendance-replay": "1",
+      },
+    });
+  });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "班次与交接" }).click();
+  await page.getByRole("button", { name: "模拟签到" }).click();
+  await expect(
+    page.getByText("同一考勤请求已安全重放，原始事实没有重复写入。"),
+  ).toBeVisible();
+});
 
 test("staff reads inventory while manager stocktakes, receives and compensates with dedicated dialogs", async ({
   page,

@@ -6,6 +6,8 @@ import pg from "pg";
 
 export * from "./schema.js";
 export {
+  AttendanceConflictError,
+  type AttendanceConflictReason,
   CustomerOrderConflictError,
   type CustomerOrderConflictReason,
   CustomerSeatBrowseValidationError,
@@ -82,6 +84,9 @@ export {
   type DatabaseStaffReservationList,
   type DatabaseStaffReservationSummary,
   type DatabaseStaffReservationWorkbench,
+  type DatabaseAttendanceCommand,
+  type DatabaseOwnShiftAttendance,
+  type DatabaseStaffShift,
   type DatabaseStaffOrderCommand,
   type DatabaseStaffOrderDetail,
   type DatabaseStaffOrderQueue,
@@ -95,6 +100,7 @@ export {
   type PublicSandboxDatabaseOptions,
   type PublicSandboxResult,
   type ExecuteStaffReservationCommandInput,
+  type ExecuteOwnAttendanceCommandInput,
   type ExecuteStaffOrderCommandInput,
   type ExecuteManagerInventoryCommandInput,
   type EnqueueRepairImageCleanupInput,
@@ -106,6 +112,7 @@ export {
   type ReadStaffReservationDetailInput,
   type ReadStaffReservationListInput,
   type ReadStaffReservationWorkbenchInput,
+  type ReadOwnShiftAttendanceInput,
   type ReadStaffRepairIntakeInput,
   type ReadRepairImageInput,
   type RepairStaffContextInput,

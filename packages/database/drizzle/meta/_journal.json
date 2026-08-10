@@ -134,6 +134,13 @@
       "when": 1786363200000,
       "tag": "0018_repair_spares_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786370400000,
+      "tag": "0019_staff_shift_attendance",
+      "breakpoints": true
     }
   ]
 }

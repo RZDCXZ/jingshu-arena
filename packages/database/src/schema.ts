@@ -411,6 +411,233 @@ export const demoPersonas = pgTable(
   ],
 ).enableRLS();
 
+export const employees = pgTable(
+  "employees",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    personaId: uuid("persona_id").references(() => demoPersonas.id, {
+      onDelete: "restrict",
+    }),
+    employeeCode: text("employee_code").notNull(),
+    displayName: text("display_name").notNull(),
+    role: text("role").notNull(),
+    active: boolean("active").default(true).notNull(),
+    protected: boolean("protected").default(false).notNull(),
+  },
+  (table) => [
+    unique("employees_sandbox_store_code_unique").on(
+      table.sandboxId,
+      table.storeId,
+      table.employeeCode,
+    ),
+    unique("employees_sandbox_persona_unique").on(
+      table.sandboxId,
+      table.personaId,
+    ),
+    unique("employees_sandbox_store_id_unique").on(
+      table.sandboxId,
+      table.storeId,
+      table.id,
+    ),
+    check("employees_role", sql`${table.role} IN ('staff', 'manager')`),
+    pgPolicy("employees_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const shifts = pgTable(
+  "shifts",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    employeeId: uuid("employee_id").notNull(),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    status: text("status").default("scheduled").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("shifts_sandbox_store_employee_id_unique").on(
+      table.sandboxId,
+      table.storeId,
+      table.employeeId,
+      table.id,
+    ),
+    check("shifts_status", sql`${table.status} IN ('scheduled', 'cancelled')`),
+    check(
+      "shifts_aligned_duration",
+      sql`extract(minute from ${table.startsAt}) IN (0, 30)
+        AND extract(second from ${table.startsAt}) = 0
+        AND extract(minute from ${table.endsAt}) IN (0, 30)
+        AND extract(second from ${table.endsAt}) = 0
+        AND ${table.endsAt} - ${table.startsAt} BETWEEN interval '4 hours' AND interval '12 hours'`,
+    ),
+    foreignKey({
+      columns: [table.sandboxId, table.storeId, table.employeeId],
+      foreignColumns: [employees.sandboxId, employees.storeId, employees.id],
+      name: "shifts_employee_scope_fk",
+    }).onDelete("restrict"),
+    pgPolicy("shifts_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const attendanceRecords = pgTable(
+  "attendance_records",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    employeeId: uuid("employee_id").notNull(),
+    shiftId: uuid("shift_id").notNull(),
+    status: text("status").notNull(),
+    checkInOutcome: text("check_in_outcome"),
+    checkInBusinessAt: timestamp("check_in_business_at", {
+      withTimezone: true,
+    }),
+    checkInRecordedAt: timestamp("check_in_recorded_at", {
+      withTimezone: true,
+    }),
+    checkOutBusinessAt: timestamp("check_out_business_at", {
+      withTimezone: true,
+    }),
+    checkOutRecordedAt: timestamp("check_out_recorded_at", {
+      withTimezone: true,
+    }),
+    absenceBusinessAt: timestamp("absence_business_at", {
+      withTimezone: true,
+    }),
+    absenceRecordedAt: timestamp("absence_recorded_at", {
+      withTimezone: true,
+    }),
+  },
+  (table) => [
+    unique("attendance_records_shift_unique").on(
+      table.sandboxId,
+      table.shiftId,
+    ),
+    uniqueIndex("attendance_records_one_open_per_employee")
+      .on(table.sandboxId, table.employeeId)
+      .where(sql`${table.status} = 'checked-in'`),
+    check(
+      "attendance_records_status",
+      sql`${table.status} IN ('checked-in', 'checked-out', 'absent')`,
+    ),
+    check(
+      "attendance_records_check_in_outcome",
+      sql`${table.checkInOutcome} IN ('on-time', 'late')`,
+    ),
+    foreignKey({
+      columns: [
+        table.sandboxId,
+        table.storeId,
+        table.employeeId,
+        table.shiftId,
+      ],
+      foreignColumns: [
+        shifts.sandboxId,
+        shifts.storeId,
+        shifts.employeeId,
+        shifts.id,
+      ],
+      name: "attendance_records_shift_scope_fk",
+    }).onDelete("restrict"),
+    pgPolicy("attendance_records_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const attendanceEvents = pgTable(
+  "attendance_events",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    employeeId: uuid("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "restrict" }),
+    shiftId: uuid("shift_id")
+      .notNull()
+      .references(() => shifts.id, { onDelete: "restrict" }),
+    attendanceRecordId: uuid("attendance_record_id")
+      .notNull()
+      .references(() => attendanceRecords.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    eventData: jsonb("event_data").notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "attendance_events_type",
+      sql`${table.eventType} IN ('attendance.simulated-check-in', 'attendance.manual-check-out', 'attendance.absence-recorded')`,
+    ),
+    pgPolicy("attendance_events_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const attendanceCommandRequests = pgTable(
+  "attendance_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.sandboxId, table.employeeId, table.idempotencyKeyHash],
+      name: "attendance_command_requests_pk",
+    }),
+    pgPolicy("attendance_command_requests_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
 export const memberProfiles = pgTable(
   "member_profiles",
   {

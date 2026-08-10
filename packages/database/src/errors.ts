@@ -207,6 +207,33 @@ export class StaffOrderConflictError extends Error {
   }
 }
 
+export type AttendanceConflictReason =
+  | "already-checked-in"
+  | "attendance-finalized"
+  | "employee-already-checked-in"
+  | "idempotency-conflict"
+  | "not-checked-in"
+  | "not-due"
+  | "not-own-shift"
+  | "shift-ended"
+  | "sign-in-window-not-open";
+
+export class AttendanceConflictError extends Error {
+  readonly code = "ATTENDANCE_CONFLICT";
+  readonly currentStatus: string | null;
+  readonly reason: AttendanceConflictReason;
+
+  constructor(
+    reason: AttendanceConflictReason,
+    currentStatus: string | null = null,
+  ) {
+    super(`Attendance command was rejected: ${reason}.`);
+    this.name = "AttendanceConflictError";
+    this.currentStatus = currentStatus;
+    this.reason = reason;
+  }
+}
+
 export type ManagerInventoryConflictReason =
   | "cross-store"
   | "idempotency-conflict"

@@ -2246,6 +2246,11 @@ button.metric-card:hover {
   margin-bottom: 10px;
   background: var(--line-strong);
 }
+.shift-sign-in-window {
+  margin-top: 8px;
+  color: var(--cyan);
+  font-size: 10px;
+}
 .shift-facts {
   display: grid;
   gap: 10px;
@@ -2275,6 +2280,9 @@ button.metric-card:hover {
 .shift-focus .button {
   margin-top: 16px;
 }
+.shift-focus .inline-notice {
+  margin-top: 16px;
+}
 .future-shifts > div {
   min-height: 76px;
   display: grid;
@@ -2294,6 +2302,23 @@ button.metric-card:hover {
 .future-shifts span {
   color: var(--muted);
   font-size: 10px;
+}
+.shift-raw-facts {
+  display: grid;
+  gap: 5px;
+  margin-top: 14px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #07131c;
+}
+.shift-raw-facts span,
+.shift-raw-facts small {
+  color: var(--muted);
+  font-size: 9px;
+}
+.shift-raw-facts strong {
+  font-size: 11px;
 }
 
 .snapshot-grid {

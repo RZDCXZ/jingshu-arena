@@ -23,6 +23,7 @@ import type {
   StaffReservationTimeFilter,
   StaffReservationWorkbenchResponse,
 } from "@jingshu/contracts";
+import { StaffShiftSummary } from "./staff-shift-attendance";
 
 export interface StaffReservationPreset {
   readonly anomaly?: StaffReservationAnomalyFilter;
@@ -447,6 +448,7 @@ export function RoleWorkbench({
   onFilterDirty,
   onInspector,
   onNavigateReservations,
+  onNavigateShift,
   onNavigateWorkbench,
   onToast,
   page,
@@ -460,6 +462,7 @@ export function RoleWorkbench({
   onFilterDirty: (dirty: boolean) => void;
   onInspector: (value: boolean) => void;
   onNavigateReservations: (preset: StaffReservationPreset) => void;
+  onNavigateShift?: () => void;
   onNavigateWorkbench: () => void;
   onToast: (message: string) => void;
   page: "reservations" | "workbench";
@@ -740,6 +743,10 @@ export function RoleWorkbench({
             ) : null}
           </div>
         </div>
+
+        {page === "workbench" && onNavigateShift ? (
+          <StaffShiftSummary onOpen={onNavigateShift} refreshKey={refreshKey} />
+        ) : null}
 
         {page === "reservations" ? (
           <div className="staff-filter-bar" aria-label="预约筛选">
