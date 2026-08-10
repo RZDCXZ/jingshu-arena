@@ -8,6 +8,7 @@ import { registerRoleContextRoutes } from "./role-context-routes.js";
 import type { AppServices } from "./route-support.js";
 import { registerDemoToolsRoutes } from "./demo-tools-routes.js";
 import { registerCustomerSeatBrowseRoutes } from "./customer-seat-browse-routes.js";
+import { registerCustomerMembershipRoutes } from "./customer-membership-routes.js";
 import { registerStaffReservationRoutes } from "./staff-reservation-routes.js";
 
 interface AppOptions {
@@ -44,6 +45,7 @@ export function createApp(options: AppOptions = {}) {
   registerRoleAccessRoutes(app, services);
   registerDemoToolsRoutes(app, services);
   registerCustomerSeatBrowseRoutes(app, services);
+  registerCustomerMembershipRoutes(app, services);
   registerStaffReservationRoutes(app, services);
   registerPublicSandboxRoutes(app, services);
 

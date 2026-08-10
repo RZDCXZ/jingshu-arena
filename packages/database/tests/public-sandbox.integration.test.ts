@@ -39,8 +39,8 @@ describe("public sandbox creation", () => {
       sandboxId: expect.stringMatching(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
       ),
-      schemaVersion: "8",
-      seedVersion: "2026-08-10.3",
+      schemaVersion: "9",
+      seedVersion: "2026-08-10.4",
       expiresAt: expect.any(Date),
       selectedRole: "customer",
       persona: {
@@ -76,8 +76,8 @@ describe("public sandbox creation", () => {
         sandboxId: expect.stringMatching(
           /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
         ),
-        schemaVersion: "8",
-        seedVersion: "2026-08-10.3",
+        schemaVersion: "9",
+        seedVersion: "2026-08-10.4",
         expiresAt: expect.any(Date),
         businessClock: {
           advanceLimitMilliseconds: 86_400_000,

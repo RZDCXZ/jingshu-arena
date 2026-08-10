@@ -300,6 +300,37 @@ export const demoPersonas = pgTable(
   ],
 ).enableRLS();
 
+export const memberProfiles = pgTable(
+  "member_profiles",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    customerPersonaId: uuid("customer_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    growthPoints: integer("growth_points").default(0).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("member_profiles_sandbox_customer_unique").on(
+      table.sandboxId,
+      table.customerPersonaId,
+    ),
+    check(
+      "member_profiles_non_negative_growth",
+      sql`${table.growthPoints} >= 0`,
+    ),
+    pgPolicy("member_profiles_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
 export const experienceCoupons = pgTable(
   "experience_coupons",
   {
@@ -463,6 +494,63 @@ export const reservationSimulatedRefunds = pgTable(
       sql`${table.amountCents} >= 0`,
     ),
     pgPolicy("reservation_simulated_refunds_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const memberGrowthEvents = pgTable(
+  "member_growth_events",
+  {
+    id: uuid("id").primaryKey(),
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    memberProfileId: uuid("member_profile_id")
+      .notNull()
+      .references(() => memberProfiles.id, { onDelete: "cascade" }),
+    customerPersonaId: uuid("customer_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: uuid("source_id"),
+    finalSimulatedAmountCents: integer(
+      "final_simulated_amount_cents",
+    ).notNull(),
+    growthPoints: integer("growth_points").notNull(),
+    businessOccurredAt: timestamp("business_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("member_growth_events_business_source_unique")
+      .on(
+        table.sandboxId,
+        table.customerPersonaId,
+        table.sourceKind,
+        table.sourceId,
+      )
+      .where(sql`${table.sourceId} IS NOT NULL`),
+    uniqueIndex("member_growth_events_seed_baseline_unique")
+      .on(table.sandboxId, table.customerPersonaId, table.sourceKind)
+      .where(sql`${table.sourceKind} = 'seed-baseline'`),
+    check(
+      "member_growth_events_source_kind",
+      sql`${table.sourceKind} IN ('seed-baseline', 'reservation', 'order')`,
+    ),
+    check(
+      "member_growth_events_source_reference",
+      sql`(${table.sourceKind} = 'seed-baseline' AND ${table.sourceId} IS NULL) OR (${table.sourceKind} <> 'seed-baseline' AND ${table.sourceId} IS NOT NULL)`,
+    ),
+    check(
+      "member_growth_events_non_negative_amounts",
+      sql`${table.finalSimulatedAmountCents} >= 0 AND ${table.growthPoints} >= 0`,
+    ),
+    pgPolicy("member_growth_events_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),

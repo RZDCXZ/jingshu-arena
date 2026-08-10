@@ -233,10 +233,11 @@ describe("role-context expand migration", () => {
     await applyMigration("0009_reservation_hold_snapshot.sql");
     await applyMigration("0010_reservation_payment_lifecycle.sql");
     await applyMigration("0011_staff_reservation_operations.sql");
+    await applyMigration("0012_membership_journey.sql");
 
     const metadata = await client.query<{ value: string }>(
       "select value from jingshu_schema_metadata where key = 'schema_version'",
     );
-    expect(metadata.rows).toEqual([{ value: "8" }]);
+    expect(metadata.rows).toEqual([{ value: "9" }]);
   });
 });

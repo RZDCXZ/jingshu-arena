@@ -1,5 +1,5 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "8";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.3";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "9";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-10.4";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -308,6 +308,100 @@ export type ReservationCouponIneligibleReason =
   | "time-window"
   | "unavailable"
   | "validity";
+
+export type MemberTier = "bronze" | "gold" | "silver";
+
+export interface MemberTierProgress {
+  readonly growthPoints: number;
+  readonly nextThreshold: 500 | 1_500 | null;
+  readonly remainingToNext: number;
+  readonly tier: MemberTier;
+}
+
+export function memberTierForGrowth(growthPoints: number): MemberTierProgress {
+  if (!Number.isInteger(growthPoints) || growthPoints < 0) {
+    throw new RangeError(
+      "Lifetime growth points must be a non-negative integer.",
+    );
+  }
+  if (growthPoints >= 1_500) {
+    return {
+      growthPoints,
+      nextThreshold: null,
+      remainingToNext: 0,
+      tier: "gold",
+    };
+  }
+  const nextThreshold = growthPoints >= 500 ? 1_500 : 500;
+  return {
+    growthPoints,
+    nextThreshold,
+    remainingToNext: nextThreshold - growthPoints,
+    tier: growthPoints >= 500 ? "silver" : "bronze",
+  };
+}
+
+export function applyGrowthAward(
+  lifetimeGrowthPoints: number,
+  awardedGrowthPoints: number,
+): number {
+  memberTierForGrowth(lifetimeGrowthPoints);
+  if (!Number.isInteger(awardedGrowthPoints) || awardedGrowthPoints < 0) {
+    throw new RangeError("Growth awards must be a non-negative integer.");
+  }
+  return lifetimeGrowthPoints + awardedGrowthPoints;
+}
+
+interface ReservationGrowthAwardInput {
+  readonly alreadyAwarded: boolean;
+  readonly payableCents: number;
+  readonly refundedCents: number;
+  readonly status: ReservationStatus;
+}
+
+export interface ReservationGrowthAward {
+  readonly finalSimulatedAmountCents: number;
+  readonly growthPoints: number;
+}
+
+export function reservationGrowthAward(
+  input: ReservationGrowthAwardInput,
+): ReservationGrowthAward | null {
+  if (
+    !Number.isInteger(input.payableCents) ||
+    input.payableCents < 0 ||
+    !Number.isInteger(input.refundedCents) ||
+    input.refundedCents < 0
+  ) {
+    throw new RangeError("Reservation growth uses non-negative integer cents.");
+  }
+  if (input.status !== "completed" || input.alreadyAwarded) return null;
+  const finalSimulatedAmountCents = Math.max(
+    0,
+    input.payableCents - input.refundedCents,
+  );
+  return {
+    finalSimulatedAmountCents,
+    growthPoints: Math.floor(finalSimulatedAmountCents / 100),
+  };
+}
+
+export type ExperienceCouponStatus =
+  "available" | "expired" | "redeemed" | "reserved";
+
+export function deriveExperienceCouponStatus(input: {
+  readonly now: Date;
+  readonly status: ExperienceCouponStatus;
+  readonly validUntil: Date;
+}): ExperienceCouponStatus {
+  if (
+    input.status !== "redeemed" &&
+    input.now.getTime() >= input.validUntil.getTime()
+  ) {
+    return "expired";
+  }
+  return input.status;
+}
 
 interface EvaluateReservationCouponInput {
   readonly businessKind: "reservation";

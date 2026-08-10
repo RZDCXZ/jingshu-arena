@@ -104,6 +104,7 @@ async function main() {
         "apps/api/src/public-sandbox.integration.test.ts",
         "apps/api/src/customer-seat-browse.integration.test.ts",
         "apps/api/src/staff-reservation.integration.test.ts",
+        "apps/api/src/customer-membership.integration.test.ts",
         "apps/api/src/role-context.integration.test.ts",
         "apps/api/src/demo-tools.integration.test.ts",
       ];

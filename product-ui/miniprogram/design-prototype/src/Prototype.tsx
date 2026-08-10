@@ -583,7 +583,7 @@ function BrandHeader({ compact = false }: { compact?: boolean }) {
         <div className="member-glance">
           <div>
             <strong>林澈</strong>
-            <span>银卡会员</span>
+            <span>白银会员</span>
           </div>
           <div className="growth-glance">
             <strong>860</strong>
@@ -1437,6 +1437,13 @@ function TripsScreen({ flow }: { flow: FlowControls }) {
   const orderSummary = cartSummary(demo.cart);
   const orderAmount = Math.max(0, orderSummary.total - 5);
   const orderTitle = orderSummary.lines.map((product) => product.name).join("、");
+  const currentReservation = ["pending", "confirmed", "arrived", "active"].includes(demo.reservationStatus);
+  const currentOrder = ["pending", "paid", "making", "pickup"].includes(demo.orderStatus);
+  const currentRepair = ["new", "assigned", "processing", "verification"].includes(demo.repairStatus);
+  const hasCurrentJourney = currentReservation || currentOrder || currentRepair;
+  const historicalReservation = ["completed", "cancelled", "expired"].includes(demo.reservationStatus);
+  const historicalOrder = ["completed", "cancelled", "expired"].includes(demo.orderStatus);
+  const hasHistoricalJourney = historicalReservation || historicalOrder || demo.repairStatus === "closed";
   return (
     <MobileScroll className="app-screen app-dark">
       <main className="root-content trips-screen" data-screen-id="MP-16">
@@ -1444,10 +1451,10 @@ function TripsScreen({ flow }: { flow: FlowControls }) {
         <LocalDemoStrip flow={flow} compact />
         <div className="tab-row"><button className={tab === "current" ? "active" : ""} type="button" onClick={() => setTab("current")}>当前</button><button className={tab === "future" ? "active" : ""} type="button" onClick={() => setTab("future")}>未来</button><button className={tab === "history" ? "active" : ""} type="button" onClick={() => setTab("history")}>历史</button></div>
         {tab === "current" ? (
-          demo.reservationStatus === "none" ? <EmptyState icon={CalendarBlank} title="还没有当前预约" description="从首页选择门店、时段、机型和明确座位。"><PrimaryButton onClick={() => flow.replace(rootScreen("home"))}>开始预约</PrimaryButton></EmptyState> : <div className="journey-stack"><JourneyCard icon={Armchair} label="预约" title={`棱镜旗舰店 · ${demo.selectedSeat}`} status={demo.reservationStatus} meta="今天 19:30–21:30" onClick={() => flow.push(reservationDetailScreen())} />{demo.orderStatus !== "none" ? <JourneyCard icon={ShoppingBag} label="商品订单" title={orderTitle || "柜台商品"} status={demo.orderStatus} meta={`模拟金额 ¥${orderAmount.toFixed(2)}`} onClick={() => flow.push(orderDetailScreen())} /> : null}{demo.repairStatus !== "none" ? <JourneyCard icon={Wrench} label="报修" title="耳机右声道无声" status={demo.repairStatus} meta={`关联竞技区 ${demo.selectedSeat}`} onClick={() => flow.push(repairDetailScreen())} /> : null}</div>
+          hasCurrentJourney ? <div className="journey-stack">{currentReservation ? <JourneyCard icon={Armchair} label="预约" title={`棱镜旗舰店 · ${demo.selectedSeat}`} status={demo.reservationStatus} meta="今天 19:30–21:30" onClick={() => flow.push(reservationDetailScreen())} /> : null}{currentOrder ? <JourneyCard icon={ShoppingBag} label="商品订单" title={orderTitle || "柜台商品"} status={demo.orderStatus} meta={`模拟金额 ¥${orderAmount.toFixed(2)}`} onClick={() => flow.push(orderDetailScreen())} /> : null}{currentRepair ? <JourneyCard icon={Wrench} label="报修" title="耳机右声道无声" status={demo.repairStatus} meta={`关联竞技区 ${demo.selectedSeat}`} onClick={() => flow.push(repairDetailScreen())} /> : null}</div> : <EmptyState icon={CalendarBlank} title="还没有当前预约" description="从首页选择门店、时段、机型和明确座位。"><PrimaryButton onClick={() => flow.replace(rootScreen("home"))}>开始预约</PrimaryButton></EmptyState>
         ) : null}
         {tab === "future" ? <div className="journey-stack"><JourneyCard icon={CalendarBlank} label="未来预约" title="星桥标准店 · B-07" status="已确认" meta="08月10日 20:00–22:00" onClick={() => flow.push(reservationDetailScreen())} /></div> : null}
-        {tab === "history" ? <div className="journey-stack"><JourneyCard icon={CheckCircle} label="已完成预约" title="棱镜旗舰店 · A-06" status="已完成" meta="08月06日 18:00–20:00" onClick={() => flow.push(reservationDetailScreen())} /><JourneyCard icon={CurrencyCny} label="模拟退款" title="设备中断退款" status="已完成" meta="¥18.00 · 关联报修 RPR-0042" onClick={() => flow.push(repairDetailScreen())} /></div> : null}
+        {tab === "history" ? hasHistoricalJourney ? <div className="journey-stack">{historicalReservation ? <JourneyCard icon={CheckCircle} label="已结束预约" title={`棱镜旗舰店 · ${demo.selectedSeat}`} status={demo.reservationStatus} meta="08月06日 18:00–20:00" onClick={() => flow.push(reservationDetailScreen())} /> : null}{historicalOrder ? <JourneyCard icon={ShoppingBag} label="已结束商品订单" title={orderTitle || "柜台商品"} status={demo.orderStatus} meta={`最终模拟金额 ¥${orderAmount.toFixed(2)}`} onClick={() => flow.push(orderDetailScreen())} /> : null}{demo.repairStatus === "closed" ? <JourneyCard icon={CurrencyCny} label="模拟退款" title="设备中断退款" status="已完成" meta="¥18.00 · 关联报修 RPR-0042" onClick={() => flow.push(repairDetailScreen())} /> : null}</div> : <EmptyState icon={CalendarBlank} title="还没有历史行程" description="完成或结束的预约、订单、报修与模拟退款会聚合在这里。"><PrimaryButton onClick={() => flow.replace(rootScreen("home"))}>开始预约</PrimaryButton></EmptyState> : null}
       </main>
     </MobileScroll>
   );
@@ -1462,19 +1469,35 @@ function EmptyState({ icon: Icon, title, description, children }: { icon: IconCo
 }
 
 function MemberScreen({ flow }: { flow: FlowControls }) {
-  const [couponTab, setCouponTab] = useState("可用");
+  type CouponTab = "可用" | "占用中" | "已使用" | "已过期";
+  const [couponTab, setCouponTab] = useState<CouponTab>("可用");
+  const coupons: Record<CouponTab, Array<{ title: string; note: string; tone: "cyan" | "lime" | "neutral"; action?: () => void }>> = {
+    可用: [
+      { title: "预约立减体验券 · ¥6", note: "棱镜旗舰店 · 满 ¥20 可用 · 08月31日前有效", tone: "lime", action: () => flow.push(reservationConditionsScreen()) },
+      { title: "商品立减体验券 · ¥5", note: "三店商品订单 · 满 ¥15 可用 · 08月31日前有效", tone: "lime", action: () => flow.push(productCatalogScreen()) },
+    ],
+    占用中: [
+      { title: "预约立减体验券 · ¥6", note: "关联待确认预约 · 保留过期后恢复可用", tone: "cyan", action: () => flow.push(reservationDetailScreen()) },
+    ],
+    已使用: [
+      { title: "历史预约体验券 · ¥6", note: "关联已完成预约 · 开始使用后不再恢复", tone: "neutral", action: () => flow.push(reservationDetailScreen()) },
+    ],
+    已过期: [
+      { title: "历史商品体验券 · ¥3", note: "有效期已结束 · 未占用任何交易", tone: "neutral" },
+    ],
+  };
   return (
     <MobileScroll className="app-screen app-dark">
       <main className="root-content member-screen" data-screen-id="MP-17">
         <div className="root-title"><div><span className="eyebrow">MEMBER PROFILE</span><h1>会员</h1></div><button className="icon-button" type="button" onClick={() => flow.push(settingsScreen())} aria-label="本地演示设置"><GearSix size={21} /></button></div>
         <LocalDemoStrip flow={flow} compact />
-        <section className="member-hero"><div className="member-medal"><Star size={28} weight="fill" /></div><div><span>银卡会员 · 虚构人物</span><h2>林澈</h2><p>终身不降级 · 距离黄金还差 140 成长值</p></div><strong>860</strong></section>
-        <div className="growth-progress"><div><span>银卡 500</span><span>黄金 1000</span></div><progress value="860" max="1000" aria-label="成长值 860 / 1000" /><small>预约和商品订单完成后获得等额成长值</small></div>
+        <section className="member-hero"><div className="member-medal"><Star size={28} weight="fill" /></div><div><span>白银会员 · 虚构人物</span><h2>林澈</h2><p>终身不降级 · 距离黄金还差 640 成长值</p></div><strong>860</strong></section>
+        <div className="growth-progress"><div><span>白银 500</span><span>黄金 1500</span></div><progress value="860" max="1500" aria-label="成长值 860 / 1500" /><small>完成预约按体验券减免后的最终模拟金额每满一元获得一点成长值</small></div>
         <Section title="体验券">
-          <div className="tab-row compact-tabs">{["可用", "占用", "已使用", "已过期"].map((item) => <button className={couponTab === item ? "active" : ""} type="button" key={item} onClick={() => setCouponTab(item)}>{item}</button>)}</div>
-          {couponTab === "可用" ? <div className="coupon-stack"><div className="coupon display"><Ticket size={25} weight="fill" /><span><strong>预约立减体验券 · ¥6</strong><small>棱镜旗舰店 · 08月15日前有效</small></span><StatusPill tone="lime">可用</StatusPill></div><div className="coupon display"><Ticket size={25} weight="fill" /><span><strong>商品立减体验券 · ¥5</strong><small>三店商品订单 · 08月31日前有效</small></span><StatusPill tone="lime">可用</StatusPill></div></div> : <EmptyState icon={Ticket} title={`暂无${couponTab}体验券`} description="体验券状态会随本地预约和商品订单变化。" />}
+          <div className="tab-row compact-tabs">{(["可用", "占用中", "已使用", "已过期"] as const).map((item) => <button className={couponTab === item ? "active" : ""} type="button" key={item} onClick={() => setCouponTab(item)}>{item}</button>)}</div>
+          <div className="coupon-stack">{coupons[couponTab].map((coupon) => coupon.action ? <button className="coupon display" key={coupon.title} type="button" onClick={coupon.action}><Ticket size={25} weight="fill" /><span><strong>{coupon.title}</strong><small>{coupon.note}</small></span><StatusPill tone={coupon.tone}>{couponTab}</StatusPill></button> : <div className="coupon display" key={coupon.title}><Ticket size={25} weight="fill" /><span><strong>{coupon.title}</strong><small>{coupon.note}</small></span><StatusPill tone={coupon.tone}>{couponTab}</StatusPill></div>)}</div>
         </Section>
-        <Section title="成长记录"><div className="growth-list"><div><TrendUp size={19} /><span><strong>完成预约</strong><small>08月06日 · 棱镜旗舰店</small></span><b>+24</b></div><div><TrendUp size={19} /><span><strong>完成商品订单</strong><small>08月06日 · 柜台取货</small></span><b>+13</b></div></div></Section>
+        <Section title="成长记录"><div className="growth-list"><button type="button" onClick={() => flow.push(reservationDetailScreen())}><TrendUp size={19} /><span><strong>完成预约 · 最终模拟金额 ¥24</strong><small>08月06日 · 棱镜旗舰店 · 点击查看关联预约</small></span><b>+24</b></button><div><TrendUp size={19} /><span><strong>标准故事起始累计成长</strong><small>终身累计只增不减</small></span><b>+836</b></div></div></Section>
       </main>
     </MobileScroll>
   );

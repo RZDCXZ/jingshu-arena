@@ -2518,7 +2518,8 @@
   min-height: 70px;
 }
 
-.growth-list > div {
+.growth-list > div,
+.growth-list > button {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) auto;
   align-items: center;
@@ -2528,6 +2529,8 @@
   border: 1px solid var(--js-line);
   border-radius: var(--js-radius);
   background: var(--js-surface);
+  color: var(--js-text);
+  text-align: left;
 }
 
 .growth-list svg,

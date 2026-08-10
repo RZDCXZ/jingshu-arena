@@ -3,6 +3,8 @@ import type { Page, Route } from "@playwright/test";
 
 import type {
   CustomerMachineProfileCode,
+  CustomerJourneyResponse,
+  CustomerMembershipResponse,
   CustomerPendingReservationResponse,
   CustomerReservationDetailResponse,
   CustomerReservationStatus,
@@ -32,8 +34,8 @@ const customerContext: RoleContextReadyResponse = {
       timeZone: "Asia/Shanghai",
     },
     expiresAt: "2026-08-11T11:47:23.000Z",
-    schemaVersion: "8",
-    seedVersion: "2026-08-10.3",
+    schemaVersion: "9",
+    seedVersion: "2026-08-10.4",
   },
   status: "ready",
   storeScope: {
@@ -174,6 +176,214 @@ const catalog: CustomerStoreCatalogResponse = {
       seatCount: 40,
     },
   ],
+};
+
+const currentStoryReservationId = "00000000-0000-4000-8000-000000000710";
+const futureStoryReservationId = "00000000-0000-4000-8000-000000000711";
+const historyStoryReservationId = "00000000-0000-4000-8000-000000000712";
+const storySnapshot: CustomerPendingReservationResponse["snapshot"] = {
+  area: { code: "competitive-a", displayName: "竞技区 A" },
+  coupon: {
+    code: "reservation-history-six",
+    discountCents: 600,
+    displayName: "历史预约体验券",
+  },
+  machineProfile: {
+    code: "competitive",
+    displayName: "竞技型",
+    experienceDescription: "高刷竞技与低延迟外设",
+  },
+  price: {
+    discountCents: 600,
+    payableCents: 2_400,
+    segments: [
+      {
+        amountCents: 1_500,
+        endsAt: "2026-08-06T11:00:00.000Z",
+        multiplierBasisPoints: 10_000,
+        rule: "weekday-base",
+        startsAt: "2026-08-06T10:00:00.000Z",
+      },
+      {
+        amountCents: 1_500,
+        endsAt: "2026-08-06T12:00:00.000Z",
+        multiplierBasisPoints: 10_000,
+        rule: "weekday-base",
+        startsAt: "2026-08-06T11:00:00.000Z",
+      },
+    ],
+    subtotalCents: 3_000,
+  },
+  seat: { code: "A-08" },
+  store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+  window: {
+    endsAt: "2026-08-06T12:00:00.000Z",
+    startsAt: "2026-08-06T10:00:00.000Z",
+  },
+};
+
+const membershipFixture: CustomerMembershipResponse = {
+  coupons: [
+    {
+      businessKind: "reservation",
+      code: "reservation-six",
+      discountCents: 600,
+      displayName: "预约立减体验券",
+      id: "00000000-0000-4000-8000-000000000721",
+      minimumSpendCents: 2_000,
+      releaseCondition: "提交待处理预约时排他占用；每笔交易最多使用一张。",
+      status: "available",
+      store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+      transaction: null,
+      validFrom: "2026-08-01T00:00:00.000Z",
+      validUntil: "2026-08-31T00:00:00.000Z",
+    },
+    {
+      businessKind: "order",
+      code: "order-five",
+      discountCents: 500,
+      displayName: "商品立减体验券",
+      id: "00000000-0000-4000-8000-000000000722",
+      minimumSpendCents: 1_500,
+      releaseCondition: "提交待处理订单时排他占用；每笔交易最多使用一张。",
+      status: "available",
+      store: null,
+      transaction: null,
+      validFrom: "2026-08-01T00:00:00.000Z",
+      validUntil: "2026-08-31T00:00:00.000Z",
+    },
+    {
+      businessKind: "reservation",
+      code: "reservation-held-six",
+      discountCents: 600,
+      displayName: "占用中的预约体验券",
+      id: "00000000-0000-4000-8000-000000000723",
+      minimumSpendCents: 2_000,
+      releaseCondition: "完成模拟支付后标记已使用；保留过期会恢复可用。",
+      status: "reserved",
+      store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+      transaction: {
+        id: currentStoryReservationId,
+        kind: "reservation",
+        label: "棱镜旗舰店预约",
+        status: "pending-confirmation",
+      },
+      validFrom: "2026-08-01T00:00:00.000Z",
+      validUntil: "2026-08-31T00:00:00.000Z",
+    },
+    {
+      businessKind: "reservation",
+      code: "reservation-history-six",
+      discountCents: 600,
+      displayName: "历史预约体验券",
+      id: "00000000-0000-4000-8000-000000000724",
+      minimumSpendCents: 2_000,
+      releaseCondition: "预约开始使用后不再恢复。",
+      status: "redeemed",
+      store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+      transaction: {
+        id: historyStoryReservationId,
+        kind: "reservation",
+        label: "棱镜旗舰店预约",
+        status: "completed",
+      },
+      validFrom: "2026-07-01T00:00:00.000Z",
+      validUntil: "2026-08-31T00:00:00.000Z",
+    },
+    {
+      businessKind: "order",
+      code: "order-history-expired",
+      discountCents: 300,
+      displayName: "历史商品体验券",
+      id: "00000000-0000-4000-8000-000000000725",
+      minimumSpendCents: 1_000,
+      releaseCondition: "有效期已结束，不再占用任何交易。",
+      status: "expired",
+      store: null,
+      transaction: null,
+      validFrom: "2026-07-01T00:00:00.000Z",
+      validUntil: "2026-08-01T00:00:00.000Z",
+    },
+  ],
+  currentTime: businessTime,
+  growthEvents: [
+    {
+      businessOccurredAt: "2026-08-06T12:00:00.000Z",
+      finalSimulatedAmountCents: 2_400,
+      growthPoints: 24,
+      id: "00000000-0000-4000-8000-000000000731",
+      label: "完成预约 · 棱镜旗舰店",
+      source: { id: historyStoryReservationId, kind: "reservation" },
+    },
+    {
+      businessOccurredAt: "2026-07-27T12:00:00.000Z",
+      finalSimulatedAmountCents: 83_600,
+      growthPoints: 836,
+      id: "00000000-0000-4000-8000-000000000732",
+      label: "标准故事起始累计成长",
+      source: { id: null, kind: "seed-baseline" },
+    },
+  ],
+  profile: {
+    customerDisplayName: "林澈",
+    growthPoints: 860,
+    lifetimeNondecreasing: true,
+    nextTier: { remainingGrowthPoints: 640, threshold: 1_500 },
+    operatorScope: "三店共享",
+    tier: { code: "silver", label: "白银" },
+  },
+  status: "ready",
+};
+
+function journeyItem(
+  reservationId: string,
+  status: CustomerReservationStatus,
+  window: { endsAt: string; startsAt: string },
+): CustomerJourneyResponse["groups"]["current"][number] {
+  return {
+    area: storySnapshot.area,
+    coupon:
+      status === "completed"
+        ? { discountCents: 600, displayName: "历史预约体验券" }
+        : null,
+    growthAward: status === "completed" ? { growthPoints: 24 } : null,
+    machineProfile: storySnapshot.machineProfile,
+    payableCents: status === "completed" ? 2_400 : 3_600,
+    refund: null,
+    related: { orders: [], repairs: [] },
+    reservationId,
+    seat: storySnapshot.seat,
+    status,
+    store: storySnapshot.store,
+    terminalReason:
+      status === "completed" ? "planned-end-auto-completed" : null,
+    window,
+  };
+}
+
+const journeyFixture: CustomerJourneyResponse = {
+  currentTime: businessTime,
+  groups: {
+    current: [
+      journeyItem(currentStoryReservationId, "pending-confirmation", {
+        endsAt: "2026-08-10T13:30:00.000Z",
+        startsAt: "2026-08-10T11:30:00.000Z",
+      }),
+    ],
+    future: [
+      journeyItem(futureStoryReservationId, "confirmed", {
+        endsAt: "2026-08-11T14:00:00.000Z",
+        startsAt: "2026-08-11T12:00:00.000Z",
+      }),
+    ],
+    history: [
+      journeyItem(historyStoryReservationId, "completed", {
+        endsAt: "2026-08-06T12:00:00.000Z",
+        startsAt: "2026-08-06T10:00:00.000Z",
+      }),
+    ],
+  },
+  status: "ready",
 };
 
 function availabilityFor(url: string): CustomerSeatAvailabilityResponse {
@@ -321,6 +531,12 @@ async function openCustomerH5(
   await page.route("**/api/v1/customer/stores", (route) =>
     serveJson(route, catalog),
   );
+  await page.route("**/api/v1/customer/membership", (route) =>
+    serveJson(route, membershipFixture),
+  );
+  await page.route("**/api/v1/customer/journey", (route) =>
+    serveJson(route, journeyFixture),
+  );
   await page.route("**/api/v1/customer/seat-availability?**", (route) => {
     const value = availabilityFor(route.request().url());
     return serveJson(
@@ -408,10 +624,25 @@ async function openCustomerH5(
   await page.route(
     /\/api\/v1\/customer\/reservations\/[^/]+$/u,
     async (route) => {
-      const snapshot = activeSnapshot;
+      const reservationId = route.request().url().split("/").at(-1)!;
+      const isStoryReservation = [
+        currentStoryReservationId,
+        futureStoryReservationId,
+        historyStoryReservationId,
+      ].includes(reservationId);
+      const snapshot =
+        activeSnapshot ?? (isStoryReservation ? storySnapshot : null);
       if (!snapshot) {
         await route.fulfill({ status: 404 });
         return;
+      }
+      if (isStoryReservation) {
+        lifecycleStatus =
+          reservationId === currentStoryReservationId
+            ? "pending-confirmation"
+            : reservationId === futureStoryReservationId
+              ? "confirmed"
+              : "completed";
       }
       const sequenceStatus = options.detailStatuses?.[detailStatusIndex];
       if (sequenceStatus) {
@@ -468,7 +699,7 @@ async function openCustomerH5(
             }
           : null,
         related: { orders: [], repairs: [] },
-        reservationId: "00000000-0000-4000-8000-000000000708",
+        reservationId,
         snapshot,
         status: lifecycleStatus,
         terminalReason: terminal ? "演示终态" : null,
@@ -945,4 +1176,96 @@ test("WEB-C02 renders all seven reservation states without exposing illegal main
   await expect(
     page.getByRole("button", { name: "继续模拟支付（不扣款）" }),
   ).toHaveCount(0);
+});
+
+test("WEB-C03 exposes the silver profile, four coupon states and linked growth at 360px", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  await openCustomerH5(page);
+  await page.getByRole("button", { name: "会员", exact: true }).click();
+
+  await expect(page.getByText("白银会员", { exact: true })).toBeVisible();
+  await expect(page.getByText("860", { exact: true })).toBeVisible();
+  await expect(page.getByText("还差 640 成长值")).toBeVisible();
+  await expect(page.locator(".customer-member-thresholds")).toContainText(
+    "1500",
+  );
+  await expect(page.getByText("预约立减体验券")).toBeVisible();
+  await expect(page.getByText("商品立减体验券")).toBeVisible();
+
+  await page.getByRole("tab", { name: /占用中 1/u }).click();
+  await expect(page.getByText("占用中的预约体验券")).toBeVisible();
+  await expect(page.getByText(/保留过期会恢复可用/u)).toBeVisible();
+  await page
+    .locator(".customer-member-coupon-copy > button")
+    .getByText("棱镜旗舰店预约")
+    .click();
+  await expect(page.getByText("预约详情", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "返回统一行程" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "返回统一行程" }).click();
+  await page.getByRole("button", { name: "会员", exact: true }).click();
+
+  await page.getByRole("tab", { name: /已使用 1/u }).click();
+  await expect(page.getByText("历史预约体验券")).toBeVisible();
+  await page.getByRole("tab", { name: /已过期 1/u }).click();
+  await expect(page.getByText("历史商品体验券")).toBeVisible();
+  await page.getByRole("tab", { name: /可用 2/u }).click();
+  await expect(page.getByText("成长记录")).toBeVisible();
+
+  const pageCopy = await page.locator(".customer-story-page").innerText();
+  expect(pageCopy).not.toMatch(/积分|余额|返现/u);
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+});
+
+test("WEB-C03 operates journey tabs, reservation jumps and actionable history filters at 360px", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  await openCustomerH5(page);
+  await page.getByRole("button", { name: "行程", exact: true }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "一条行程，看清完整结果" }),
+  ).toBeVisible();
+  await expect(page.getByRole("tab", { name: /当前 1/u })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await page.locator(".customer-journey-main").first().click();
+  await expect(page.getByText("预约详情", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "返回统一行程" }).click();
+
+  await page.getByRole("tab", { name: /未来 1/u }).click();
+  await expect(page.getByText("已确认", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: /历史 1/u }).click();
+  await expect(page.getByText("计划结束后自动完成")).toBeVisible();
+  await page.getByRole("button", { name: "含模拟退款" }).click();
+  await expect(
+    page.getByRole("heading", { name: "历史行程为空" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "查看全部历史" }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "查看全部历史" }).click();
+  await expect(page.getByText("计划结束后自动完成")).toBeVisible();
+
+  const undersizedControls = await page
+    .locator(".customer-h5 button:visible:not(:disabled)")
+    .evaluateAll((buttons) =>
+      buttons
+        .map((button) => ({
+          height: button.getBoundingClientRect().height,
+          label: button.textContent ?? "",
+          width: button.getBoundingClientRect().width,
+        }))
+        .filter((button) => button.height < 44 || button.width < 44),
+    );
+  expect(undersizedControls).toEqual([]);
 });

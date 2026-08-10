@@ -1,9 +1,17 @@
 # 小程序设计 QA
 
 - 状态：`current`（当前有效）
-- 检查日期：2026-08-09
+- 检查日期：2026-08-10
 - 已验证契约版本：`product-ui/miniprogram/prod.md` 1.1
-- 验证范围：[`02 — 统一跨端设计基线与合成命名`](../../../.scratch/jingshu-basic-rc/issues/02-unify-design-baseline.md)
+- 验证范围：[`10 — 会员成长、体验券与统一行程`](../../../.scratch/jingshu-basic-rc/issues/10-membership-journey.md)；保留 ticket 02 的跨端视觉基线结论
+
+## Ticket 10 `MP-16/MP-17` 正式参考复核
+
+- `MP-16` 的当前、未来和历史只展示对应生命周期分组；完成、取消、过期预约与已关闭报修进入历史，当前空态保留“开始预约”恢复入口。
+- `MP-17` 固定展示白银会员、`860` 成长值、黄金 `1500` 门槛和还差 `640`，体验券可用、占用中、已使用、已过期四态均有真实内容；占用/已使用券和成长记录可下钻到关联预约。
+- 应用内浏览器在 `360 × 800 CSS px` 逐项验证当前行程、历史空态和四种券状态；正式参考截图与 Web H5 实现已放入相同对比输入，证据保存在管理系统正式 QA 的 `design/comparison-ticket10-journey-states-360x800.png` 与 `design/comparison-ticket10-membership-states-360x800.png`。
+- 可接受差异：小程序参考保留设备框、本地演示条和小程序底栏，Web H5 使用共享 Web 沙箱工具栏、Web 独立沙箱标识及 Web 底栏；页面职责、信息层级、深色令牌、青柠关键状态和关联对象操作保持一致。
+- 最终没有仍需处理的 P0、P1 或 P2 差异；正式原型运行时完整性检查通过（28 个受保护文件），TypeScript 与 Vite 生产构建通过，控制台 warning/error 为 0。
 
 ## 对照目标
 

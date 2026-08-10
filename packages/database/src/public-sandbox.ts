@@ -14,10 +14,13 @@ import {
   type CustomerReservationMode,
   decideReservationLifecycle,
   decideFrontlineReservationLifecycle,
+  deriveExperienceCouponStatus,
   deriveSeatAvailability,
   evaluateReservationCoupon,
+  memberTierForGrowth,
   type MachineProfileCode,
   priceReservationWindow,
+  reservationGrowthAward,
   type ReservationPriceRule,
   type ReservationCouponEligibility,
   type ReservationStatus,
@@ -301,6 +304,95 @@ export interface DatabaseCustomerReservationDetail {
   readonly terminalReason: string | null;
 }
 
+export interface DatabaseCustomerMembership {
+  readonly coupons: ReadonlyArray<{
+    readonly businessKind: "order" | "reservation";
+    readonly code: string;
+    readonly discountCents: number;
+    readonly displayName: string;
+    readonly id: string;
+    readonly minimumSpendCents: number;
+    readonly releaseCondition: string;
+    readonly status: "available" | "expired" | "redeemed" | "reserved";
+    readonly store: {
+      readonly code: string;
+      readonly displayName: string;
+    } | null;
+    readonly transaction: {
+      readonly id: string;
+      readonly kind: "order" | "reservation";
+      readonly label: string;
+      readonly status: string;
+    } | null;
+    readonly validFrom: Date;
+    readonly validUntil: Date;
+  }>;
+  readonly currentTime: Date;
+  readonly growthEvents: ReadonlyArray<{
+    readonly businessOccurredAt: Date;
+    readonly finalSimulatedAmountCents: number;
+    readonly growthPoints: number;
+    readonly id: string;
+    readonly label: string;
+    readonly source: {
+      readonly id: string | null;
+      readonly kind: "order" | "reservation" | "seed-baseline";
+    };
+  }>;
+  readonly profile: {
+    readonly customerDisplayName: string;
+    readonly growthPoints: number;
+    readonly nextThreshold: 500 | 1_500 | null;
+    readonly remainingToNext: number;
+    readonly tier: "bronze" | "gold" | "silver";
+  };
+}
+
+export interface DatabaseCustomerJourneyReservation {
+  readonly area: { readonly code: string; readonly displayName: string };
+  readonly coupon: {
+    readonly discountCents: number;
+    readonly displayName: string;
+  } | null;
+  readonly growthAward: { readonly growthPoints: number } | null;
+  readonly machineProfile: {
+    readonly code: MachineProfileCode;
+    readonly displayName: string;
+  };
+  readonly payableCents: number;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly reason: string;
+  } | null;
+  readonly related: {
+    readonly orders: ReadonlyArray<{
+      readonly id: string;
+      readonly label: string;
+      readonly status: string;
+    }>;
+    readonly repairs: ReadonlyArray<{
+      readonly id: string;
+      readonly label: string;
+      readonly status: string;
+    }>;
+  };
+  readonly reservationId: string;
+  readonly seat: { readonly code: string };
+  readonly status: ReservationStatus;
+  readonly store: { readonly code: string; readonly displayName: string };
+  readonly terminalReason: string | null;
+  readonly window: { readonly endsAt: Date; readonly startsAt: Date };
+}
+
+export interface DatabaseCustomerJourney {
+  readonly currentTime: Date;
+  readonly groups: {
+    readonly current: ReadonlyArray<DatabaseCustomerJourneyReservation>;
+    readonly future: ReadonlyArray<DatabaseCustomerJourneyReservation>;
+    readonly history: ReadonlyArray<DatabaseCustomerJourneyReservation>;
+  };
+}
+
 export type FrontlineRole = "manager" | "staff";
 
 export interface ReadStaffReservationWorkbenchInput extends ReadRoleContextInput {
@@ -500,6 +592,12 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readCustomerReservationDetail(
     input: ReadCustomerReservationDetailInput,
   ): Promise<DatabaseCustomerReservationDetail>;
+  readCustomerMembership(
+    input: CustomerBrowseContextInput,
+  ): Promise<DatabaseCustomerMembership>;
+  readCustomerJourney(
+    input: CustomerBrowseContextInput,
+  ): Promise<DatabaseCustomerJourney>;
   readCustomerStoreCatalog(
     input: CustomerBrowseContextInput,
   ): Promise<DatabaseCustomerStoreCatalog>;
@@ -618,6 +716,39 @@ interface ExperienceCouponRow {
   store_code: string | null;
   valid_from: Date;
   valid_until: Date;
+}
+
+interface MembershipCouponRow extends ExperienceCouponRow {
+  reserved_reservation_id: string | null;
+  reservation_id: string | null;
+  reservation_status: ReservationStatus | null;
+  store_display_name: string | null;
+}
+
+interface MembershipProfileRow {
+  customer_display_name: string;
+  growth_points: number;
+  id: string;
+}
+
+interface MembershipGrowthEventRow {
+  business_occurred_at: Date;
+  final_simulated_amount_cents: number;
+  growth_points: number;
+  id: string;
+  source_id: string | null;
+  source_kind: "order" | "reservation" | "seed-baseline";
+  store_display_name: string | null;
+}
+
+interface CustomerJourneyRow {
+  growth_points: number | null;
+  id: string;
+  price_snapshot: ReservationSnapshotRecord;
+  refund_amount_cents: number | null;
+  refund_reason: string | null;
+  status: ReservationStatus;
+  terminal_reason: string | null;
 }
 
 interface ReservationSnapshotRecord {
@@ -1270,6 +1401,78 @@ function reservationDueHandlers(): DemoTimeDueHandlerRegistry {
   };
 }
 
+async function awardCompletedReservationGrowth(
+  client: PoolClient,
+  input: {
+    readonly businessOccurredAt: Date;
+    readonly customerPersonaId: string;
+    readonly payableCents: number;
+    readonly recordedAt: Date;
+    readonly reservationId: string;
+    readonly sandboxId: string;
+  },
+): Promise<number> {
+  const existing = await client.query<{ exists: boolean }>(
+    `select exists(
+       select 1 from member_growth_events
+        where sandbox_id = $1 and customer_persona_id = $2
+          and source_kind = 'reservation' and source_id = $3
+     ) as exists`,
+    [input.sandboxId, input.customerPersonaId, input.reservationId],
+  );
+  const refunds = await client.query<{ amount_cents: number }>(
+    `select coalesce(sum(amount_cents), 0)::integer as amount_cents
+       from reservation_simulated_refunds
+      where sandbox_id = $1 and reservation_id = $2`,
+    [input.sandboxId, input.reservationId],
+  );
+  const award = reservationGrowthAward({
+    alreadyAwarded: existing.rows[0]?.exists ?? false,
+    payableCents: input.payableCents,
+    refundedCents: refunds.rows[0]?.amount_cents ?? 0,
+    status: "completed",
+  });
+  if (!award) return 0;
+  const profile = await client.query<{ id: string }>(
+    `select id from member_profiles
+      where sandbox_id = $1 and customer_persona_id = $2
+      for update`,
+    [input.sandboxId, input.customerPersonaId],
+  );
+  const profileId = profile.rows[0]?.id;
+  if (!profileId) {
+    throw new Error(
+      "The completed reservation customer has no member profile.",
+    );
+  }
+  const inserted = await client.query(
+    `insert into member_growth_events (
+       id, sandbox_id, member_profile_id, customer_persona_id, source_kind,
+       source_id, final_simulated_amount_cents, growth_points,
+       business_occurred_at, recorded_at
+     ) values ($1, $2, $3, $4, 'reservation', $5, $6, $7, $8, $9)
+     on conflict do nothing`,
+    [
+      randomUUID(),
+      input.sandboxId,
+      profileId,
+      input.customerPersonaId,
+      input.reservationId,
+      award.finalSimulatedAmountCents,
+      award.growthPoints,
+      input.businessOccurredAt,
+      input.recordedAt,
+    ],
+  );
+  if (inserted.rowCount !== 1) return 0;
+  await client.query(
+    `update member_profiles set growth_points = growth_points + $3
+      where sandbox_id = $1 and id = $2`,
+    [input.sandboxId, profileId, award.growthPoints],
+  );
+  return award.growthPoints;
+}
+
 async function processDueReservationAutoCompletions(
   client: PoolClient,
   input: {
@@ -1317,6 +1520,14 @@ async function processDueReservationAutoCompletions(
         where sandbox_id = $1 and id = $2 and status = 'in-use'`,
       [input.sandboxId, row.id, row.ends_at],
     );
+    const growthPoints = await awardCompletedReservationGrowth(client, {
+      businessOccurredAt: row.ends_at,
+      customerPersonaId: row.customer_persona_id,
+      payableCents: snapshot.price.payableCents,
+      recordedAt: input.recordedAt,
+      reservationId: row.id,
+      sandboxId: input.sandboxId,
+    });
     await client.query(
       `insert into reservation_business_events (
          id, sandbox_id, reservation_id, event_type, event_data,
@@ -1326,7 +1537,7 @@ async function processDueReservationAutoCompletions(
         randomUUID(),
         input.sandboxId,
         row.id,
-        JSON.stringify({ reason: "planned-end" }),
+        JSON.stringify({ growthPoints, reason: "planned-end" }),
         row.ends_at,
         input.recordedAt,
       ],
@@ -2133,6 +2344,9 @@ async function materializePublicSandbox(input: {
   const couponValidUntil = new Date(
     input.wallTime.getTime() + 30 * 24 * 60 * 60 * 1_000,
   );
+  const couponExpiredAt = new Date(
+    input.wallTime.getTime() - 24 * 60 * 60 * 1_000,
+  );
   const seededCoupons = [
     {
       businessKind: "reservation",
@@ -2145,18 +2359,50 @@ async function materializePublicSandbox(input: {
       minimumSpendCents: 2_000,
       status: "available",
       storeId: flagshipStore.id,
+      validFrom: couponValidFrom,
+      validUntil: couponValidUntil,
     },
     {
-      businessKind: "reservation",
-      code: "reservation-premium",
-      discountCents: 1_000,
-      displayName: "高额预约体验券",
+      businessKind: "order",
+      code: "order-five",
+      discountCents: 500,
+      displayName: "商品立减体验券",
       eligibleEndMinutes: 1_440,
       eligibleStartMinutes: 0,
       id: randomUUID(),
-      minimumSpendCents: 5_000,
+      minimumSpendCents: 1_500,
       status: "available",
       storeId: null,
+      validFrom: couponValidFrom,
+      validUntil: couponValidUntil,
+    },
+    {
+      businessKind: "reservation",
+      code: "reservation-history-six",
+      discountCents: 600,
+      displayName: "历史预约体验券",
+      eligibleEndMinutes: 1_440,
+      eligibleStartMinutes: 0,
+      id: randomUUID(),
+      minimumSpendCents: 2_000,
+      status: "redeemed",
+      storeId: flagshipStore.id,
+      validFrom: new Date(input.wallTime.getTime() - 30 * 24 * 60 * 60 * 1_000),
+      validUntil: couponValidUntil,
+    },
+    {
+      businessKind: "order",
+      code: "order-history-expired",
+      discountCents: 300,
+      displayName: "历史商品体验券",
+      eligibleEndMinutes: 1_440,
+      eligibleStartMinutes: 0,
+      id: randomUUID(),
+      minimumSpendCents: 1_000,
+      status: "expired",
+      storeId: null,
+      validFrom: new Date(input.wallTime.getTime() - 30 * 24 * 60 * 60 * 1_000),
+      validUntil: couponExpiredAt,
     },
   ] as const;
   await input.client.query(
@@ -2183,8 +2429,8 @@ async function materializePublicSandbox(input: {
       seededCoupons.map((coupon) => coupon.minimumSpendCents),
       seededCoupons.map((coupon) => coupon.eligibleStartMinutes),
       seededCoupons.map((coupon) => coupon.eligibleEndMinutes),
-      seededCoupons.map(() => couponValidFrom),
-      seededCoupons.map(() => couponValidUntil),
+      seededCoupons.map((coupon) => coupon.validFrom),
+      seededCoupons.map((coupon) => coupon.validUntil),
       seededCoupons.map((coupon) => coupon.status),
     ],
   );
@@ -2218,6 +2464,26 @@ async function materializePublicSandbox(input: {
       staffQueueCustomers.map((persona) => persona.displayName),
       staffQueueCustomers.map(() => "合成预约顾客"),
       staffQueueCustomers.map(() => false),
+    ],
+  );
+  const customerPersonas = [customerPersona, ...staffQueueCustomers];
+  const seededMemberProfiles = customerPersonas.map((persona) => ({
+    customerPersonaId: persona.id,
+    growthPoints: persona.id === customerPersona.id ? 860 : 0,
+    id: randomUUID(),
+  }));
+  await input.client.query(
+    `insert into member_profiles (
+       id, sandbox_id, customer_persona_id, growth_points
+     )
+     select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::integer[]
+     )`,
+    [
+      seededMemberProfiles.map((profile) => profile.id),
+      seededMemberProfiles.map(() => input.sandboxId),
+      seededMemberProfiles.map((profile) => profile.customerPersonaId),
+      seededMemberProfiles.map((profile) => profile.growthPoints),
     ],
   );
   const currentSegmentStart = new Date(
@@ -2258,6 +2524,167 @@ async function materializePublicSandbox(input: {
       seededReservations.map((reservation) => reservation.status),
       seededReservations.map((reservation) => reservation.startsAt),
       seededReservations.map((reservation) => reservation.endsAt),
+    ],
+  );
+
+  const historySeat = seatByKey.get("prism-flagship:A-08");
+  const historyCoupon = seededCoupons.find(
+    (coupon) => coupon.code === "reservation-history-six",
+  );
+  const customerMemberProfile = seededMemberProfiles.find(
+    (profile) => profile.customerPersonaId === customerPersona.id,
+  );
+  if (!historySeat || !historyCoupon || !customerMemberProfile) {
+    throw new Error(
+      "The deterministic customer membership history is incomplete.",
+    );
+  }
+  const historyStartsAt = new Date(
+    currentSegmentStart.getTime() -
+      4 * 24 * 60 * 60 * 1_000 -
+      5 * 60 * 60 * 1_000,
+  );
+  const historyEndsAt = new Date(
+    historyStartsAt.getTime() + 2 * 60 * 60 * 1_000,
+  );
+  const historyPrice = priceReservationWindow({
+    baseHourlyCents: flagshipStore.baseHourlyCents.competitive,
+    endsAt: historyEndsAt,
+    startsAt: historyStartsAt,
+  });
+  const historyPayableCents = Math.max(
+    0,
+    historyPrice.totalCents - historyCoupon.discountCents,
+  );
+  const historyGrowthPoints = Math.floor(historyPayableCents / 100);
+  const historyReservationId = randomUUID();
+  const historySnapshot: ReservationSnapshotRecord = {
+    area: { code: "competitive-a", displayName: "竞技区 A" },
+    coupon: {
+      code: historyCoupon.code,
+      discountCents: historyCoupon.discountCents,
+      displayName: historyCoupon.displayName,
+    },
+    machineProfile: {
+      code: "competitive",
+      displayName: "竞技型",
+      experienceDescription: "2K / 180Hz",
+    },
+    price: {
+      discountCents: historyCoupon.discountCents,
+      payableCents: historyPayableCents,
+      segments: historyPrice.segments.map((segment) => ({
+        ...segment,
+        endsAt: segment.endsAt.toISOString(),
+        startsAt: segment.startsAt.toISOString(),
+      })),
+      subtotalCents: historyPrice.totalCents,
+    },
+    seat: { code: historySeat.code },
+    store: {
+      code: flagshipStore.code,
+      displayName: flagshipStore.displayName,
+    },
+    window: {
+      endsAt: historyEndsAt.toISOString(),
+      startsAt: historyStartsAt.toISOString(),
+    },
+  };
+  await input.client.query(
+    `insert into reservations (
+       id, sandbox_id, store_id, customer_persona_id, seat_id, status,
+       starts_at, ends_at, created_business_at, price_snapshot, coupon_id,
+       coupon_snapshot, simulated_payment_cents, confirmed_business_at,
+       arrived_business_at, started_business_at, completed_business_at,
+       terminal_reason
+     ) values ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, $9::jsonb,
+       $10, $11::jsonb, $12, $13, $14, $15, $16, 'planned-end-auto-completed')`,
+    [
+      historyReservationId,
+      input.sandboxId,
+      flagshipStore.id,
+      customerPersona.id,
+      historySeat.id,
+      historyStartsAt,
+      historyEndsAt,
+      new Date(historyStartsAt.getTime() - 24 * 60 * 60 * 1_000),
+      JSON.stringify(historySnapshot),
+      historyCoupon.id,
+      JSON.stringify(historySnapshot.coupon),
+      historyPayableCents,
+      new Date(historyStartsAt.getTime() - 12 * 60 * 60 * 1_000),
+      new Date(historyStartsAt.getTime() - 5 * 60 * 1_000),
+      historyStartsAt,
+      historyEndsAt,
+    ],
+  );
+  const historyEvents = [
+    {
+      at: new Date(historyStartsAt.getTime() - 24 * 60 * 60 * 1_000),
+      data: { seeded: true },
+      type: "reservation.pending-created",
+    },
+    {
+      at: new Date(historyStartsAt.getTime() - 12 * 60 * 60 * 1_000),
+      data: { simulatedPaymentCents: historyPayableCents },
+      type: "reservation.simulated-payment-succeeded",
+    },
+    {
+      at: new Date(historyStartsAt.getTime() - 5 * 60 * 1_000),
+      data: { seeded: true },
+      type: "reservation.arrived",
+    },
+    {
+      at: historyStartsAt,
+      data: { seeded: true },
+      type: "reservation.started",
+    },
+    {
+      at: historyEndsAt,
+      data: { growthPoints: historyGrowthPoints, reason: "planned-end" },
+      type: "reservation.auto-completed",
+    },
+  ];
+  await input.client.query(
+    `insert into reservation_business_events (
+       id, sandbox_id, reservation_id, event_type, event_data,
+       business_occurred_at
+     )
+     select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::jsonb[],
+       $6::timestamptz[]
+     )`,
+    [
+      historyEvents.map(() => randomUUID()),
+      historyEvents.map(() => input.sandboxId),
+      historyEvents.map(() => historyReservationId),
+      historyEvents.map((event) => event.type),
+      historyEvents.map((event) => JSON.stringify(event.data)),
+      historyEvents.map((event) => event.at),
+    ],
+  );
+  const baselineGrowthPoints = 860 - historyGrowthPoints;
+  await input.client.query(
+    `insert into member_growth_events (
+       id, sandbox_id, member_profile_id, customer_persona_id, source_kind,
+       source_id, final_simulated_amount_cents, growth_points,
+       business_occurred_at
+     ) values
+       ($1, $2, $3, $4, 'seed-baseline', null, $5, $6, $7),
+       ($8, $2, $3, $4, 'reservation', $9, $10, $11, $12)`,
+    [
+      randomUUID(),
+      input.sandboxId,
+      customerMemberProfile.id,
+      customerPersona.id,
+      baselineGrowthPoints * 100,
+      baselineGrowthPoints,
+      new Date(input.wallTime.getTime() - 14 * 24 * 60 * 60 * 1_000),
+      randomUUID(),
+      historyReservationId,
+      historyPayableCents,
+      historyGrowthPoints,
+      historyEndsAt,
     ],
   );
 
@@ -2452,6 +2879,41 @@ async function materializePublicSandbox(input: {
       staffReservations.map((reservation) => reservation.terminalReason),
     ],
   );
+  for (const reservation of staffReservations.filter(
+    (item) => item.status === "completed" && item.completedAt,
+  )) {
+    const profile = seededMemberProfiles.find(
+      (item) => item.customerPersonaId === reservation.customer.id,
+    );
+    if (!profile || !reservation.completedAt) {
+      throw new Error(
+        "The completed seed reservation member profile is missing.",
+      );
+    }
+    const growthPoints = Math.floor(reservation.simulatedPaymentCents / 100);
+    await input.client.query(
+      `insert into member_growth_events (
+         id, sandbox_id, member_profile_id, customer_persona_id, source_kind,
+         source_id, final_simulated_amount_cents, growth_points,
+         business_occurred_at
+       ) values ($1, $2, $3, $4, 'reservation', $5, $6, $7, $8)`,
+      [
+        randomUUID(),
+        input.sandboxId,
+        profile.id,
+        reservation.customer.id,
+        reservation.id,
+        reservation.simulatedPaymentCents,
+        growthPoints,
+        reservation.completedAt,
+      ],
+    );
+    await input.client.query(
+      `update member_profiles set growth_points = growth_points + $3
+        where sandbox_id = $1 and id = $2`,
+      [input.sandboxId, profile.id, growthPoints],
+    );
+  }
   const seededCancelledReservations = staffReservations.filter(
     (reservation) =>
       reservation.status === "cancelled" && reservation.cancelledAt,
@@ -3000,6 +3462,17 @@ export function createPublicSandboxDatabase(
             [input.sandboxId, row.id, currentTime, input.reason, row.status],
           );
         }
+        const growthPoints =
+          input.action === "complete-early"
+            ? await awardCompletedReservationGrowth(client, {
+                businessOccurredAt: currentTime,
+                customerPersonaId: row.customer_persona_id,
+                payableCents: row.price_snapshot.price.payableCents,
+                recordedAt: wallTime,
+                reservationId: row.id,
+                sandboxId: input.sandboxId,
+              })
+            : 0;
         await client.query(
           `insert into reservation_business_events (
              id, sandbox_id, reservation_id, event_type, event_data,
@@ -3012,6 +3485,7 @@ export function createPublicSandboxDatabase(
             eventType,
             JSON.stringify({
               actorRole: input.role,
+              growthPoints,
               reason: input.reason,
               simulatedRefundCents: decision.simulatedRefundCents,
             }),
@@ -4005,6 +4479,262 @@ export function createPublicSandboxDatabase(
         );
         await client.query("commit");
         return result.detail;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readCustomerMembership(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        await processFrontlineReservationDeadlines(client, {
+          currentTime,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+        });
+        const profileResult = await client.query<MembershipProfileRow>(
+          `select profile.id, profile.growth_points,
+                  persona.display_name as customer_display_name
+             from member_profiles profile
+             join demo_personas persona on persona.id = profile.customer_persona_id
+            where profile.sandbox_id = $1 and profile.customer_persona_id = $2`,
+          [input.sandboxId, input.personaId],
+        );
+        const profile = profileResult.rows[0];
+        if (!profile) throw new RoleContextUnavailableError();
+        const couponResult = await client.query<MembershipCouponRow>(
+          `select coupon.id, coupon.code, coupon.display_name,
+                  coupon.business_kind, coupon.discount_cents,
+                  coupon.minimum_spend_cents, coupon.eligible_start_minutes,
+                  coupon.eligible_end_minutes, coupon.valid_from,
+                  coupon.valid_until, coupon.status,
+                  coupon.reserved_reservation_id, store.code as store_code,
+                  store.display_name as store_display_name,
+                  reservation.id as reservation_id,
+                  reservation.status as reservation_status
+             from experience_coupons coupon
+             left join stores store on store.id = coupon.store_id
+             left join lateral (
+               select candidate.id, candidate.status
+                 from reservations candidate
+                where candidate.sandbox_id = coupon.sandbox_id
+                  and candidate.customer_persona_id = coupon.customer_persona_id
+                  and candidate.coupon_id = coupon.id
+                order by candidate.created_business_at desc nulls last,
+                         candidate.id desc
+                limit 1
+             ) reservation on true
+            where coupon.sandbox_id = $1
+              and coupon.customer_persona_id = $2
+            order by coupon.valid_until desc, coupon.code`,
+          [input.sandboxId, input.personaId],
+        );
+        const growthResult = await client.query<MembershipGrowthEventRow>(
+          `select growth.id, growth.source_kind, growth.source_id,
+                  growth.final_simulated_amount_cents, growth.growth_points,
+                  growth.business_occurred_at,
+                  store.display_name as store_display_name
+             from member_growth_events growth
+             left join reservations reservation
+               on growth.source_kind = 'reservation'
+              and reservation.id = growth.source_id
+             left join stores store on store.id = reservation.store_id
+            where growth.sandbox_id = $1 and growth.customer_persona_id = $2
+            order by growth.business_occurred_at desc, growth.id`,
+          [input.sandboxId, input.personaId],
+        );
+        const tier = memberTierForGrowth(profile.growth_points);
+        const result: DatabaseCustomerMembership = {
+          coupons: couponResult.rows.map((coupon) => {
+            const status = deriveExperienceCouponStatus({
+              now: currentTime,
+              status: coupon.status,
+              validUntil: coupon.valid_until,
+            });
+            const transactionId =
+              status === "reserved"
+                ? coupon.reserved_reservation_id
+                : status === "redeemed"
+                  ? coupon.reservation_id
+                  : null;
+            return {
+              businessKind: coupon.business_kind,
+              code: coupon.code,
+              discountCents: coupon.discount_cents,
+              displayName: coupon.display_name,
+              id: coupon.id,
+              minimumSpendCents: coupon.minimum_spend_cents,
+              releaseCondition:
+                status === "available"
+                  ? "提交待处理交易时排他占用；每笔交易最多使用一张。"
+                  : status === "reserved"
+                    ? coupon.business_kind === "reservation"
+                      ? "完成模拟支付后标记已使用；使用前取消或保留过期会恢复可用。"
+                      : "完成模拟支付后标记已使用；制作前取消或保留过期会恢复可用。"
+                    : status === "redeemed"
+                      ? coupon.business_kind === "reservation"
+                        ? "预约开始使用前取消可恢复；开始使用后不再恢复。"
+                        : "订单开始制作前取消可恢复；开始制作后不再恢复。"
+                      : "有效期已结束，不再占用任何交易。",
+              status,
+              store:
+                coupon.store_code && coupon.store_display_name
+                  ? {
+                      code: coupon.store_code,
+                      displayName: coupon.store_display_name,
+                    }
+                  : null,
+              transaction:
+                transactionId && coupon.reservation_status
+                  ? {
+                      id: transactionId,
+                      kind: "reservation",
+                      label: `${coupon.store_display_name ?? "三店"}预约`,
+                      status: coupon.reservation_status,
+                    }
+                  : null,
+              validFrom: coupon.valid_from,
+              validUntil: coupon.valid_until,
+            };
+          }),
+          currentTime,
+          growthEvents: growthResult.rows.map((event) => ({
+            businessOccurredAt: event.business_occurred_at,
+            finalSimulatedAmountCents: event.final_simulated_amount_cents,
+            growthPoints: event.growth_points,
+            id: event.id,
+            label:
+              event.source_kind === "seed-baseline"
+                ? "标准故事起始累计成长"
+                : event.source_kind === "reservation"
+                  ? `完成预约 · ${event.store_display_name ?? "三店"}`
+                  : "完成商品订单",
+            source: { id: event.source_id, kind: event.source_kind },
+          })),
+          profile: {
+            customerDisplayName: profile.customer_display_name,
+            growthPoints: tier.growthPoints,
+            nextThreshold: tier.nextThreshold,
+            remainingToNext: tier.remainingToNext,
+            tier: tier.tier,
+          },
+        };
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readCustomerJourney(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertCustomerBrowseContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        await processFrontlineReservationDeadlines(client, {
+          currentTime,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+        });
+        const rows = await client.query<CustomerJourneyRow>(
+          `select reservation.id, reservation.status,
+                  reservation.price_snapshot, reservation.terminal_reason,
+                  refund.amount_cents as refund_amount_cents,
+                  refund.reason as refund_reason,
+                  growth.growth_points
+             from reservations reservation
+             left join reservation_simulated_refunds refund
+               on refund.sandbox_id = reservation.sandbox_id
+              and refund.reservation_id = reservation.id
+             left join member_growth_events growth
+               on growth.sandbox_id = reservation.sandbox_id
+              and growth.customer_persona_id = reservation.customer_persona_id
+              and growth.source_kind = 'reservation'
+              and growth.source_id = reservation.id
+            where reservation.sandbox_id = $1
+              and reservation.customer_persona_id = $2
+              and reservation.price_snapshot is not null
+            order by (reservation.price_snapshot->'window'->>'startsAt')::timestamptz desc,
+                     reservation.id`,
+          [input.sandboxId, input.personaId],
+        );
+        const groups: DatabaseCustomerJourney["groups"] = {
+          current: [],
+          future: [],
+          history: [],
+        };
+        for (const row of rows.rows) {
+          const snapshot = reservationSnapshot(row.price_snapshot);
+          const item: DatabaseCustomerJourneyReservation = {
+            area: snapshot.area,
+            coupon: snapshot.coupon
+              ? {
+                  discountCents: snapshot.coupon.discountCents,
+                  displayName: snapshot.coupon.displayName,
+                }
+              : null,
+            growthAward:
+              row.growth_points === null
+                ? null
+                : { growthPoints: row.growth_points },
+            machineProfile: {
+              code: snapshot.machineProfile.code,
+              displayName: snapshot.machineProfile.displayName,
+            },
+            payableCents: snapshot.price.payableCents,
+            refund:
+              row.refund_amount_cents !== null && row.refund_reason
+                ? {
+                    amountCents: row.refund_amount_cents,
+                    reason: row.refund_reason,
+                  }
+                : null,
+            related: { orders: [], repairs: [] },
+            reservationId: row.id,
+            seat: snapshot.seat,
+            status: row.status,
+            store: snapshot.store,
+            terminalReason: row.terminal_reason,
+            window: snapshot.window,
+          };
+          if (["cancelled", "completed", "expired"].includes(row.status)) {
+            (groups.history as DatabaseCustomerJourneyReservation[]).push(item);
+          } else if (
+            snapshot.window.startsAt.getTime() > currentTime.getTime()
+          ) {
+            (groups.future as DatabaseCustomerJourneyReservation[]).push(item);
+          } else {
+            (groups.current as DatabaseCustomerJourneyReservation[]).push(item);
+          }
+        }
+        await client.query("commit");
+        return { currentTime, groups };
       } catch (error) {
         await client.query("rollback").catch(() => undefined);
         throw error;

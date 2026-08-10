@@ -249,6 +249,110 @@ export interface CustomerReservationCancellationResponse {
   readonly status: "cancelled";
 }
 
+export type CustomerMemberTier = "bronze" | "gold" | "silver";
+export type CustomerExperienceCouponStatus =
+  "available" | "expired" | "redeemed" | "reserved";
+
+export interface CustomerMembershipResponse {
+  readonly status: "ready";
+  readonly currentTime: string;
+  readonly profile: {
+    readonly customerDisplayName: string;
+    readonly growthPoints: number;
+    readonly lifetimeNondecreasing: true;
+    readonly nextTier: {
+      readonly remainingGrowthPoints: number;
+      readonly threshold: 500 | 1_500;
+    } | null;
+    readonly operatorScope: "三店共享";
+    readonly tier: {
+      readonly code: CustomerMemberTier;
+      readonly label: "青铜" | "白银" | "黄金";
+    };
+  };
+  readonly coupons: ReadonlyArray<{
+    readonly businessKind: "order" | "reservation";
+    readonly code: string;
+    readonly discountCents: number;
+    readonly displayName: string;
+    readonly id: string;
+    readonly minimumSpendCents: number;
+    readonly releaseCondition: string;
+    readonly status: CustomerExperienceCouponStatus;
+    readonly store: {
+      readonly code: string;
+      readonly displayName: string;
+    } | null;
+    readonly transaction: {
+      readonly id: string;
+      readonly kind: "order" | "reservation";
+      readonly label: string;
+      readonly status: string;
+    } | null;
+    readonly validFrom: string;
+    readonly validUntil: string;
+  }>;
+  readonly growthEvents: ReadonlyArray<{
+    readonly businessOccurredAt: string;
+    readonly finalSimulatedAmountCents: number;
+    readonly growthPoints: number;
+    readonly id: string;
+    readonly label: string;
+    readonly source: {
+      readonly id: string | null;
+      readonly kind: "order" | "reservation" | "seed-baseline";
+    };
+  }>;
+}
+
+export interface CustomerJourneyReservation {
+  readonly area: { readonly code: string; readonly displayName: string };
+  readonly coupon: {
+    readonly displayName: string;
+    readonly discountCents: number;
+  } | null;
+  readonly growthAward: {
+    readonly growthPoints: number;
+  } | null;
+  readonly machineProfile: {
+    readonly code: CustomerMachineProfileCode;
+    readonly displayName: string;
+  };
+  readonly payableCents: number;
+  readonly refund: {
+    readonly amountCents: number;
+    readonly reason: string;
+  } | null;
+  readonly related: {
+    readonly orders: ReadonlyArray<{
+      readonly id: string;
+      readonly label: string;
+      readonly status: string;
+    }>;
+    readonly repairs: ReadonlyArray<{
+      readonly id: string;
+      readonly label: string;
+      readonly status: string;
+    }>;
+  };
+  readonly reservationId: string;
+  readonly seat: { readonly code: string };
+  readonly status: CustomerReservationStatus;
+  readonly store: { readonly code: string; readonly displayName: string };
+  readonly terminalReason: string | null;
+  readonly window: { readonly endsAt: string; readonly startsAt: string };
+}
+
+export interface CustomerJourneyResponse {
+  readonly status: "ready";
+  readonly currentTime: string;
+  readonly groups: {
+    readonly current: ReadonlyArray<CustomerJourneyReservation>;
+    readonly future: ReadonlyArray<CustomerJourneyReservation>;
+    readonly history: ReadonlyArray<CustomerJourneyReservation>;
+  };
+}
+
 export const FRONTLINE_RESERVATION_ACTIONS = [
   "arrive",
   "start-use",

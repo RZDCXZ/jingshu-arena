@@ -11,6 +11,7 @@ import {
   Circle,
   Clock,
   CurrencyCny,
+  Crown,
   GameController,
   House,
   Hourglass,
@@ -21,11 +22,15 @@ import {
   MapPin,
   Minus,
   Monitor,
+  Package,
   Plus,
+  Receipt,
   ShieldCheck,
+  Star,
   Storefront,
   Ticket,
   Timer,
+  TrendUp,
   User,
   Warning,
   Wrench,
@@ -34,7 +39,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ApiErrorResponse,
   CreateCustomerPendingReservationRequest,
+  CustomerExperienceCouponStatus,
+  CustomerJourneyReservation,
+  CustomerJourneyResponse,
   CustomerMachineProfileCode,
+  CustomerMembershipResponse,
   CustomerSeatAvailability,
   CustomerSeatAvailabilityResponse,
   CustomerPendingReservationResponse,
@@ -145,7 +154,16 @@ const couponReasonLabels = {
 } as const;
 
 type CustomerView =
-  "conditions" | "confirm" | "detail" | "held" | "payment" | "seats";
+  | "conditions"
+  | "confirm"
+  | "detail"
+  | "held"
+  | "journey"
+  | "membership"
+  | "payment"
+  | "seats";
+
+type JourneyGroup = "current" | "future" | "history";
 
 type PaymentStage = "confirm" | "failure" | "processing" | "success";
 
@@ -170,11 +188,37 @@ const timelineLabels: Record<string, string> = {
   "reservation.simulated-payment-succeeded": "模拟支付成功（未扣款）",
 };
 
+const terminalReasonLabels: Record<string, string> = {
+  "confirmed-no-show": "开始后十五分钟未到店，预约自动过期",
+  "pending-confirmation-timeout": "十分钟保留到期，预约自动过期",
+  "planned-end-auto-completed": "计划结束后自动完成",
+};
+
 const lifecycleProgressSteps = [
   { label: "已确认", status: "confirmed" },
   { label: "已到店", status: "arrived" },
   { label: "使用中", status: "in-use" },
 ] as const;
+
+const journeyGroupLabels: Record<JourneyGroup, string> = {
+  current: "当前",
+  future: "未来",
+  history: "历史",
+};
+
+const couponStatusLabels: Record<CustomerExperienceCouponStatus, string> = {
+  available: "可用",
+  expired: "已过期",
+  redeemed: "已使用",
+  reserved: "占用中",
+};
+
+const couponStatusOrder: readonly CustomerExperienceCouponStatus[] = [
+  "available",
+  "reserved",
+  "redeemed",
+  "expired",
+];
 
 function lifecycleProgressIndex(
   status: CustomerReservationStatus,
@@ -196,9 +240,109 @@ function lifecycleProgressIndex(
     : -1;
 }
 
+function JourneyReservationCard({
+  item,
+  onOpen,
+}: {
+  item: CustomerJourneyReservation;
+  onOpen: (reservationId: string) => void;
+}) {
+  const status = reservationStatusLabels[item.status];
+  return (
+    <article className="customer-journey-card">
+      <div className="customer-journey-card-head">
+        <span className={`is-${status.tone}`}>{status.label}</span>
+        <small>{formatMoney(item.payableCents)} · 模拟金额</small>
+      </div>
+      <button
+        className="customer-journey-main"
+        onClick={() => onOpen(item.reservationId)}
+        type="button"
+      >
+        <span>
+          <CalendarBlank />
+          <strong>
+            {formatFullWindow(item.window.startsAt, item.window.endsAt)}
+          </strong>
+        </span>
+        <h2>{item.store.displayName}</h2>
+        <p>
+          {formatSeatTitle(item.area.displayName, item.seat.code)} ·{" "}
+          {item.machineProfile.displayName}
+        </p>
+        <CaretRight />
+      </button>
+      {item.coupon || item.refund || item.growthAward ? (
+        <div className="customer-journey-links">
+          {item.coupon ? (
+            <span>
+              <Ticket />
+              {item.coupon.displayName} −
+              {formatMoney(item.coupon.discountCents)}
+            </span>
+          ) : null}
+          {item.refund ? (
+            <button onClick={() => onOpen(item.reservationId)} type="button">
+              <CurrencyCny />
+              模拟退款 {formatMoney(item.refund.amountCents)}
+              <CaretRight />
+            </button>
+          ) : null}
+          {item.growthAward ? (
+            <button onClick={() => onOpen(item.reservationId)} type="button">
+              <TrendUp />
+              完成发放 +{item.growthAward.growthPoints} 成长值
+              <CaretRight />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {item.related.orders.length > 0 || item.related.repairs.length > 0 ? (
+        <div className="customer-journey-related">
+          {item.related.orders.map((order) => (
+            <button
+              key={order.id}
+              onClick={() => onOpen(item.reservationId)}
+              type="button"
+            >
+              <Package />
+              <span>
+                <strong>{order.label}</strong>
+                <small>{order.status}</small>
+              </span>
+              <CaretRight />
+            </button>
+          ))}
+          {item.related.repairs.map((repair) => (
+            <button
+              key={repair.id}
+              onClick={() => onOpen(item.reservationId)}
+              type="button"
+            >
+              <Wrench />
+              <span>
+                <strong>{repair.label}</strong>
+                <small>{repair.status}</small>
+              </span>
+              <CaretRight />
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {item.terminalReason ? (
+        <p className="customer-journey-reason">
+          结果说明：
+          {terminalReasonLabels[item.terminalReason] ?? item.terminalReason}
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
 const LIFECYCLE_REQUEST_TIMEOUT_MS = 8_000;
 
 export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
+  const customerRootRef = useRef<HTMLElement>(null);
   const [catalog, setCatalog] = useState<CustomerStoreCatalogResponse | null>(
     null,
   );
@@ -227,6 +371,12 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
   const reservationKeyRef = useRef<string | null>(null);
   const [createdReservation, setCreatedReservation] =
     useState<CustomerPendingReservationResponse | null>(null);
+  const [activeReservationId, setActiveReservationId] = useState<string | null>(
+    null,
+  );
+  const [detailReturnView, setDetailReturnView] = useState<"held" | "journey">(
+    "held",
+  );
   const [reservationDetail, setReservationDetail] =
     useState<CustomerReservationDetailResponse | null>(null);
   const [detailObservedAt, setDetailObservedAt] = useState(0);
@@ -244,6 +394,29 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
   const [cancelFailure, setCancelFailure] = useState("");
   const cancelKeyRef = useRef<string | null>(null);
   const [, setCountdownTick] = useState(0);
+  const [membership, setMembership] =
+    useState<CustomerMembershipResponse | null>(null);
+  const [membershipLoading, setMembershipLoading] = useState(false);
+  const [membershipFailure, setMembershipFailure] = useState("");
+  const [membershipAttempt, setMembershipAttempt] = useState(0);
+  const [couponStatus, setCouponStatus] =
+    useState<CustomerExperienceCouponStatus>("available");
+  const [journey, setJourney] = useState<CustomerJourneyResponse | null>(null);
+  const [journeyLoading, setJourneyLoading] = useState(false);
+  const [journeyFailure, setJourneyFailure] = useState("");
+  const [journeyAttempt, setJourneyAttempt] = useState(0);
+  const [journeyGroup, setJourneyGroup] = useState<JourneyGroup>("current");
+  const [historyFilter, setHistoryFilter] = useState<"all" | "refunds">("all");
+
+  useEffect(() => {
+    if (!["conditions", "journey", "membership", "seats"].includes(view)) {
+      return;
+    }
+    customerRootRef.current?.parentElement?.scrollTo({
+      behavior: "auto",
+      top: 0,
+    });
+  }, [view]);
 
   useEffect(() => {
     if (
@@ -295,6 +468,80 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
       });
     return () => controller.abort();
   }, [catalogAttempt]);
+
+  useEffect(() => {
+    if (view !== "membership") return;
+    const controller = new AbortController();
+    setMembershipLoading(true);
+    setMembershipFailure("");
+    void fetch("/api/v1/customer/membership", {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { "X-Retry-Attempt": String(membershipAttempt) },
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = (await response.json()) as
+          ApiErrorResponse | CustomerMembershipResponse;
+        if (!response.ok) {
+          throw new Error(
+            "error" in payload
+              ? payload.error.message
+              : "会员档案暂时无法读取。",
+          );
+        }
+        setMembership(payload as CustomerMembershipResponse);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setMembershipFailure(
+          error instanceof Error ? error.message : "会员档案暂时无法读取。",
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setMembershipLoading(false);
+      });
+    return () => controller.abort();
+  }, [membershipAttempt, view]);
+
+  useEffect(() => {
+    if (view !== "journey") return;
+    const controller = new AbortController();
+    setJourneyLoading(true);
+    setJourneyFailure("");
+    void fetch("/api/v1/customer/journey", {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { "X-Retry-Attempt": String(journeyAttempt) },
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = (await response.json()) as
+          ApiErrorResponse | CustomerJourneyResponse;
+        if (!response.ok) {
+          throw new Error(
+            "error" in payload
+              ? payload.error.message
+              : "统一行程暂时无法读取。",
+          );
+        }
+        setJourney(payload as CustomerJourneyResponse);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setJourneyFailure(
+          error instanceof Error ? error.message : "统一行程暂时无法读取。",
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setJourneyLoading(false);
+      });
+    return () => controller.abort();
+  }, [journeyAttempt, view]);
 
   const store = useMemo(
     () => catalog?.stores.find((item) => item.code === storeCode) ?? null,
@@ -470,6 +717,8 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
       }
       const created = payload as CustomerPendingReservationResponse;
       setCreatedReservation(created);
+      setActiveReservationId(created.reservationId);
+      setDetailReturnView("held");
       setView("held");
       void readReservationDetail(created.reservationId);
     } catch (error) {
@@ -484,6 +733,7 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
   }
 
   async function readReservationDetail(reservationId: string) {
+    setActiveReservationId(reservationId);
     setDetailLoading(true);
     setDetailFailure("");
     try {
@@ -522,7 +772,7 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
   }
 
   async function simulatePayment() {
-    if (!createdReservation || paymentStage === "processing") return;
+    if (!activeReservationId || paymentStage === "processing") return;
     const idempotencyKey = paymentKeyRef.current ?? crypto.randomUUID();
     paymentKeyRef.current = idempotencyKey;
     const controller = new AbortController();
@@ -534,7 +784,7 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     setPaymentFailure("");
     try {
       const response = await fetch(
-        `/api/v1/customer/reservations/${createdReservation.reservationId}/simulated-payment`,
+        `/api/v1/customer/reservations/${activeReservationId}/simulated-payment`,
         {
           cache: "no-store",
           credentials: "same-origin",
@@ -551,12 +801,14 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
       if (!response.ok) {
         const failure = payload as ApiErrorResponse;
         if (failure.error.currentStatus) {
-          await readReservationDetail(createdReservation.reservationId);
+          await readReservationDetail(activeReservationId);
         }
         throw new Error(failure.error.message);
       }
       setPaymentResult(payload as CustomerReservationPaymentResponse);
-      await readReservationDetail(createdReservation.reservationId);
+      await readReservationDetail(activeReservationId);
+      setMembershipAttempt((attempt) => attempt + 1);
+      setJourneyAttempt((attempt) => attempt + 1);
       setPaymentStage("success");
     } catch (error) {
       setPaymentFailure(
@@ -574,7 +826,7 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
 
   async function cancelReservation() {
     if (
-      !createdReservation ||
+      !activeReservationId ||
       !reservationDetail ||
       cancelSubmitting ||
       cancelReason.trim().length === 0
@@ -592,7 +844,7 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     setCancelFailure("");
     try {
       const response = await fetch(
-        `/api/v1/customer/reservations/${createdReservation.reservationId}/cancel`,
+        `/api/v1/customer/reservations/${activeReservationId}/cancel`,
         {
           body: JSON.stringify({ reason: cancelReason.trim() }),
           cache: "no-store",
@@ -611,11 +863,13 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
       if (!response.ok) {
         const failure = payload as ApiErrorResponse;
         if (failure.error.currentStatus) {
-          await readReservationDetail(createdReservation.reservationId);
+          await readReservationDetail(activeReservationId);
         }
         throw new Error(failure.error.message);
       }
-      await readReservationDetail(createdReservation.reservationId);
+      await readReservationDetail(activeReservationId);
+      setMembershipAttempt((attempt) => attempt + 1);
+      setJourneyAttempt((attempt) => attempt + 1);
       setCancelOpen(false);
       setCancelReason("");
       cancelKeyRef.current = null;
@@ -637,12 +891,23 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     setView("conditions");
     setCreatedReservation(null);
     setReservationDetail(null);
+    setActiveReservationId(null);
     setSelectedSeat("");
     setSelectedCouponId(null);
     setDetailFailure("");
     setPaymentFailure("");
     paymentKeyRef.current = null;
     cancelKeyRef.current = null;
+  }
+
+  function openJourneyReservation(reservationId: string) {
+    setReservationDetail(null);
+    setDetailFailure("");
+    setDetailPriceExpanded(false);
+    setActiveReservationId(reservationId);
+    setDetailReturnView("journey");
+    setView("detail");
+    void readReservationDetail(reservationId);
   }
 
   if (!catalog) {
@@ -700,13 +965,41 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     holdRemainingSeconds === null
       ? "—"
       : `${String(Math.floor(holdRemainingSeconds / 60)).padStart(2, "0")}:${String(holdRemainingSeconds % 60).padStart(2, "0")}`;
+  const activeSnapshot =
+    reservationDetail?.reservationId === activeReservationId
+      ? reservationDetail.snapshot
+      : createdReservation?.reservationId === activeReservationId
+        ? createdReservation.snapshot
+        : null;
+  const journeyItems =
+    journeyGroup === "history" && historyFilter === "refunds"
+      ? (journey?.groups.history.filter((item) => item.refund !== null) ?? [])
+      : (journey?.groups[journeyGroup] ?? []);
+  const visibleCoupons =
+    membership?.coupons.filter((coupon) => coupon.status === couponStatus) ??
+    [];
+  const memberProgress = membership
+    ? membership.profile.tier.code === "gold"
+      ? 100
+      : (membership.profile.growthPoints /
+          (membership.profile.nextTier?.threshold ?? 1)) *
+        100
+    : 0;
 
   return (
-    <main className="customer-h5" data-testid="customer-h5">
+    <main
+      className="customer-h5"
+      data-testid="customer-h5"
+      ref={customerRootRef}
+    >
       <header className="customer-mobile-header">
         <div>
           <span>
-            {view === "payment" ? "WEB-C02 / MP-08" : "WEB-C00 / C02"}
+            {view === "payment"
+              ? "WEB-C02 / MP-08"
+              : view === "journey" || view === "membership"
+                ? "WEB-C03 / MP-16 · MP-17"
+                : "WEB-C00 / C02"}
           </span>
           <strong>
             {view === "seats"
@@ -719,13 +1012,348 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                     ? "模拟支付"
                     : view === "detail"
                       ? "预约详情"
-                      : "预约座位"}
+                      : view === "journey"
+                        ? "统一行程"
+                        : view === "membership"
+                          ? "会员与体验券"
+                          : "预约座位"}
           </strong>
         </div>
         <span className="customer-demo-badge">演示数据</span>
       </header>
 
-      {view === "conditions" ? (
+      {view === "journey" ? (
+        <div className="customer-scroll-content customer-story-page">
+          <section className="customer-demo-strip">
+            <ShieldCheck weight="duotone" />
+            <span>
+              <strong>Web 独立沙箱 · 演示行程</strong>
+              只展示当前顾客在三店中的合成预约与关联记录；不对应真实身份资料或资金。
+            </span>
+          </section>
+          <section className="customer-story-hero">
+            <span className="customer-eyebrow">ONE CUSTOMER JOURNEY</span>
+            <h1>一条行程，看清完整结果</h1>
+            <p>
+              预约、模拟退款与成长发放按同一顾客聚合，点击任一记录可回到权威详情。
+            </p>
+          </section>
+          <div
+            aria-label="行程分组"
+            className="customer-story-tabs"
+            role="tablist"
+          >
+            {(Object.keys(journeyGroupLabels) as JourneyGroup[]).map(
+              (group) => (
+                <button
+                  aria-selected={journeyGroup === group}
+                  className={journeyGroup === group ? "is-active" : ""}
+                  key={group}
+                  onClick={() => setJourneyGroup(group)}
+                  role="tab"
+                  type="button"
+                >
+                  {journeyGroupLabels[group]}
+                  <small>{journey?.groups[group].length ?? 0}</small>
+                </button>
+              ),
+            )}
+          </div>
+          {journeyGroup === "history" ? (
+            <div className="customer-history-filters" aria-label="历史筛选">
+              <button
+                aria-pressed={historyFilter === "all"}
+                className={historyFilter === "all" ? "is-active" : ""}
+                onClick={() => setHistoryFilter("all")}
+                type="button"
+              >
+                全部历史
+              </button>
+              <button
+                aria-pressed={historyFilter === "refunds"}
+                className={historyFilter === "refunds" ? "is-active" : ""}
+                onClick={() => setHistoryFilter("refunds")}
+                type="button"
+              >
+                含模拟退款
+              </button>
+            </div>
+          ) : null}
+          {journeyLoading && !journey ? (
+            <section className="customer-story-loading" aria-live="polite">
+              <ArrowClockwise />
+              <strong>正在聚合统一行程</strong>
+              <span>以当前顾客和服务端业务时钟为准。</span>
+            </section>
+          ) : journeyFailure ? (
+            <section className="customer-feedback is-error" role="alert">
+              <Warning />
+              <span>
+                <strong>行程暂时不可用</strong>
+                {journeyFailure}
+              </span>
+              <button
+                onClick={() => setJourneyAttempt((attempt) => attempt + 1)}
+                type="button"
+              >
+                重新读取
+              </button>
+            </section>
+          ) : journeyItems.length > 0 ? (
+            <div className="customer-journey-list">
+              {journeyItems.map((item) => (
+                <JourneyReservationCard
+                  item={item}
+                  key={item.reservationId}
+                  onOpen={openJourneyReservation}
+                />
+              ))}
+            </div>
+          ) : (
+            <section className="customer-story-empty">
+              <CalendarBlank weight="duotone" />
+              <h2>{journeyGroupLabels[journeyGroup]}行程为空</h2>
+              <p>
+                {journeyGroup === "history" && historyFilter === "refunds"
+                  ? "当前筛选下没有含模拟退款的历史行程。"
+                  : journeyGroup === "history"
+                    ? "当前顾客还没有已结束的预约记录。"
+                    : `当前顾客没有${journeyGroupLabels[journeyGroup]}预约。`}
+              </p>
+              <button
+                onClick={() =>
+                  journeyGroup === "history" && historyFilter === "refunds"
+                    ? setHistoryFilter("all")
+                    : setView("conditions")
+                }
+                type="button"
+              >
+                {journeyGroup === "history" && historyFilter === "refunds" ? (
+                  <ArrowClockwise />
+                ) : (
+                  <MagnifyingGlass />
+                )}
+                {journeyGroup === "history" && historyFilter === "refunds"
+                  ? "查看全部历史"
+                  : "去预约一个座位"}
+              </button>
+            </section>
+          )}
+        </div>
+      ) : view === "membership" ? (
+        <div className="customer-scroll-content customer-story-page">
+          <section className="customer-demo-strip">
+            <ShieldCheck weight="duotone" />
+            <span>
+              <strong>Web 独立沙箱 · 三店共享</strong>
+              会员档案、成长值与体验券均为合成演示数据；不提供储值、转让、折现或手工调整。
+            </span>
+          </section>
+          {membershipLoading && !membership ? (
+            <section className="customer-story-loading" aria-live="polite">
+              <ArrowClockwise />
+              <strong>正在读取会员档案</strong>
+              <span>只读取当前顾客的一份经营方级档案。</span>
+            </section>
+          ) : membershipFailure ? (
+            <section className="customer-feedback is-error" role="alert">
+              <Warning />
+              <span>
+                <strong>会员档案暂时不可用</strong>
+                {membershipFailure}
+              </span>
+              <button
+                onClick={() => setMembershipAttempt((attempt) => attempt + 1)}
+                type="button"
+              >
+                重新读取
+              </button>
+            </section>
+          ) : membership ? (
+            <>
+              <section className="customer-member-hero">
+                <div className="customer-member-hero-head">
+                  <span>
+                    <Crown weight="duotone" />
+                    {membership.profile.tier.label}会员
+                  </span>
+                  <small>{membership.profile.operatorScope}</small>
+                </div>
+                <strong>{membership.profile.growthPoints}</strong>
+                <p>累计成长值 · 终身不降级</p>
+                <div className="customer-member-progress">
+                  <span
+                    style={{ width: `${Math.min(100, memberProgress)}%` }}
+                  />
+                </div>
+                <div className="customer-member-thresholds">
+                  <span>
+                    {membership.profile.tier.code === "bronze" ? "0" : "500"}
+                    <small>{membership.profile.tier.label}</small>
+                  </span>
+                  <span>
+                    {membership.profile.nextTier?.threshold ?? "已达最高等级"}
+                    <small>
+                      {membership.profile.nextTier
+                        ? `还差 ${membership.profile.nextTier.remainingGrowthPoints} 成长值`
+                        : "黄金会员"}
+                    </small>
+                  </span>
+                </div>
+              </section>
+
+              <section className="customer-member-section">
+                <div className="customer-section-title">
+                  <div>
+                    <span>EXPERIENCE COUPONS</span>
+                    <h2>体验券</h2>
+                  </div>
+                  <Ticket />
+                </div>
+                <div
+                  aria-label="体验券状态"
+                  className="customer-coupon-tabs"
+                  role="tablist"
+                >
+                  {couponStatusOrder.map((status) => (
+                    <button
+                      aria-selected={couponStatus === status}
+                      className={couponStatus === status ? "is-active" : ""}
+                      key={status}
+                      onClick={() => setCouponStatus(status)}
+                      role="tab"
+                      type="button"
+                    >
+                      {couponStatusLabels[status]}
+                      <small>
+                        {
+                          membership.coupons.filter(
+                            (coupon) => coupon.status === status,
+                          ).length
+                        }
+                      </small>
+                    </button>
+                  ))}
+                </div>
+                {visibleCoupons.length > 0 ? (
+                  <div className="customer-member-coupon-list">
+                    {visibleCoupons.map((coupon) => (
+                      <article
+                        className={`is-${coupon.status}`}
+                        key={coupon.id}
+                      >
+                        <div className="customer-member-coupon-value">
+                          <Ticket weight="fill" />
+                          <strong>{formatMoney(coupon.discountCents)}</strong>
+                          <small>
+                            {coupon.businessKind === "reservation"
+                              ? "预约体验券"
+                              : "商品体验券"}
+                          </small>
+                        </div>
+                        <div className="customer-member-coupon-copy">
+                          <div>
+                            <h3>{coupon.displayName}</h3>
+                            <span>{couponStatusLabels[coupon.status]}</span>
+                          </div>
+                          <p>
+                            {coupon.store?.displayName ?? "三店通用"} · 满{" "}
+                            {formatMoney(coupon.minimumSpendCents)} 可用
+                          </p>
+                          <small>
+                            有效至 {formatWindow(coupon.validUntil)}
+                          </small>
+                          <p className="customer-member-release">
+                            {coupon.releaseCondition}
+                          </p>
+                          {coupon.transaction ? (
+                            coupon.transaction.kind === "reservation" ? (
+                              <button
+                                onClick={() =>
+                                  openJourneyReservation(coupon.transaction!.id)
+                                }
+                                type="button"
+                              >
+                                <Receipt />
+                                <span>
+                                  <strong>{coupon.transaction.label}</strong>
+                                  <small>{coupon.transaction.status}</small>
+                                </span>
+                                <CaretRight />
+                              </button>
+                            ) : (
+                              <div className="customer-member-transaction">
+                                <Package />
+                                <span>{coupon.transaction.label}</span>
+                              </div>
+                            )
+                          ) : null}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <section className="customer-story-empty is-compact">
+                    <Ticket weight="duotone" />
+                    <h2>暂无{couponStatusLabels[couponStatus]}体验券</h2>
+                    <p>切换上方状态，可查看体验券的占用、使用与失效记录。</p>
+                    <button
+                      onClick={() => setCouponStatus("available")}
+                      type="button"
+                    >
+                      查看可用体验券
+                    </button>
+                  </section>
+                )}
+              </section>
+
+              <section className="customer-member-section">
+                <div className="customer-section-title">
+                  <div>
+                    <span>LIFETIME GROWTH</span>
+                    <h2>成长记录</h2>
+                  </div>
+                  <TrendUp />
+                </div>
+                <div className="customer-growth-list">
+                  {membership.growthEvents.map((event) =>
+                    event.source.kind === "reservation" && event.source.id ? (
+                      <button
+                        key={event.id}
+                        onClick={() => openJourneyReservation(event.source.id!)}
+                        type="button"
+                      >
+                        <Star weight="fill" />
+                        <span>
+                          <strong>{event.label}</strong>
+                          <small>
+                            {formatWindow(event.businessOccurredAt)} ·
+                            最终模拟金额{" "}
+                            {formatMoney(event.finalSimulatedAmountCents)}
+                          </small>
+                        </span>
+                        <em>+{event.growthPoints}</em>
+                        <CaretRight />
+                      </button>
+                    ) : (
+                      <div key={event.id}>
+                        <Star weight="fill" />
+                        <span>
+                          <strong>{event.label}</strong>
+                          <small>
+                            {formatWindow(event.businessOccurredAt)}
+                          </small>
+                        </span>
+                        <em>+{event.growthPoints}</em>
+                      </div>
+                    ),
+                  )}
+                </div>
+              </section>
+            </>
+          ) : null}
+        </div>
+      ) : view === "conditions" ? (
         <div className="customer-scroll-content">
           <section className="customer-demo-strip">
             <ShieldCheck weight="duotone" />
@@ -1411,13 +2039,19 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
             </button>
           </div>
         </div>
-      ) : view === "payment" && createdReservation ? (
+      ) : view === "payment" && activeReservationId && activeSnapshot ? (
         <div className="customer-scroll-content customer-payment-flow">
           {paymentStage === "confirm" ? (
             <>
               <button
                 className="customer-back-button"
-                onClick={() => setView("held")}
+                onClick={() =>
+                  setView(
+                    createdReservation?.reservationId === activeReservationId
+                      ? "held"
+                      : "detail",
+                  )
+                }
                 type="button"
               >
                 <CaretLeft />
@@ -1431,17 +2065,17 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                 <h1>确认模拟支付</h1>
                 <p>本次不会扣款，也不需要任何真实支付凭证。</p>
                 <strong>
-                  {formatMoney(createdReservation.snapshot.price.payableCents)}
+                  {formatMoney(activeSnapshot.price.payableCents)}
                 </strong>
                 <div className="customer-payment-brief">
                   <span>
-                    {createdReservation.snapshot.store.displayName} ·{" "}
-                    {createdReservation.snapshot.seat.code}
+                    {activeSnapshot.store.displayName} ·{" "}
+                    {activeSnapshot.seat.code}
                   </span>
                   <span>
                     {formatFullWindow(
-                      createdReservation.snapshot.window.startsAt,
-                      createdReservation.snapshot.window.endsAt,
+                      activeSnapshot.window.startsAt,
+                      activeSnapshot.window.endsAt,
                     )}
                   </span>
                 </div>
@@ -1541,8 +2175,16 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
             </section>
           )}
         </div>
-      ) : view === "detail" && createdReservation ? (
+      ) : view === "detail" && activeReservationId ? (
         <div className="customer-scroll-content customer-lifecycle-detail">
+          <button
+            className="customer-back-button"
+            onClick={() => setView(detailReturnView)}
+            type="button"
+          >
+            <CaretLeft />
+            {detailReturnView === "journey" ? "返回统一行程" : "返回预约保留"}
+          </button>
           {detailLoading && !reservationDetail ? (
             <section className="customer-lifecycle-loading" aria-live="polite">
               <ArrowClockwise />
@@ -1785,7 +2427,7 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
                   className="customer-payment-secondary"
                   disabled={detailLoading}
                   onClick={() =>
-                    void readReservationDetail(createdReservation.reservationId)
+                    void readReservationDetail(activeReservationId)
                   }
                   type="button"
                 >
@@ -1853,9 +2495,7 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
               <span>{detailFailure}</span>
               <button
                 className="customer-primary-button"
-                onClick={() =>
-                  void readReservationDetail(createdReservation.reservationId)
-                }
+                onClick={() => void readReservationDetail(activeReservationId)}
                 type="button"
               >
                 重新读取
@@ -1935,10 +2575,12 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
         </div>
       ) : null}
 
-      {view === "conditions" || view === "seats" ? (
+      {["conditions", "journey", "membership", "seats"].includes(view) ? (
         <nav className="customer-bottom-nav" aria-label="顾客 H5 导航">
           <button
-            className="is-active"
+            className={
+              view === "conditions" || view === "seats" ? "is-active" : ""
+            }
             onClick={() => setView("conditions")}
             type="button"
           >
@@ -1946,22 +2588,35 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
             <span>预约</span>
           </button>
           <button
-            onClick={() =>
-              document
-                .getElementById("stores-heading")
-                ?.scrollIntoView({ behavior: "smooth" })
-            }
+            onClick={() => {
+              setView("conditions");
+              window.setTimeout(
+                () =>
+                  document
+                    .getElementById("stores-heading")
+                    ?.scrollIntoView({ behavior: "smooth" }),
+                0,
+              );
+            }}
             type="button"
           >
             <Storefront />
             <span>门店</span>
           </button>
-          <button disabled type="button">
-            <CalendarBlank />
+          <button
+            className={view === "journey" ? "is-active" : ""}
+            onClick={() => setView("journey")}
+            type="button"
+          >
+            <CalendarBlank weight={view === "journey" ? "fill" : "regular"} />
             <span>行程</span>
           </button>
-          <button disabled type="button">
-            <User />
+          <button
+            className={view === "membership" ? "is-active" : ""}
+            onClick={() => setView("membership")}
+            type="button"
+          >
+            <User weight={view === "membership" ? "fill" : "regular"} />
             <span>会员</span>
           </button>
         </nav>
