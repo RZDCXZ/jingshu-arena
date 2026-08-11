@@ -7,6 +7,15 @@ export const PUBLIC_ROLES = ["customer", "staff", "manager", "hq"] as const;
 
 export type PublicRole = (typeof PUBLIC_ROLES)[number];
 
+export const HEADQUARTERS_FIXED_STORE_CODES = [
+  "prism-flagship",
+  "starbridge-standard",
+  "apex-new",
+] as const;
+
+export type HeadquartersFixedStoreCode =
+  (typeof HEADQUARTERS_FIXED_STORE_CODES)[number];
+
 export const CUSTOMER_MACHINE_PROFILE_CODES = [
   "standard",
   "competitive",

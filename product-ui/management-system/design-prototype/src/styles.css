@@ -3073,6 +3073,13 @@ button.store-row:hover {
   color: var(--muted);
   font-size: 10px;
 }
+.config-boundary-note {
+  max-width: 240px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+  text-align: right;
+}
 .config-row-list > div {
   min-height: 68px;
   display: grid;

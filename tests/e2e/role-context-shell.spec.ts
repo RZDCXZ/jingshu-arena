@@ -645,13 +645,28 @@ test.beforeEach(async ({ context }) => {
         headquartersStore.storeId,
         {
           ...structuredClone(storeConfiguration),
-          pricePlans: storeConfiguration.pricePlans.map((plan) => ({
-            ...plan,
-            store: {
-              code: headquartersStore.code,
-              displayName: headquartersStore.displayName,
+          pricePlans: [
+            ...storeConfiguration.pricePlans.map((plan) => ({
+              ...plan,
+              store: {
+                code: headquartersStore.code,
+                displayName: headquartersStore.displayName,
+              },
+            })),
+            {
+              ...storeConfiguration.pricePlans[0]!,
+              endsAt: "00:00",
+              pricePlanId: crypto.randomUUID(),
+              startsAt: "18:00",
+              store: {
+                code: headquartersStore.code,
+                displayName: headquartersStore.displayName,
+              },
+              version: 2,
+              weekdayHalfHourCents: 1_234,
+              weekendHalfHourCents: 1_456,
             },
-          })),
+          ],
           store: {
             ...storeConfiguration.store,
             code: headquartersStore.code,
@@ -1945,6 +1960,9 @@ test.beforeEach(async ({ context }) => {
       return;
     }
     if (request.method() === "GET") {
+      if (selected.store.code === "starbridge-standard") {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
       await route.fulfill({ json: selected, status: 200 });
       return;
     }
@@ -3523,15 +3541,25 @@ test("headquarters configures only the fixed three stores and edits product scop
   ).toHaveCount(0);
 
   await storeSelector.selectOption({ label: "星桥标准店" });
+  await expect(page.getByText("正在读取固定三店配置…")).toBeVisible();
+  await expect(page.getByLabel("当前门店")).toHaveCount(0);
   await expect(page.getByText("星桥标准店 · 固定三店配置")).toBeVisible();
   await page.getByLabel("门店工作名称").fill("星桥标准演示店");
   await page.getByRole("button", { name: "保存资料" }).click();
   await expect(page.getByText("门店展示资料已由服务端确认保存")).toBeVisible();
 
   await page.getByRole("tab", { name: /价格计划/u }).click();
-  await expect(
-    page.getByRole("button", { name: "基于当前调整" }).first(),
-  ).toBeVisible();
+  const eveningPriceRow = page.getByRole("row").filter({ hasText: "¥12.34" });
+  await eveningPriceRow.getByRole("button", { name: "基于当前调整" }).click();
+  const priceDialog = page.getByRole("dialog", {
+    name: "新建未来价格版本",
+  });
+  await expect(priceDialog.getByLabel("价格时段开始")).toHaveValue("18:00");
+  await expect(priceDialog.getByLabel("价格时段结束")).toHaveValue("00:00");
+  await expect(priceDialog.getByLabel("工作日每半小时价格")).toHaveValue(
+    "1234",
+  );
+  await page.keyboard.press("Escape");
 
   await page.getByRole("tab", { name: /商品范围/u }).click();
   const productRow = page.getByRole("row", {

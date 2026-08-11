@@ -1629,18 +1629,12 @@ function resolveActionModal(action) {
 
     return {
       ...common,
-      fields: [
-        { label: "商品资料", value: item.name || "新商品资料" },
-        { label: "门店范围", value: action.store, readOnly: true },
-        { label: "销售状态", value: item.attention ? "需关注" : "已上架" },
-        { label: "低库存阈值", value: "10" },
-        {
-          label: "配置说明",
-          value: "只配置本店销售范围与告警阈值，不直接修改库存余额。",
-          multiline: true,
-          full: true,
-        },
-      ],
+      noticeTitle: "当前配置类型不可用",
+      noticeBody:
+        "商品范围必须从当前商品行进入专用范围表单；总部不在门店配置页创建商品资料或修改销售状态、阈值和库存。",
+      confirmLabel: "返回",
+      dismissOnly: true,
+      fields: [],
     };
   }
 

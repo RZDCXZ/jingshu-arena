@@ -42,7 +42,84 @@ async function createManagerContext() {
   };
 }
 
+async function createHeadquartersContext() {
+  const world = await database.create({
+    creationKey: randomUUID(),
+    selectedRole: "hq",
+    visitorKey: `visitor-${randomUUID()}`,
+  });
+  return {
+    contextVersion: world.roleContext.contextVersion,
+    personaId: world.roleContext.persona.id,
+    role: "hq" as const,
+    sandboxId: world.sandboxId,
+  };
+}
+
 describe("manager store configuration", () => {
+  it("keeps headquarters reads and writes inside the canonical fixed three stores", async () => {
+    const context = await createHeadquartersContext();
+    const unknownStoreId = randomUUID();
+    const operator = await sql.query<{ id: string }>(
+      `select id from operators where sandbox_id = $1`,
+      [context.sandboxId],
+    );
+    await sql.query(
+      `insert into stores (
+         id, sandbox_id, operator_id, code, display_name, fictitious_city,
+         introduction, seat_count, opens_at, closes_at, is_open_24_hours
+       ) values ($1, $2, $3, 'unknown-fourth', '非规范第四店', '栖光市（虚构）',
+         '这家店只用于验证总部固定三店边界。', 1, '00:00', '00:00', true)`,
+      [unknownStoreId, context.sandboxId, operator.rows[0]!.id],
+    );
+
+    const catalogs = await database.readHeadquartersCatalogs(context);
+    expect(catalogs.stores.map((store) => store.code)).toEqual([
+      "prism-flagship",
+      "starbridge-standard",
+      "apex-new",
+    ]);
+    const people = await database.readHeadquartersPeopleSchedule(context);
+    expect(people.stores.map((store) => store.store.code)).toEqual([
+      "prism-flagship",
+      "starbridge-standard",
+      "apex-new",
+    ]);
+    await expect(
+      database.readManagerStoreConfiguration({
+        ...context,
+        storeId: unknownStoreId,
+      }),
+    ).rejects.toMatchObject({ reason: "cross-store" });
+
+    const requestId = randomUUID();
+    await expect(
+      database.executeManagerStoreConfigurationCommand({
+        ...context,
+        action: "update-store-profile",
+        displayName: "不得保存的第四店",
+        expectedVersion: 1,
+        fictitiousCity: "栖光市（虚构）",
+        idempotencyKey: randomUUID(),
+        introduction: "总部不能越过固定三店范围。",
+        requestId,
+        storeId: unknownStoreId,
+      }),
+    ).rejects.toMatchObject({ reason: "cross-store" });
+    const denial = await sql.query<{
+      reason: string;
+      role: string;
+      store_id: string | null;
+    }>(
+      `select store_id, role, reason from audit_events
+        where sandbox_id = $1 and request_id = $2`,
+      [context.sandboxId, requestId],
+    );
+    expect(denial.rows).toEqual([
+      { reason: "cross-store", role: "hq", store_id: null },
+    ]);
+  });
+
   it("reads only the manager's fixed store with areas, seats, machine profiles, and dependency counts", async () => {
     const context = await createManagerContext();
 

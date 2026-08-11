@@ -789,23 +789,29 @@ export function HqStoreConfigPage({ onAction, readonly }) {
                   ；权限来自当前总部运营上下文，而不是前端下拉框。
                 </p>
               </div>
-              <Button
-                tone="primary"
-                icon={Plus}
-                disabled={readonly}
-                onClick={() =>
-                  onAction({
-                    kind: "store-future-config",
-                    mode: "create",
-                    scope: tab,
-                    scopeLabel,
-                    store,
-                    label: `创建${scopeLabel}未来配置`,
-                  })
-                }
-              >
-                创建未来配置
-              </Button>
+              {tab === "products" ? (
+                <small className="config-boundary-note">
+                  商品资料在连锁配置维护；此处只编辑既有商品的固定三店范围。
+                </small>
+              ) : (
+                <Button
+                  tone="primary"
+                  icon={Plus}
+                  disabled={readonly}
+                  onClick={() =>
+                    onAction({
+                      kind: "store-future-config",
+                      mode: "create",
+                      scope: tab,
+                      scopeLabel,
+                      store,
+                      label: `创建${scopeLabel}未来配置`,
+                    })
+                  }
+                >
+                  创建未来配置
+                </Button>
+              )}
             </div>
             <div className="config-row-list">
               {configItems.map((item) => (

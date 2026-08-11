@@ -30,10 +30,13 @@ import type {
   StoreBusinessHoursDaySet,
 } from "@jingshu/contracts";
 
+import { canonicalHeadquartersStores } from "./headquarters-stores";
+
 type Configuration = ManagerStoreConfigurationResponse;
 type Area = Configuration["areas"][number];
 type StoreProduct = Configuration["products"][number];
 type StoreSeat = Configuration["seats"][number];
+type PricePlan = Configuration["pricePlans"][number];
 type Command = ManagerStoreConfigurationCommandRequest;
 type HeadquartersProduct = HeadquartersCatalogsResponse["products"][number];
 type ConfigurationTab = "profile" | "seats" | "pricing" | "products";
@@ -45,7 +48,7 @@ type DialogState =
       readonly kind: "headquarters-product";
       readonly product: HeadquartersProduct;
     }
-  | { readonly kind: "price" }
+  | { readonly kind: "price"; readonly plan?: PricePlan }
   | { readonly kind: "product"; readonly product: StoreProduct }
   | { readonly kind: "seat"; readonly seat?: StoreSeat }
   | { readonly kind: "dependencies"; readonly seat: StoreSeat };
@@ -1094,19 +1097,22 @@ function DependencyDialog({
 }
 
 function PricePlanDialog({
+  baseline,
   configuration,
   csrfToken,
   onClose,
   onSubmit,
   previewEndpoint,
 }: {
+  baseline?: PricePlan;
   configuration: Configuration;
   csrfToken: string;
   onClose: () => void;
   onSubmit: (command: Command, success: string) => Promise<string | null>;
   previewEndpoint: string;
 }) {
-  const baseline =
+  const initialPlan =
+    baseline ??
     configuration.pricePlans.find((plan) => plan.status === "current") ??
     configuration.pricePlans[0];
   const firstArea =
@@ -1116,21 +1122,23 @@ function PricePlanDialog({
     configuration.machineProfiles.find((profile) => !profile.archived) ??
     configuration.machineProfiles[0];
   const [areaId, setAreaId] = useState(
-    baseline?.area.areaId ?? firstArea?.areaId ?? "",
+    initialPlan?.area.areaId ?? firstArea?.areaId ?? "",
   );
   const [machineProfileId, setMachineProfileId] = useState(
-    baseline?.machineProfile.machineProfileId ??
+    initialPlan?.machineProfile.machineProfileId ??
       firstProfile?.machineProfileId ??
       "",
   );
-  const [startsAt, setStartsAt] = useState(baseline?.startsAt ?? "06:00");
-  const [endsAt, setEndsAt] = useState(baseline?.endsAt ?? "06:00");
-  const [endsNextDay, setEndsNextDay] = useState(baseline?.endsNextDay ?? true);
+  const [startsAt, setStartsAt] = useState(initialPlan?.startsAt ?? "06:00");
+  const [endsAt, setEndsAt] = useState(initialPlan?.endsAt ?? "06:00");
+  const [endsNextDay, setEndsNextDay] = useState(
+    initialPlan?.endsNextDay ?? true,
+  );
   const [weekdayCents, setWeekdayCents] = useState(
-    String(baseline?.weekdayHalfHourCents ?? 800),
+    String(initialPlan?.weekdayHalfHourCents ?? 800),
   );
   const [weekendCents, setWeekendCents] = useState(
-    String(baseline?.weekendHalfHourCents ?? 1_000),
+    String(initialPlan?.weekendHalfHourCents ?? 1_000),
   );
   const [effectiveFrom, setEffectiveFrom] = useState(
     shanghaiDateTimeLocal(nextHalfHour(configuration.currentTime)),
@@ -1791,6 +1799,8 @@ function StoreConfiguration({
   const pricingTabRef = useRef<HTMLButtonElement>(null);
   const productsTabRef = useRef<HTMLButtonElement>(null);
   const pendingCommandKeysRef = useRef(new Map<string, string>());
+  const configurationEndpointRef = useRef("");
+  const loadSequenceRef = useRef(0);
   const headquartersQuery =
     mode === "headquarters" && selectedStoreId
       ? `?storeId=${encodeURIComponent(selectedStoreId)}`
@@ -1807,32 +1817,67 @@ function StoreConfiguration({
     mode === "headquarters"
       ? `/api/v1/hq/store-configuration/price-overlap-preview${headquartersQuery}`
       : "/api/v1/manager/store-configuration/price-overlap-preview";
+  configurationEndpointRef.current = configurationEndpoint;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const response = await fetch(configurationEndpoint, {
-        cache: "no-store",
-        credentials: "same-origin",
-      });
-      const payload: unknown = await response.json();
-      if (!response.ok) {
-        setError(failureMessage(payload, "门店配置读取失败，请稍后重试。"));
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      if (configurationEndpointRef.current !== configurationEndpoint) {
         return false;
       }
-      setConfiguration(payload as Configuration);
-      return true;
-    } catch {
-      setError("门店配置读取失败，页面不会展示未经服务端确认的数据。");
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  }, [configurationEndpoint]);
+      const sequence = ++loadSequenceRef.current;
+      setLoading(true);
+      setError("");
+      try {
+        const response = await fetch(configurationEndpoint, {
+          cache: "no-store",
+          credentials: "same-origin",
+          ...(signal ? { signal } : {}),
+        });
+        const payload: unknown = await response.json();
+        if (
+          sequence !== loadSequenceRef.current ||
+          configurationEndpointRef.current !== configurationEndpoint
+        ) {
+          return false;
+        }
+        if (!response.ok) {
+          setError(failureMessage(payload, "门店配置读取失败，请稍后重试。"));
+          return false;
+        }
+        setConfiguration(payload as Configuration);
+        return true;
+      } catch {
+        if (
+          signal?.aborted ||
+          sequence !== loadSequenceRef.current ||
+          configurationEndpointRef.current !== configurationEndpoint
+        ) {
+          return false;
+        }
+        setError("门店配置读取失败，页面不会展示未经服务端确认的数据。");
+        return false;
+      } finally {
+        if (
+          sequence === loadSequenceRef.current &&
+          configurationEndpointRef.current === configurationEndpoint
+        ) {
+          setLoading(false);
+        }
+      }
+    },
+    [configurationEndpoint],
+  );
 
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    setConfiguration(null);
+    setDialog(null);
+    setLoading(true);
+    void load(controller.signal);
+    return () => {
+      controller.abort();
+      loadSequenceRef.current += 1;
+    };
   }, [load, refreshKey]);
 
   const execute = useCallback(
@@ -1913,6 +1958,16 @@ function StoreConfiguration({
     window.requestAnimationFrame(() => returnFocusRef.current?.focus());
   }
 
+  function selectHeadquartersStore(storeId: string) {
+    if (storeId === selectedStoreId) return;
+    setDialog(null);
+    setAreaFilter("all");
+    setSearch("");
+    setConfiguration(null);
+    setLoading(true);
+    onSelectStore?.(storeId);
+  }
+
   function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
       return;
@@ -1978,12 +2033,7 @@ function StoreConfiguration({
           <label className="store-config-store-selector">
             <span>当前门店</span>
             <select
-              onChange={(event) => {
-                setDialog(null);
-                setAreaFilter("all");
-                setSearch("");
-                onSelectStore?.(event.target.value);
-              }}
+              onChange={(event) => selectHeadquartersStore(event.target.value)}
               value={selectedStoreId}
             >
               {storeOptions?.map((store) => (
@@ -2012,12 +2062,7 @@ function StoreConfiguration({
               className={store.storeId === selectedStoreId ? "is-active" : ""}
               data-store-tone={store.code}
               key={store.storeId}
-              onClick={() => {
-                setDialog(null);
-                setAreaFilter("all");
-                setSearch("");
-                onSelectStore?.(store.storeId);
-              }}
+              onClick={() => selectHeadquartersStore(store.storeId)}
               type="button"
             >
               <Storefront />
@@ -2497,7 +2542,10 @@ function StoreConfiguration({
                         <button
                           className="store-config-edit-button"
                           onClick={(event) =>
-                            openDialog({ kind: "price" }, event.currentTarget)
+                            openDialog(
+                              { kind: "price", plan },
+                              event.currentTarget,
+                            )
                           }
                         >
                           <PencilSimple /> 基于当前调整
@@ -2697,6 +2745,7 @@ function StoreConfiguration({
       ) : null}
       {dialog?.kind === "price" ? (
         <PricePlanDialog
+          {...(dialog.plan ? { baseline: dialog.plan } : {})}
           configuration={configuration}
           csrfToken={csrfToken}
           onClose={closeDialog}
@@ -2804,15 +2853,9 @@ export function HeadquartersStoreConfiguration({
         return false;
       }
       const next = payload as HeadquartersCatalogsResponse;
-      const storeOrder = new Map([
-        ["prism-flagship", 0],
-        ["starbridge-standard", 1],
-        ["apex-new", 2],
-      ]);
-      const stores = [...next.stores].sort(
-        (left, right) =>
-          (storeOrder.get(left.code) ?? Number.MAX_SAFE_INTEGER) -
-          (storeOrder.get(right.code) ?? Number.MAX_SAFE_INTEGER),
+      const stores = canonicalHeadquartersStores(
+        next.stores,
+        (store) => store.code,
       );
       setCatalogs({ ...next, stores });
       setSelectedStoreId((current) =>

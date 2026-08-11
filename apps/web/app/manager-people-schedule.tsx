@@ -22,6 +22,7 @@ import type {
   ManagerShiftCoveragePreviewResponse,
 } from "@jingshu/contracts";
 
+import { canonicalHeadquartersStores } from "./headquarters-stores";
 import { ManagerHandoverExceptions } from "./staff-handover";
 
 type Employee = ManagerPeopleScheduleResponse["employees"][number];
@@ -1571,18 +1572,14 @@ export function HeadquartersPeopleSchedule({
     null,
   );
   const [error, setError] = useState("");
-  const stores = useMemo(() => {
-    const order = new Map([
-      ["prism-flagship", 0],
-      ["starbridge-standard", 1],
-      ["apex-new", 2],
-    ]);
-    return [...(data?.stores ?? [])].sort(
-      (left, right) =>
-        (order.get(left.store.code) ?? Number.MAX_SAFE_INTEGER) -
-        (order.get(right.store.code) ?? Number.MAX_SAFE_INTEGER),
-    );
-  }, [data]);
+  const stores = useMemo(
+    () =>
+      canonicalHeadquartersStores(
+        data?.stores ?? [],
+        (item) => item.store.code,
+      ),
+    [data],
+  );
   useEffect(() => {
     const controller = new AbortController();
     setError("");

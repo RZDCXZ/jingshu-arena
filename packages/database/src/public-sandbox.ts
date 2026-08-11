@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import pg from "pg";
 import type { PoolClient } from "pg";
+import { HEADQUARTERS_FIXED_STORE_CODES } from "@jingshu/contracts";
 import type {
   FrontlineReservationAction,
   ManagerAuditFilters,
@@ -3035,6 +3036,11 @@ interface FrontlineContext {
   readonly sandbox: SandboxRow;
 }
 
+interface StoreConfigurationContext {
+  readonly actorStoreId: string | null;
+  readonly sandbox: SandboxRow;
+}
+
 interface FrontlineCommandRow {
   command_type: FrontlineReservationAction;
   payload_hash: string;
@@ -5050,7 +5056,7 @@ async function assertStoreConfigurationContext(
   client: PoolClient,
   input: ReadManagerStoreConfigurationInput,
   wallTime: Date,
-): Promise<FrontlineContext> {
+): Promise<StoreConfigurationContext> {
   if (input.role === "manager") {
     const context = await assertFrontlineContext(
       client,
@@ -5065,17 +5071,13 @@ async function assertStoreConfigurationContext(
     { ...input, role: "hq" },
     wallTime,
   );
-  if (!input.storeId) {
-    throw new ManagerStoreConfigurationConflictError("cross-store");
-  }
   const store = await client.query<{ id: string }>(
-    `select id from stores where sandbox_id = $1 and id = $2`,
-    [input.sandboxId, input.storeId],
+    `select id from stores
+      where sandbox_id = $1 and id = $2
+        and code = any($3::text[])`,
+    [input.sandboxId, input.storeId ?? null, HEADQUARTERS_FIXED_STORE_CODES],
   );
-  if (!store.rows[0]) {
-    throw new ManagerStoreConfigurationConflictError("cross-store");
-  }
-  return { actorStoreId: input.storeId, sandbox };
+  return { actorStoreId: store.rows[0]?.id ?? null, sandbox };
 }
 
 async function managerShiftPreviewWithClient(
@@ -6527,11 +6529,15 @@ function buildRoleContext(
   wallTime: Date,
 ): DatabaseRoleContext {
   const scopedStores =
-    persona.role === "customer" || persona.role === "hq"
+    persona.role === "customer"
       ? stores
-      : persona.role === "staff" || persona.role === "manager"
-        ? stores.filter((store) => store.id === persona.store_id)
-        : [];
+      : persona.role === "hq"
+        ? stores.filter((store) =>
+            HEADQUARTERS_FIXED_STORE_CODES.some((code) => code === store.code),
+          )
+        : persona.role === "staff" || persona.role === "manager"
+          ? stores.filter((store) => store.id === persona.store_id)
+          : [];
 
   return {
     sandboxId: sandbox.id,
@@ -15403,14 +15409,10 @@ export function createPublicSandboxDatabase(
              from stores store
              left join employees employee on employee.store_id = store.id
             where store.sandbox_id = $1
+              and store.code = any($3::text[])
             group by store.id
-            order by case store.code
-              when 'prism-flagship' then 1
-              when 'starbridge-standard' then 2
-              when 'apex-new' then 3
-              else 4
-            end, store.code`,
-          [input.sandboxId, currentTime],
+            order by array_position($3::text[], store.code), store.code`,
+          [input.sandboxId, currentTime, HEADQUARTERS_FIXED_STORE_CODES],
         );
         const startsAt = new Date(
           Math.floor(currentTime.getTime() / HALF_HOUR_MS) * HALF_HOUR_MS,
@@ -15526,8 +15528,9 @@ export function createPublicSandboxDatabase(
           id: string;
         }>(
           `select id, code, display_name from stores
-            where sandbox_id = $1 order by code`,
-          [input.sandboxId],
+            where sandbox_id = $1 and code = any($2::text[])
+            order by array_position($2::text[], code), code`,
+          [input.sandboxId, HEADQUARTERS_FIXED_STORE_CODES],
         );
         const products = await client.query<{
           archived: boolean;
@@ -15561,8 +15564,9 @@ export function createPublicSandboxDatabase(
              from product_store_scopes scope
              join stores store on store.id = scope.store_id
             where scope.sandbox_id = $1
+              and store.code = any($2::text[])
             order by store.display_name, store.code`,
-          [input.sandboxId],
+          [input.sandboxId, HEADQUARTERS_FIXED_STORE_CODES],
         );
         const machineProfiles = await client.query<{
           archived: boolean;
@@ -15812,8 +15816,10 @@ export function createPublicSandboxDatabase(
           );
         const assertProductStores = async (storeIds: ReadonlyArray<string>) => {
           const stores = await client.query<{ id: string }>(
-            `select id from stores where sandbox_id = $1 and id = any($2::uuid[])`,
-            [input.sandboxId, storeIds],
+            `select id from stores
+              where sandbox_id = $1 and id = any($2::uuid[])
+                and code = any($3::text[])`,
+            [input.sandboxId, storeIds, HEADQUARTERS_FIXED_STORE_CODES],
           );
           if (stores.rows.length !== storeIds.length) {
             throw new HeadquartersCatalogConflictError("product-store-scope");
@@ -16839,6 +16845,9 @@ export function createPublicSandboxDatabase(
           input,
           wallTime,
         );
+        if (!context.actorStoreId) {
+          throw new ManagerStoreConfigurationConflictError("cross-store");
+        }
         const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
         await processFrontlineReservationDeadlines(client, {
           currentTime,
@@ -17242,7 +17251,7 @@ export function createPublicSandboxDatabase(
       const client = await pool.connect();
       const wallTime = wallClock.now();
       let denialAudit: {
-        readonly actorStoreId: string;
+        readonly actorStoreId: string | null;
         readonly businessTime: Date;
         readonly commandPayload: unknown;
       } | null = null;
@@ -17428,7 +17437,7 @@ export function createPublicSandboxDatabase(
           return { ...existingRow.result_data, replayed: true };
         }
         idempotencySlotAvailable = true;
-        if (context.actorStoreId !== input.storeId) {
+        if (!context.actorStoreId || context.actorStoreId !== input.storeId) {
           throw new ManagerStoreConfigurationConflictError("cross-store");
         }
         await processFrontlineReservationDeadlines(client, {
@@ -18894,7 +18903,11 @@ export function createPublicSandboxDatabase(
                 wallTime,
               ],
             );
-            if (idempotencySlotAvailable && commandFingerprint) {
+            if (
+              idempotencySlotAvailable &&
+              commandFingerprint &&
+              denialAudit.actorStoreId
+            ) {
               await client.query(
                 `insert into store_config_command_requests (
                    sandbox_id, actor_persona_id, store_id, command_type,
