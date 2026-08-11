@@ -168,9 +168,9 @@ describe("headquarters comparison API", () => {
       (await inventoryDrilldownResponse.json()) as HeadquartersComparisonResponse;
     expect(inventoryDrilldownResponse.status).toBe(200);
     expect(inventoryDrilldown.stores[0]!.drilldown).toMatchObject({
-      fromBusinessDay: "2026-08-05",
+      fromBusinessDay: "2026-08-11",
       kind: "inventory",
-      toBusinessDay: "2026-08-05",
+      toBusinessDay: "2026-08-11",
     });
     expect(inventoryDrilldown.stores[0]!.drilldown!.rows).toHaveLength(
       inventoryDrilldown.stores[0]!.summary.inventory.lowStockCount,
