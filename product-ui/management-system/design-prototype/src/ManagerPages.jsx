@@ -14,6 +14,7 @@ import {
   YAxis,
 } from "recharts";
 import {
+  Archive,
   ArrowRight,
   Buildings,
   CalendarBlank,
@@ -361,12 +362,12 @@ export function StoreConfigPage({ onAction, readonly }) {
   const productRows = [
     {
       category: "饮品",
-      code: "energy-pulse",
-      name: "脉冲能量饮料",
-      price: "¥10.00",
-      listed: "已上架",
-      threshold: 12,
-      available: 42,
+      code: "cloud-mineral-water",
+      name: "云端矿泉水",
+      price: "¥6.50",
+      listed: "已下架",
+      threshold: 11,
+      available: 12,
     },
     {
       category: "零食",
@@ -565,6 +566,30 @@ export function StoreConfigPage({ onAction, readonly }) {
                     key: "version",
                     label: "版本",
                     render: (row) => <StatusPill>{row.version}</StatusPill>,
+                  },
+                  {
+                    key: "action",
+                    label: "操作",
+                    render: (row) =>
+                      row.version.includes("未来") ? (
+                        <Button
+                          tone="ghost"
+                          icon={Archive}
+                          disabled={readonly}
+                          onClick={() =>
+                            onAction({
+                              kind: "manager-price",
+                              mode: "archive",
+                              label: `归档 ${row.version}`,
+                              ...row,
+                            })
+                          }
+                        >
+                          归档
+                        </Button>
+                      ) : (
+                        <span className="muted-copy">只读</span>
+                      ),
                   },
                 ]}
                 rows={pricePlans}

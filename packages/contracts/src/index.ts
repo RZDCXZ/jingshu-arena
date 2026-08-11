@@ -21,6 +21,12 @@ export type CustomerSeatAvailability =
 export type CustomerReservationPriceRule =
   "weekday-base" | "weekday-evening" | "weekday-overnight" | "weekend";
 
+export interface PricePlanClockRange {
+  readonly endsAt: string;
+  readonly endsNextDay: boolean;
+  readonly startsAt: string;
+}
+
 export type CustomerReservationCouponIneligibleReason =
   | "business-kind"
   | "minimum-spend"
@@ -1051,7 +1057,13 @@ export interface ManagerStoreConfigurationResponse {
       readonly displayName: string;
       readonly machineProfileId: string;
     };
+    readonly legacyWeekdayBreakdown: {
+      readonly baseHalfHourCents: number;
+      readonly eveningHalfHourCents: number;
+      readonly overnightHalfHourCents: number;
+    } | null;
     readonly pricePlanId: string;
+    readonly pricingModel: "explicit-half-hour" | "legacy";
     readonly configVersion: number;
     readonly startsAt: string;
     readonly status: "archived" | "current" | "historical" | "scheduled";
@@ -1101,6 +1113,21 @@ export interface ManagerStoreConfigurationResponse {
     readonly sortOrder: number;
     readonly version: number;
   }>;
+}
+
+export interface ManagerPricePlanOverlapPreviewRequest extends PricePlanClockRange {
+  readonly areaId: string;
+  readonly effectiveFrom: string;
+  readonly machineProfileId: string;
+}
+
+export interface ManagerPricePlanOverlapPreviewResponse {
+  readonly overlap: {
+    readonly pricePlanId: string;
+    readonly status: "current" | "scheduled";
+    readonly version: number;
+  } | null;
+  readonly status: "ready";
 }
 
 interface ManagerStoreConfigurationCommandBase {

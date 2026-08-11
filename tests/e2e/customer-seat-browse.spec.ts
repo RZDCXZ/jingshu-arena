@@ -39,7 +39,7 @@ const customerContext: RoleContextReadyResponse = {
     },
     expiresAt: "2026-08-11T11:47:23.000Z",
     schemaVersion: "19",
-    seedVersion: "2026-08-11.2",
+    seedVersion: "2026-08-11.3",
   },
   status: "ready",
   storeScope: {

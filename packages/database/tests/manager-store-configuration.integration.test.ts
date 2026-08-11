@@ -73,6 +73,7 @@ describe("manager store configuration", () => {
     });
     expect(configuration.pricePlans.length).toBeGreaterThan(0);
     expect(configuration.pricePlans[0]).toMatchObject({
+      pricingModel: "explicit-half-hour",
       store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
       weekdayHalfHourCents: expect.any(Number),
       weekendHalfHourCents: expect.any(Number),
@@ -95,7 +96,8 @@ describe("manager store configuration", () => {
     const existing = before.pricePlans.find(
       (plan) =>
         plan.area.code === "competitive-a" &&
-        plan.machineProfile.code === "competitive",
+        plan.machineProfile.code === "competitive" &&
+        plan.startsAt === "18:00",
     )!;
     const effectiveFrom = new Date("2026-08-10T12:30:00.000Z");
     const idempotencyKey = randomUUID();
@@ -165,6 +167,59 @@ describe("manager store configuration", () => {
       }),
     ).rejects.toMatchObject({ reason: "price-plan-overlap" });
 
+    await expect(
+      database.executeManagerStoreConfigurationCommand({
+        ...context,
+        action: "create-price-plan",
+        areaId: existing.area.areaId,
+        effectiveFrom: new Date("2026-08-10T13:00:00.000Z"),
+        endsAt: "23:00",
+        endsNextDay: false,
+        expectedVersion: confirmed.store.version,
+        idempotencyKey: randomUUID(),
+        machineProfileId: existing.machineProfile.machineProfileId,
+        requestId: randomUUID(),
+        startsAt: "19:00",
+        storeId: before.store.storeId,
+        weekdayHalfHourCents: 1_000,
+        weekendHalfHourCents: 1_200,
+      }),
+    ).rejects.toMatchObject({ reason: "price-plan-overlap" });
+
+    await database.executeManagerStoreConfigurationCommand({
+      ...context,
+      action: "archive-price-plan",
+      expectedVersion: created.configVersion,
+      idempotencyKey: randomUUID(),
+      pricePlanId: created.pricePlanId,
+      requestId: randomUUID(),
+      storeId: before.store.storeId,
+    });
+    const archived = await database.readManagerStoreConfiguration(context);
+    expect(
+      archived.pricePlans.find(
+        (plan) => plan.pricePlanId === created.pricePlanId,
+      )?.status,
+    ).toBe("archived");
+    await expect(
+      database.executeManagerStoreConfigurationCommand({
+        ...context,
+        action: "create-price-plan",
+        areaId: existing.area.areaId,
+        effectiveFrom,
+        endsAt: existing.endsAt,
+        endsNextDay: existing.endsNextDay,
+        expectedVersion: archived.store.version,
+        idempotencyKey: randomUUID(),
+        machineProfileId: existing.machineProfile.machineProfileId,
+        requestId: randomUUID(),
+        startsAt: existing.startsAt,
+        storeId: before.store.storeId,
+        weekdayHalfHourCents: 975,
+        weekendHalfHourCents: 1_175,
+      }),
+    ).resolves.toMatchObject({ action: "create-price-plan" });
+
     const customerRole = await database.switchRoleContext({
       ...context,
       requestId: randomUUID(),
@@ -185,6 +240,46 @@ describe("manager store configuration", () => {
     expect(
       availability.price.segments.map((segment) => segment.amountCents),
     ).toEqual([975, 975]);
+  });
+
+  it("uses the displayed explicit plan for every segment across a clock boundary", async () => {
+    const context = await createManagerContext();
+    const configuration = await database.readManagerStoreConfiguration(context);
+    const base = configuration.pricePlans.find(
+      (plan) =>
+        plan.area.code === "competitive-a" &&
+        plan.machineProfile.code === "competitive" &&
+        plan.startsAt === "06:00",
+    )!;
+    const evening = configuration.pricePlans.find(
+      (plan) =>
+        plan.area.areaId === base.area.areaId &&
+        plan.machineProfile.machineProfileId ===
+          base.machineProfile.machineProfileId &&
+        plan.startsAt === "18:00",
+    )!;
+    const customerRole = await database.switchRoleContext({
+      ...context,
+      requestId: randomUUID(),
+      targetRole: "customer",
+    });
+
+    const availability = await database.readCustomerSeatAvailability({
+      areaCode: base.area.code,
+      contextVersion: customerRole.contextVersion,
+      durationHours: 1,
+      machineProfileCode: base.machineProfile.code,
+      mode: "future",
+      personaId: customerRole.persona.id,
+      requestedStartsAt: new Date("2026-08-11T09:30:00.000Z"),
+      role: "customer",
+      sandboxId: context.sandboxId,
+      storeCode: "prism-flagship",
+    });
+
+    expect(
+      availability.price.segments.map((segment) => segment.amountCents),
+    ).toEqual([base.weekdayHalfHourCents, evening.weekdayHalfHourCents]);
   });
 
   it("updates and archives a store product without changing historical order snapshots", async () => {

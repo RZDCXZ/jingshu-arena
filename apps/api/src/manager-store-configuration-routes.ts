@@ -4,11 +4,17 @@ import type { Context, Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import { bodyLimit } from "hono/body-limit";
 import type {
+  ManagerPricePlanOverlapPreviewRequest,
+  ManagerPricePlanOverlapPreviewResponse,
   ManagerStoreConfigurationCommandRequest,
   ManagerStoreConfigurationCommandResponse,
   ManagerStoreConfigurationResponse,
 } from "@jingshu/contracts";
 import type { ManagerStoreConfigurationConflictReason } from "@jingshu/database";
+import {
+  pricePlanClockRangesOverlap,
+  pricePlanEffectiveRangesOverlap,
+} from "@jingshu/domain";
 
 import { readRoleSession } from "./role-session.js";
 import {
@@ -496,6 +502,43 @@ function parseCommand(
   }
 }
 
+function parsePricePlanOverlapPreview(
+  body: unknown,
+): ManagerPricePlanOverlapPreviewRequest | null {
+  if (
+    !isPlainRecord(body) ||
+    !exactKeys(body, [
+      "areaId",
+      "effectiveFrom",
+      "endsAt",
+      "endsNextDay",
+      "machineProfileId",
+      "startsAt",
+    ]) ||
+    !stringValue(body.areaId) ||
+    !UUID_V4_PATTERN.test(body.areaId) ||
+    !stringValue(body.machineProfileId) ||
+    !UUID_V4_PATTERN.test(body.machineProfileId) ||
+    !stringValue(body.effectiveFrom) ||
+    !stringValue(body.startsAt) ||
+    !stringValue(body.endsAt) ||
+    typeof body.endsNextDay !== "boolean"
+  ) {
+    return null;
+  }
+  const halfHour = /^(?:[01]\d|2[0-3]):(?:00|30)$/u;
+  const effectiveFrom = new Date(body.effectiveFrom);
+  const rangeValid = body.endsNextDay
+    ? body.endsAt <= body.startsAt
+    : body.endsAt > body.startsAt;
+  return halfHour.test(body.startsAt) &&
+    halfHour.test(body.endsAt) &&
+    rangeValid &&
+    !Number.isNaN(effectiveFrom.getTime())
+    ? (body as unknown as ManagerPricePlanOverlapPreviewRequest)
+    : null;
+}
+
 export function registerManagerStoreConfigurationRoutes(
   app: Hono,
   services: AppServices,
@@ -544,6 +587,137 @@ export function registerManagerStoreConfigurationRoutes(
       return context.json(mapped.body, mapped.status);
     }
   });
+
+  app.post(
+    "/api/v1/manager/store-configuration/price-overlap-preview",
+    bodyLimit({
+      maxSize: 2 * 1024,
+      onError: (context) => {
+        const requestId = randomUUID();
+        context.header("X-Request-Id", requestId);
+        context.header("Cache-Control", "no-store");
+        return context.json(
+          errorBody(
+            "STORE_PRICE_PREVIEW_BODY_TOO_LARGE",
+            "价格重叠检查请求超过允许大小。",
+            requestId,
+          ),
+          413,
+        );
+      },
+    }),
+    async (context) => {
+      const requestId = randomUUID();
+      context.header("X-Request-Id", requestId);
+      context.header("Cache-Control", "no-store");
+      if (!services.sandboxDatabase || !services.sessionSecret) {
+        const mapped = failure(null, requestId);
+        return context.json(mapped.body, mapped.status);
+      }
+      const auth = await managerSession(context, services, requestId);
+      if (!auth.session) return auth.response;
+      if (!services.allowedOrigins.has(context.req.header("Origin") ?? "")) {
+        await recordRoleContextDenial(
+          services,
+          auth.session,
+          requestId,
+          "invalid_origin",
+        );
+        return context.json(
+          errorBody(
+            "STORE_CONFIGURATION_ORIGIN_INVALID",
+            "请求来源无法验证，价格重叠检查未执行。",
+            requestId,
+          ),
+          403,
+        );
+      }
+      if (
+        !csrfTokensMatch(
+          auth.session.csrfToken,
+          context.req.header("X-CSRF-Token"),
+        )
+      ) {
+        await recordRoleContextDenial(
+          services,
+          auth.session,
+          requestId,
+          "csrf_context_mismatch",
+        );
+        return context.json(
+          errorBody(
+            "STORE_CONFIGURATION_CSRF_INVALID",
+            "页面上下文已经变化，价格重叠检查未执行。",
+            requestId,
+          ),
+          403,
+        );
+      }
+      const body = parsePricePlanOverlapPreview(
+        await context.req.json().catch(() => null),
+      );
+      if (!body) {
+        return context.json(
+          errorBody(
+            "STORE_PRICE_PREVIEW_INVALID",
+            "请使用有效的区域、机型、半小时时段和生效时间检查重叠。",
+            requestId,
+          ),
+          422,
+        );
+      }
+      try {
+        const configuration =
+          await services.sandboxDatabase.readManagerStoreConfiguration({
+            contextVersion: auth.session.contextVersion,
+            personaId: auth.session.personaId,
+            role: "manager",
+            sandboxId: auth.session.sandboxId,
+          });
+        const effectiveFrom = new Date(body.effectiveFrom);
+        const overlap = configuration.pricePlans.find(
+          (
+            plan,
+          ): plan is typeof plan & {
+            status: "current" | "scheduled";
+          } => {
+            if (
+              plan.status === "archived" ||
+              plan.status === "historical" ||
+              plan.area.areaId !== body.areaId ||
+              plan.machineProfile.machineProfileId !== body.machineProfileId ||
+              !pricePlanClockRangesOverlap(plan, body)
+            ) {
+              return false;
+            }
+            const exactScope =
+              plan.startsAt === body.startsAt &&
+              plan.endsAt === body.endsAt &&
+              plan.endsNextDay === body.endsNextDay;
+            return exactScope
+              ? plan.effectiveFrom.getTime() >= effectiveFrom.getTime()
+              : pricePlanEffectiveRangesOverlap(plan, {
+                  effectiveFrom,
+                  effectiveUntil: null,
+                });
+          },
+        );
+        return context.json({
+          overlap: overlap
+            ? {
+                pricePlanId: overlap.pricePlanId,
+                status: overlap.status,
+                version: overlap.version,
+              }
+            : null,
+          status: "ready",
+        } satisfies ManagerPricePlanOverlapPreviewResponse);
+      } catch (error) {
+        const mapped = failure(error, requestId);
+        return context.json(mapped.body, mapped.status);
+      }
+    },
+  );
 
   app.post(
     "/api/v1/manager/store-configuration/commands",

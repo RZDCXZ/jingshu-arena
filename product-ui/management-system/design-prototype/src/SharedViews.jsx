@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowRight,
+  Archive,
   Buildings,
   Check,
   ClockClockwise,
@@ -34,6 +35,27 @@ function shiftClockTime(value, minutes) {
   const [hours, currentMinutes] = value.split(":").map(Number);
   const shifted = (hours * 60 + currentMinutes + minutes) % (24 * 60);
   return `${String(Math.floor(shifted / 60)).padStart(2, "0")}:${String(shifted % 60).padStart(2, "0")}`;
+}
+
+function clockRangesOverlap(left, right) {
+  const minutes = (value) =>
+    Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
+  const intervals = (range) => {
+    const start = minutes(range.startsAt);
+    const end = minutes(range.endsAt);
+    return range.endsNextDay
+      ? [
+          [start, 24 * 60],
+          [0, end],
+        ]
+      : [[start, end]];
+  };
+  return intervals(left).some(([leftStart, leftEnd]) =>
+    intervals(right).some(
+      ([rightStart, rightEnd]) =>
+        leftStart < rightEnd && rightStart < leftEnd,
+    ),
+  );
 }
 
 export function PublicEntry({ onCreate, onExplore }) {
@@ -1000,6 +1022,22 @@ function resolveActionModal(action) {
   }
 
   if (action?.kind === "manager-price") {
+    if (action.mode === "archive") {
+      return {
+        eyebrow: "价格计划归档",
+        title: actionLabel,
+        noticeTitle: "仅未来版本可归档",
+        noticeBody:
+          "归档后该未来版本不再参与计价；当前与历史版本、已有预约价格快照均保持不变。",
+        confirmLabel: "确认归档版本",
+        fields: [
+          { label: "适用范围", value: action.storeArea, readOnly: true },
+          { label: "总部机型", value: action.profile, readOnly: true },
+          { label: "时段", value: action.time, readOnly: true },
+          { label: "生效信息", value: action.effective, readOnly: true },
+        ],
+      };
+    }
     return {
       eyebrow: "价格计划",
       title: actionLabel,
@@ -1019,16 +1057,23 @@ function resolveActionModal(action) {
           value: "竞技型",
           options: ["竞技型", "旗舰型", "标准型"],
         },
-        { label: "开始时刻", value: "06:00", type: "time" },
-        { label: "结束时刻（次日）", value: "06:00", type: "time" },
-        { label: "工作日每半小时（分）", value: "900", type: "number" },
-        { label: "周末每半小时（分）", value: "1100", type: "number" },
+        { key: "startsAt", label: "开始时刻", value: "06:00", type: "time" },
+        { key: "endsAt", label: "结束时刻", value: "18:00", type: "time" },
+        {
+          key: "endsNextDay",
+          label: "结束归属",
+          value: "当天",
+          options: ["当天", "次日"],
+        },
+        { label: "工作日每半小时（分）", value: "750", type: "number" },
+        { label: "周末每半小时（分）", value: "863", type: "number" },
         {
           label: "生效时间",
-          value: "2026-08-12T06:00",
+          value: "2026-08-11T11:00",
           type: "datetime-local",
         },
         {
+          key: "overlap",
           label: "范围重叠检查",
           value: "未发现重叠；可创建未来版本",
           readOnly: true,
@@ -1045,6 +1090,31 @@ function resolveActionModal(action) {
   }
 
   if (action?.kind === "manager-store-product") {
+    if (action.mode === "archive") {
+      return {
+        eyebrow: "门店商品归档",
+        title: actionLabel,
+        noticeTitle: "保留历史订单引用",
+        noticeBody:
+          "归档只停用当前门店配置；总部商品档案、库存流水与历史订单快照不会被删除或改写。",
+        confirmLabel: "确认归档配置",
+        fields: [
+          { label: "总部商品资料", value: action.name, readOnly: true },
+          {
+            label: "总部分类 / 代码",
+            value: `${action.category} · ${action.code}`,
+            readOnly: true,
+          },
+          { label: "当前门店售价", value: action.price, readOnly: true },
+          {
+            label: "历史处理",
+            value: "订单继续读取创建时保存的名称、单价、数量、优惠与总额快照。",
+            readOnly: true,
+            full: true,
+          },
+        ],
+      };
+    }
     const editing = action.mode === "edit";
     return {
       eyebrow: "门店商品配置",
@@ -1424,8 +1494,59 @@ function resolveActionModal(action) {
   };
 }
 
-export function GenericActionModal({ action, onClose, onConfirm }) {
+export function GenericActionModal({ action, onArchive, onClose, onConfirm }) {
   const modal = resolveActionModal(action);
+  const [fieldValues, setFieldValues] = useState(() =>
+    Object.fromEntries(
+      modal.fields.map((field, index) => [field.key || index, field.value]),
+    ),
+  );
+  useEffect(() => {
+    setFieldValues(
+      Object.fromEntries(
+        modal.fields.map((field, index) => [field.key || index, field.value]),
+      ),
+    );
+  }, [action]);
+  const isPriceCreate =
+    action?.kind === "manager-price" && action.mode === "create";
+  const candidateRange = isPriceCreate
+    ? {
+        startsAt: fieldValues.startsAt,
+        endsAt: fieldValues.endsAt,
+        endsNextDay: fieldValues.endsNextDay === "次日",
+      }
+    : null;
+  const exactKnownRange = candidateRange
+    ? [
+        { startsAt: "06:00", endsAt: "18:00", endsNextDay: false },
+        { startsAt: "18:00", endsAt: "00:00", endsNextDay: true },
+        { startsAt: "00:00", endsAt: "06:00", endsNextDay: false },
+      ].some(
+        (range) =>
+          range.startsAt === candidateRange.startsAt &&
+          range.endsAt === candidateRange.endsAt &&
+          range.endsNextDay === candidateRange.endsNextDay,
+      )
+    : false;
+  const priceOverlap =
+    candidateRange &&
+    !exactKnownRange &&
+    [
+      { startsAt: "06:00", endsAt: "18:00", endsNextDay: false },
+      { startsAt: "18:00", endsAt: "00:00", endsNextDay: true },
+      { startsAt: "00:00", endsAt: "06:00", endsNextDay: false },
+    ].some((range) => clockRangesOverlap(candidateRange, range));
+  const renderedFields = modal.fields.map((field) =>
+    field.key === "overlap"
+      ? {
+          ...field,
+          value: priceOverlap
+            ? "与已有有效价格时段相交且有效区间重叠；请调整时段"
+            : "未发现重叠；可创建未来版本",
+        }
+      : field,
+  );
   return (
     <Modal
       title={modal.title}
@@ -1441,25 +1562,45 @@ export function GenericActionModal({ action, onClose, onConfirm }) {
             <Button tone="secondary" onClick={onClose}>
               取消
             </Button>
-            <Button tone="primary" onClick={onConfirm}>
+            {action?.kind === "manager-store-product" &&
+              action.mode === "edit" && (
+                <Button tone="secondary" icon={Archive} onClick={onArchive}>
+                  归档配置
+                </Button>
+              )}
+            <Button tone="primary" disabled={priceOverlap} onClick={onConfirm}>
               {modal.confirmLabel}
             </Button>
           </>
         )
       }
     >
-      <InlineNotice title={modal.noticeTitle} tone="info">
-        {modal.noticeBody}
+      <InlineNotice
+        title={priceOverlap ? "价格时段重叠" : modal.noticeTitle}
+        tone={priceOverlap ? "danger" : "info"}
+      >
+        {priceOverlap
+          ? "当前时段与已有计划存在交集，且有效区间重叠；请调整后再创建。"
+          : modal.noticeBody}
       </InlineNotice>
       <div className="form-grid modal-form">
-        {modal.fields.map((field, index) => (
+        {renderedFields.map((field, index) => (
           <label
             className={`field ${field.full ? "field-full" : ""}`}
             key={`${field.label}-${index}`}
           >
             <span>{field.label}</span>
             {field.options ? (
-              <select defaultValue={field.value} disabled={field.readOnly}>
+              <select
+                value={fieldValues[field.key || index] ?? field.value}
+                disabled={field.readOnly}
+                onChange={(event) =>
+                  setFieldValues((values) => ({
+                    ...values,
+                    [field.key || index]: event.target.value,
+                  }))
+                }
+              >
                 {field.options.map((option) => (
                   <option key={option} value={option}>
                     {option}
@@ -1467,11 +1608,30 @@ export function GenericActionModal({ action, onClose, onConfirm }) {
                 ))}
               </select>
             ) : field.multiline ? (
-              <textarea defaultValue={field.value} readOnly={field.readOnly} />
+              <textarea
+                value={fieldValues[field.key || index] ?? field.value}
+                onChange={(event) =>
+                  setFieldValues((values) => ({
+                    ...values,
+                    [field.key || index]: event.target.value,
+                  }))
+                }
+                readOnly={field.readOnly}
+              />
             ) : (
               <input
                 type={field.type || "text"}
-                defaultValue={field.value}
+                value={
+                  field.key === "overlap"
+                    ? field.value
+                    : (fieldValues[field.key || index] ?? field.value)
+                }
+                onChange={(event) =>
+                  setFieldValues((values) => ({
+                    ...values,
+                    [field.key || index]: event.target.value,
+                  }))
+                }
                 readOnly={field.readOnly}
               />
             )}

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 
 import type {
+  ManagerPricePlanOverlapPreviewResponse,
   ManagerStoreConfigurationResponse,
   RoleContextReadyResponse,
 } from "@jingshu/contracts";
@@ -93,6 +94,61 @@ describe("manager store configuration API", () => {
     expect(payload.seats).toHaveLength(96);
     expect(payload.pricePlans.length).toBeGreaterThan(0);
     expect(payload.products).toHaveLength(12);
+  });
+
+  it("previews price overlap with the server-authoritative domain rule", async () => {
+    const manager = await createRoleSession("manager");
+    const configurationResponse = await app.request(
+      "/api/v1/manager/store-configuration",
+      { headers: { Cookie: manager.cookie } },
+    );
+    const configuration =
+      (await configurationResponse.json()) as ManagerStoreConfigurationResponse;
+    const current = configuration.pricePlans.find(
+      (plan) => plan.status === "current",
+    )!;
+    const preview = (body: Record<string, unknown>) =>
+      app.request("/api/v1/manager/store-configuration/price-overlap-preview", {
+        body: JSON.stringify(body),
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: manager.cookie,
+          Origin: publicOrigin,
+          "X-CSRF-Token": manager.context.csrfToken,
+        },
+        method: "POST",
+      });
+    const candidate = {
+      areaId: current.area.areaId,
+      effectiveFrom: "2026-08-10T12:30:00.000Z",
+      endsAt: current.endsAt,
+      endsNextDay: current.endsNextDay,
+      machineProfileId: current.machineProfile.machineProfileId,
+      startsAt: current.startsAt,
+    };
+
+    const exactResponse = await preview(candidate);
+    expect(exactResponse.status).toBe(200);
+    await expect(exactResponse.json()).resolves.toEqual({
+      overlap: null,
+      status: "ready",
+    } satisfies ManagerPricePlanOverlapPreviewResponse);
+
+    const conflictResponse = await preview({
+      ...candidate,
+      endsAt: "06:00",
+      endsNextDay: true,
+      startsAt: "06:00",
+    });
+    expect(conflictResponse.status).toBe(200);
+    await expect(conflictResponse.json()).resolves.toMatchObject({
+      overlap: {
+        pricePlanId: current.pricePlanId,
+        status: "current",
+        version: current.version,
+      },
+      status: "ready",
+    } satisfies ManagerPricePlanOverlapPreviewResponse);
   });
 
   it("accepts dedicated price and store-product commands while keeping the manager store authoritative", async () => {

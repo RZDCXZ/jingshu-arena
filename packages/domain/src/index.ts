@@ -1,5 +1,5 @@
 export const PUBLIC_SANDBOX_SCHEMA_VERSION = "19";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-11.2";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-11.3";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -345,6 +345,40 @@ interface ExplicitPricePlanWindow {
   readonly weekendHalfHourCents: number;
 }
 
+export interface ReservationPricePlan extends ExplicitPricePlanWindow {
+  readonly baseHourlyCents: number;
+  readonly pricingModel: "explicit-half-hour" | "legacy";
+}
+
+type PricePlanClockRange = {
+  readonly endsAt: string;
+  readonly endsNextDay: boolean;
+  readonly startsAt: string;
+};
+
+function clockRangeIntervals(range: PricePlanClockRange) {
+  const startsMinutes = clockMinutes(range.startsAt);
+  const endsMinutes = clockMinutes(range.endsAt);
+  if (range.endsNextDay) {
+    return [
+      [startsMinutes, 24 * 60],
+      [0, endsMinutes],
+    ] as const;
+  }
+  return [[startsMinutes, endsMinutes]] as const;
+}
+
+export function pricePlanClockRangesOverlap(
+  left: PricePlanClockRange,
+  right: PricePlanClockRange,
+): boolean {
+  return clockRangeIntervals(left).some(([leftStart, leftEnd]) =>
+    clockRangeIntervals(right).some(
+      ([rightStart, rightEnd]) => leftStart < rightEnd && rightStart < leftEnd,
+    ),
+  );
+}
+
 function isPriceSegmentInsidePlan(
   segmentStart: Date,
   plan: ExplicitPricePlanWindow,
@@ -394,16 +428,82 @@ export function priceReservationWindowForPlan(input: {
     const businessDay = new Date(`${businessDayKey(startsAt)}T00:00:00.000Z`);
     const dayOfWeek = businessDay.getUTCDay();
     const weekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const parts = shanghaiDateParts(startsAt);
+    const minutes = parts.hour * 60 + parts.minute;
+    const rule: ReservationPriceRule = weekend
+      ? "weekend"
+      : minutes < 6 * 60
+        ? "weekday-overnight"
+        : minutes >= 18 * 60
+          ? "weekday-evening"
+          : "weekday-base";
     segments.push({
       amountCents: weekend
         ? input.plan.weekendHalfHourCents
         : input.plan.weekdayHalfHourCents,
       endsAt: new Date(segmentStart + HALF_HOUR_MS),
       multiplierBasisPoints: 10_000,
-      rule: weekend ? "weekend" : "weekday-base",
+      rule,
       startsAt,
     });
   }
+  return {
+    segments,
+    totalCents: segments.reduce(
+      (total, segment) => total + segment.amountCents,
+      0,
+    ),
+  };
+}
+
+export function priceReservationWindowFromPlans(input: {
+  readonly endsAt: Date;
+  readonly plans: ReadonlyArray<ReservationPricePlan>;
+  readonly startsAt: Date;
+}): ReservationPricePreview {
+  if (
+    input.startsAt.getTime() % HALF_HOUR_MS !== 0 ||
+    input.endsAt.getTime() <= input.startsAt.getTime() ||
+    (input.endsAt.getTime() - input.startsAt.getTime()) % HALF_HOUR_MS !== 0
+  ) {
+    throw new RangeError(
+      "Reservation price windows use aligned positive half-hours.",
+    );
+  }
+
+  const segments: ReservationPriceSegment[] = [];
+  for (
+    let segmentStart = input.startsAt.getTime();
+    segmentStart < input.endsAt.getTime();
+    segmentStart += HALF_HOUR_MS
+  ) {
+    const startsAt = new Date(segmentStart);
+    const matchingPlans = input.plans.filter((plan) =>
+      isPriceSegmentInsidePlan(startsAt, plan),
+    );
+    if (matchingPlans.length !== 1) {
+      throw new RangeError(
+        matchingPlans.length === 0
+          ? "No price plan covers the reservation segment."
+          : "Multiple price plans cover the reservation segment.",
+      );
+    }
+    const plan = matchingPlans[0]!;
+    const segmentPreview =
+      plan.pricingModel === "explicit-half-hour"
+        ? priceReservationWindowForPlan({
+            endsAt: new Date(segmentStart + HALF_HOUR_MS),
+            plan,
+            startsAt,
+          })
+        : priceReservationWindow({
+            baseHourlyCents: plan.baseHourlyCents,
+            endsAt: new Date(segmentStart + HALF_HOUR_MS),
+            startsAt,
+          });
+    segments.push(segmentPreview.segments[0]!);
+  }
+
   return {
     segments,
     totalCents: segments.reduce(

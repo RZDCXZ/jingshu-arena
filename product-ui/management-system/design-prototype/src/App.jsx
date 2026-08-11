@@ -788,6 +788,13 @@ export function App() {
       {actionModal && (
         <GenericActionModal
           action={actionModal}
+          onArchive={() => {
+            setToast({
+              tone: "success",
+              text: `${actionModal.label || "门店商品配置"}已归档，历史订单快照保持不变`,
+            });
+            setActionModal(null);
+          }}
           onClose={() => setActionModal(null)}
           onConfirm={() => {
             const actionLabel =

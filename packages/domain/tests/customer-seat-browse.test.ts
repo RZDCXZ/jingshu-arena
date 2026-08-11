@@ -5,8 +5,10 @@ import {
   businessDayKey,
   deriveSeatAvailability,
   evaluateReservationCoupon,
+  pricePlanClockRangesOverlap,
   pricePlanEffectiveRangesOverlap,
   priceReservationWindow,
+  priceReservationWindowFromPlans,
   priceReservationWindowForPlan,
   resolveCustomerReservationWindow,
   selectPricePlanVersion,
@@ -254,6 +256,59 @@ describe("customer reservation browsing rules", () => {
     ).toBe(false);
   });
 
+  it("detects clock overlap across full-day, adjacent, and cross-midnight ranges", () => {
+    expect(
+      pricePlanClockRangesOverlap(
+        { endsAt: "06:00", endsNextDay: true, startsAt: "06:00" },
+        { endsAt: "23:00", endsNextDay: false, startsAt: "18:00" },
+      ),
+    ).toBe(true);
+    expect(
+      pricePlanClockRangesOverlap(
+        { endsAt: "18:00", endsNextDay: false, startsAt: "06:00" },
+        { endsAt: "00:00", endsNextDay: true, startsAt: "18:00" },
+      ),
+    ).toBe(false);
+    expect(
+      pricePlanClockRangesOverlap(
+        { endsAt: "06:00", endsNextDay: true, startsAt: "18:00" },
+        { endsAt: "02:00", endsNextDay: true, startsAt: "22:00" },
+      ),
+    ).toBe(true);
+  });
+
+  it("prices every half-hour with the plan that covers that segment", () => {
+    const price = priceReservationWindowFromPlans({
+      endsAt: new Date("2026-08-10T15:00:00.000Z"),
+      plans: [
+        {
+          baseHourlyCents: 1_600,
+          endsAt: "18:00",
+          endsNextDay: false,
+          pricingModel: "explicit-half-hour",
+          startsAt: "06:00",
+          weekdayHalfHourCents: 800,
+          weekendHalfHourCents: 920,
+        },
+        {
+          baseHourlyCents: 1_600,
+          endsAt: "00:00",
+          endsNextDay: true,
+          pricingModel: "explicit-half-hour",
+          startsAt: "18:00",
+          weekdayHalfHourCents: 960,
+          weekendHalfHourCents: 920,
+        },
+      ],
+      startsAt: new Date("2026-08-10T09:30:00.000Z"),
+    });
+
+    expect(price.segments.map((segment) => segment.amountCents)).toEqual([
+      800, 960, 960, 960, 960, 960, 960, 960, 960, 960, 960,
+    ]);
+    expect(price.totalCents).toBe(10_400);
+  });
+
   it("prices a cross-midnight plan by the 06:00 Shanghai business day", () => {
     const fridayOvernight = priceReservationWindowForPlan({
       endsAt: new Date("2026-08-14T17:30:00.000Z"),
@@ -267,10 +322,10 @@ describe("customer reservation browsing rules", () => {
       startsAt: new Date("2026-08-14T15:30:00.000Z"),
     });
     expect(fridayOvernight.segments.map((segment) => segment.rule)).toEqual([
-      "weekday-base",
-      "weekday-base",
-      "weekday-base",
-      "weekday-base",
+      "weekday-evening",
+      "weekday-overnight",
+      "weekday-overnight",
+      "weekday-overnight",
     ]);
     expect(
       fridayOvernight.segments.map((segment) => segment.amountCents),

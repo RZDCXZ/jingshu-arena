@@ -1655,6 +1655,13 @@ test.beforeEach(async ({ context }) => {
       }
       expect(currentRole).toBe("manager");
       expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+      if (request.url().endsWith("/price-overlap-preview")) {
+        await route.fulfill({
+          json: { overlap: null, status: "ready" },
+          status: 200,
+        });
+        return;
+      }
       expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
       const body =
         request.postDataJSON() as ManagerStoreConfigurationCommandRequest;

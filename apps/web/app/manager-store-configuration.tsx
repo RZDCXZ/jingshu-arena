@@ -19,6 +19,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import type {
+  ManagerPricePlanOverlapPreviewRequest,
+  ManagerPricePlanOverlapPreviewResponse,
   ManagerStoreConfigurationCommandRequest,
   ManagerStoreConfigurationResponse,
   SeatLifecycleStatus,
@@ -66,6 +68,21 @@ function shanghaiDateTime(value: string) {
 
 function formatCents(value: number) {
   return `¥${(value / 100).toFixed(2)}`;
+}
+
+function orderedPricePlans(pricePlans: Configuration["pricePlans"]) {
+  const statusOrder = {
+    scheduled: 0,
+    current: 1,
+    archived: 2,
+    historical: 3,
+  } as const;
+  return [...pricePlans].sort(
+    (left, right) =>
+      statusOrder[left.status] - statusOrder[right.status] ||
+      new Date(right.effectiveFrom).getTime() -
+        new Date(left.effectiveFrom).getTime(),
+  );
 }
 
 function productCategoryLabel(
@@ -1041,10 +1058,12 @@ function DependencyDialog({
 
 function PricePlanDialog({
   configuration,
+  csrfToken,
   onClose,
   onSubmit,
 }: {
   configuration: Configuration;
+  csrfToken: string;
   onClose: () => void;
   onSubmit: (command: Command, success: string) => Promise<string | null>;
 }) {
@@ -1079,6 +1098,12 @@ function PricePlanDialog({
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [preview, setPreview] = useState<{
+    readonly key: string;
+    readonly result: ManagerPricePlanOverlapPreviewResponse;
+  } | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewError, setPreviewError] = useState("");
   const areaFieldRef = useRef<HTMLSelectElement>(null);
   const parsedEffectiveFrom = parseShanghaiDateTimeLocal(effectiveFrom);
   const parsedWeekdayCents = Number(weekdayCents);
@@ -1089,19 +1114,93 @@ function PricePlanDialog({
   const selectedProfile = configuration.machineProfiles.find(
     (profile) => profile.machineProfileId === machineProfileId,
   );
-  const overlappingPlan = configuration.pricePlans.find(
-    (plan) =>
-      plan.status !== "archived" &&
-      plan.status !== "historical" &&
-      plan.area.areaId === areaId &&
-      plan.machineProfile.machineProfileId === machineProfileId &&
-      plan.startsAt === startsAt &&
-      plan.endsAt === endsAt &&
-      plan.endsNextDay === endsNextDay &&
-      parsedEffectiveFrom &&
-      new Date(plan.effectiveFrom).getTime() >= parsedEffectiveFrom.getTime(),
-  );
   const rangeValid = endsNextDay ? endsAt <= startsAt : endsAt > startsAt;
+  const effectiveFromIso = parsedEffectiveFrom?.toISOString() ?? "";
+  const previewRequest = useMemo<ManagerPricePlanOverlapPreviewRequest | null>(
+    () =>
+      areaId &&
+      machineProfileId &&
+      effectiveFromIso &&
+      /^\d{2}:(?:00|30)$/u.test(startsAt) &&
+      /^\d{2}:(?:00|30)$/u.test(endsAt) &&
+      rangeValid
+        ? {
+            areaId,
+            effectiveFrom: effectiveFromIso,
+            endsAt,
+            endsNextDay,
+            machineProfileId,
+            startsAt,
+          }
+        : null,
+    [
+      areaId,
+      effectiveFromIso,
+      endsAt,
+      endsNextDay,
+      machineProfileId,
+      rangeValid,
+      startsAt,
+    ],
+  );
+  const previewKey = previewRequest ? JSON.stringify(previewRequest) : "";
+
+  useEffect(() => {
+    if (!previewRequest) {
+      setPreview(null);
+      setPreviewError("");
+      setPreviewing(false);
+      return;
+    }
+    const controller = new AbortController();
+    setPreview(null);
+    setPreviewError("");
+    setPreviewing(true);
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const response = await fetch(
+            "/api/v1/manager/store-configuration/price-overlap-preview",
+            {
+              body: JSON.stringify(previewRequest),
+              cache: "no-store",
+              credentials: "same-origin",
+              headers: {
+                "Content-Type": "application/json",
+                "X-CSRF-Token": csrfToken,
+              },
+              method: "POST",
+              signal: controller.signal,
+            },
+          );
+          const payload: unknown = await response.json();
+          if (!response.ok) {
+            setPreviewError(
+              failureMessage(payload, "价格重叠检查失败，请稍后重试。"),
+            );
+            return;
+          }
+          setPreview({
+            key: previewKey,
+            result: payload as ManagerPricePlanOverlapPreviewResponse,
+          });
+        } catch {
+          if (!controller.signal.aborted) {
+            setPreviewError("价格重叠检查失败，请稍后重试。");
+          }
+        } finally {
+          if (!controller.signal.aborted) setPreviewing(false);
+        }
+      })();
+    }, 150);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [csrfToken, previewKey, previewRequest]);
+
+  const previewReady = preview?.key === previewKey;
+  const overlappingPlan = previewReady ? preview.result.overlap : null;
   const valid =
     Boolean(selectedArea && selectedProfile && parsedEffectiveFrom) &&
     parsedEffectiveFrom!.getTime() >
@@ -1114,6 +1213,9 @@ function PricePlanDialog({
     parsedWeekdayCents >= 0 &&
     Number.isInteger(parsedWeekendCents) &&
     parsedWeekendCents >= 0 &&
+    previewReady &&
+    !previewing &&
+    !previewError &&
     !overlappingPlan;
 
   async function submit() {
@@ -1256,7 +1358,7 @@ function PricePlanDialog({
         </label>
       </div>
       <section
-        className={`store-config-review ${overlappingPlan || !rangeValid ? "is-conflict" : ""}`}
+        className={`store-config-review ${overlappingPlan || !rangeValid || previewError ? "is-conflict" : ""}`}
       >
         <header>提交前核对</header>
         <div>
@@ -1282,9 +1384,15 @@ function PricePlanDialog({
               ? shanghaiDateTime(parsedEffectiveFrom.toISOString())
               : "时间无效"}
             ；
-            {overlappingPlan
-              ? `与 v${overlappingPlan.version} 重叠`
-              : "未发现重叠"}
+            {!previewRequest
+              ? "请先填写有效时段"
+              : previewError
+                ? previewError
+                : previewing || !previewReady
+                  ? "正在由服务端检查…"
+                  : overlappingPlan
+                    ? `与 v${overlappingPlan.version} 重叠`
+                    : "服务端未发现重叠"}
           </strong>
         </div>
         <p>新版本仅影响生效后的新预约，不会改写已有预约价格快照。</p>
@@ -2060,7 +2168,7 @@ export function ManagerStoreConfiguration({
                 </tr>
               </thead>
               <tbody>
-                {configuration.pricePlans.map((plan) => (
+                {orderedPricePlans(configuration.pricePlans).map((plan) => (
                   <tr key={plan.pricePlanId}>
                     <td>
                       <strong>{plan.area.displayName}</strong>
@@ -2081,10 +2189,21 @@ export function ManagerStoreConfiguration({
                       </small>
                     </td>
                     <td>
-                      <strong>{formatCents(plan.weekdayHalfHourCents)}</strong>
+                      <strong>
+                        {plan.legacyWeekdayBreakdown
+                          ? `基准 ${formatCents(plan.legacyWeekdayBreakdown.baseHalfHourCents)}`
+                          : formatCents(plan.weekdayHalfHourCents)}
+                      </strong>
                       <small>
-                        {formatCents(plan.weekendHalfHourCents)} / 半小时
+                        {plan.legacyWeekdayBreakdown
+                          ? `晚间 ${formatCents(plan.legacyWeekdayBreakdown.eveningHalfHourCents)} · 凌晨 ${formatCents(plan.legacyWeekdayBreakdown.overnightHalfHourCents)}`
+                          : `${formatCents(plan.weekendHalfHourCents)} / 半小时`}
                       </small>
+                      {plan.legacyWeekdayBreakdown ? (
+                        <small>
+                          周末 {formatCents(plan.weekendHalfHourCents)} / 半小时
+                        </small>
+                      ) : null}
                     </td>
                     <td>
                       <strong>{shanghaiDateTime(plan.effectiveFrom)}</strong>
@@ -2243,6 +2362,7 @@ export function ManagerStoreConfiguration({
       {dialog?.kind === "price" ? (
         <PricePlanDialog
           configuration={configuration}
+          csrfToken={csrfToken}
           onClose={closeDialog}
           onSubmit={execute}
         />

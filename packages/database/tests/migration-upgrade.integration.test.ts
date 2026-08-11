@@ -570,6 +570,34 @@ describe("role-context expand migration", () => {
         introduction: "竞枢固定虚构演示门店。",
       },
     ]);
+    const rollingAreaId = "00000000-0000-4000-8000-000000000621";
+    const rollingProfileId = "00000000-0000-4000-8000-000000000622";
+    const rollingPricePlanId = "00000000-0000-4000-8000-000000000623";
+    await client.query(
+      `insert into store_areas (
+         id, sandbox_id, store_id, code, display_name, sort_order
+       ) values ($1, $2, $3, 'rolling-area', '滚动部署区域', 1)`,
+      [rollingAreaId, rollingSandboxId, rollingStoreId],
+    );
+    await client.query(
+      `insert into machine_profiles (
+         id, sandbox_id, code, display_name, experience_description
+       ) values ($1, $2, 'standard', '标准机型', '滚动部署机型')`,
+      [rollingProfileId, rollingSandboxId],
+    );
+    await client.query(
+      `insert into price_plans (
+         id, sandbox_id, store_id, area_id, machine_profile_id,
+         version, base_hourly_cents, effective_from, status
+       ) values ($1, $2, $3, $4, $5, 1, 1501, now(), 'active')`,
+      [
+        rollingPricePlanId,
+        rollingSandboxId,
+        rollingStoreId,
+        rollingAreaId,
+        rollingProfileId,
+      ],
+    );
     await client.query(
       "alter table price_plans owner to ticket04_migration_owner",
     );
@@ -614,6 +642,27 @@ describe("role-context expand migration", () => {
       },
       { column_name: "weekday_half_hour_cents", default_expression: "0" },
       { column_name: "weekend_half_hour_cents", default_expression: "0" },
+    ]);
+    const legacyPrice = await client.query<{
+      forced_rls: boolean;
+      pricing_model: string;
+      weekday_half_hour_cents: number;
+      weekend_half_hour_cents: number;
+    }>(
+      `select plan.pricing_model, plan.weekday_half_hour_cents,
+              plan.weekend_half_hour_cents,
+              (select relforcerowsecurity from pg_class
+                where oid = 'price_plans'::regclass) as forced_rls
+         from price_plans plan where plan.id = $1`,
+      [rollingPricePlanId],
+    );
+    expect(legacyPrice.rows).toEqual([
+      {
+        forced_rls: true,
+        pricing_model: "legacy",
+        weekday_half_hour_cents: 751,
+        weekend_half_hour_cents: 863,
+      },
     ]);
   });
 });

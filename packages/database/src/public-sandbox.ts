@@ -32,11 +32,13 @@ import {
   normalizeRepairDescription,
   normalizeHandoverNote,
   memberTierForGrowth,
+  pricePlanClockRangesOverlap,
+  pricePlanEffectiveRangesOverlap,
   priceCustomerOrder,
   type CustomerOrderStatus,
   type MachineProfileCode,
   priceReservationWindow,
-  priceReservationWindowForPlan,
+  priceReservationWindowFromPlans,
   reservationGrowthAward,
   type ReservationPriceRule,
   type ReservationCouponEligibility,
@@ -87,6 +89,10 @@ const REPAIR_IMAGE_INTENT_LIFETIME_MS = 5 * 60 * 1000;
 const REPAIR_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const clockMinutes = (value: string) =>
   Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
+const legacyHalfHourCents = (
+  baseHourlyCents: number,
+  multiplierBasisPoints: number,
+) => Math.floor((baseHourlyCents * multiplierBasisPoints + 10_000) / 20_000);
 const repairImageExtensions: Record<
   RepairImageContentType,
   ReadonlySet<string>
@@ -1115,7 +1121,13 @@ export interface DatabaseManagerStoreConfiguration {
       readonly displayName: string;
       readonly machineProfileId: string;
     };
+    readonly legacyWeekdayBreakdown: {
+      readonly baseHalfHourCents: number;
+      readonly eveningHalfHourCents: number;
+      readonly overnightHalfHourCents: number;
+    } | null;
     readonly pricePlanId: string;
+    readonly pricingModel: "explicit-half-hour" | "legacy";
     readonly configVersion: number;
     readonly startsAt: string;
     readonly status: "archived" | "current" | "historical" | "scheduled";
@@ -2194,6 +2206,68 @@ interface MachineSelectionRow {
   starts_at: string;
   weekday_half_hour_cents: number;
   weekend_half_hour_cents: number;
+}
+
+async function loadMachinePricingSelection(
+  client: PoolClient,
+  input: {
+    readonly areaId: string;
+    readonly effectiveAt: Date;
+    readonly machineProfileCode: MachineProfileCode;
+    readonly sandboxId: string;
+    readonly storeId: string;
+  },
+) {
+  const result = await client.query<MachineSelectionRow>(
+    `select profile.id, profile.code, profile.display_name,
+            profile.experience_description, plan.base_hourly_cents,
+            plan.starts_at, plan.ends_at, plan.ends_next_day,
+            plan.weekday_half_hour_cents,
+            plan.weekend_half_hour_cents, plan.pricing_model
+       from machine_profiles profile
+       join price_plans plan on plan.machine_profile_id = profile.id
+      where profile.sandbox_id = $1 and profile.code = $2
+        and profile.archived = false and plan.store_id = $3
+        and plan.area_id = $4 and plan.status = 'active'
+        and plan.effective_from <= $5
+        and (plan.effective_until is null or plan.effective_until > $5)
+      order by plan.starts_at, plan.version desc`,
+    [
+      input.sandboxId,
+      input.machineProfileCode,
+      input.storeId,
+      input.areaId,
+      input.effectiveAt,
+    ],
+  );
+  const machine = result.rows[0] ?? null;
+  return machine ? { machine, plans: result.rows } : null;
+}
+
+function priceMachineReservationWindow(
+  plans: ReadonlyArray<MachineSelectionRow>,
+  window: { readonly endsAt: Date; readonly startsAt: Date },
+) {
+  try {
+    return priceReservationWindowFromPlans({
+      endsAt: window.endsAt,
+      plans: plans.map((plan) => ({
+        baseHourlyCents: plan.base_hourly_cents,
+        endsAt: plan.ends_at.slice(0, 5),
+        endsNextDay: plan.ends_next_day,
+        pricingModel: plan.pricing_model,
+        startsAt: plan.starts_at.slice(0, 5),
+        weekdayHalfHourCents: plan.weekday_half_hour_cents,
+        weekendHalfHourCents: plan.weekend_half_hour_cents,
+      })),
+      startsAt: window.startsAt,
+    });
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new CustomerSeatBrowseValidationError("price-plan-not-found");
+    }
+    throw error;
+  }
 }
 
 interface SeatBrowseRow {
@@ -6118,30 +6192,53 @@ async function materializePublicSandbox(input: {
       throw new Error("The deterministic price plan store is missing.");
     return publicSandboxSeed.machineProfiles
       .filter((profile) => area.machineProfileSeatCounts[profile.code] > 0)
-      .map((profile) => ({
-        areaId: area.id,
-        baseHourlyCents: store.baseHourlyCents[profile.code],
-        id: randomUUID(),
-        machineProfileId: machineProfileIds.get(profile.code),
-        storeId: store.id,
-        weekdayHalfHourCents: Math.ceil(
-          store.baseHourlyCents[profile.code] / 2,
-        ),
-        weekendHalfHourCents: Math.floor(
-          (store.baseHourlyCents[profile.code] * 11_500 + 10_000) / 20_000,
-        ),
-      }));
+      .flatMap((profile) => {
+        const baseHourlyCents = store.baseHourlyCents[profile.code];
+        const weekendHalfHourCents = legacyHalfHourCents(
+          baseHourlyCents,
+          11_500,
+        );
+        return [
+          {
+            endsAt: "18:00",
+            endsNextDay: false,
+            startsAt: "06:00",
+            weekdayHalfHourCents: legacyHalfHourCents(baseHourlyCents, 10_000),
+          },
+          {
+            endsAt: "00:00",
+            endsNextDay: true,
+            startsAt: "18:00",
+            weekdayHalfHourCents: legacyHalfHourCents(baseHourlyCents, 12_000),
+          },
+          {
+            endsAt: "06:00",
+            endsNextDay: false,
+            startsAt: "00:00",
+            weekdayHalfHourCents: legacyHalfHourCents(baseHourlyCents, 9_000),
+          },
+        ].map((window) => ({
+          ...window,
+          areaId: area.id,
+          baseHourlyCents,
+          id: randomUUID(),
+          machineProfileId: machineProfileIds.get(profile.code),
+          storeId: store.id,
+          weekendHalfHourCents,
+        }));
+      });
   });
   await input.client.query(
     `insert into price_plans (
        id, sandbox_id, store_id, area_id, machine_profile_id, version,
        base_hourly_cents, weekday_half_hour_cents, weekend_half_hour_cents,
-       effective_from, status
+       starts_at, ends_at, ends_next_day, pricing_model, effective_from, status
      )
      select * from unnest(
        $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
        $6::integer[], $7::integer[], $8::integer[], $9::integer[],
-       $10::timestamptz[], $11::text[]
+       $10::time[], $11::time[], $12::boolean[], $13::text[],
+       $14::timestamptz[], $15::text[]
      )`,
     [
       seededPricePlans.map((plan) => plan.id),
@@ -6153,6 +6250,10 @@ async function materializePublicSandbox(input: {
       seededPricePlans.map((plan) => plan.baseHourlyCents),
       seededPricePlans.map((plan) => plan.weekdayHalfHourCents),
       seededPricePlans.map((plan) => plan.weekendHalfHourCents),
+      seededPricePlans.map((plan) => plan.startsAt),
+      seededPricePlans.map((plan) => plan.endsAt),
+      seededPricePlans.map((plan) => plan.endsNextDay),
+      seededPricePlans.map(() => "explicit-half-hour"),
       seededPricePlans.map(() => priceEffectiveFrom),
       seededPricePlans.map(() => "active"),
     ],
@@ -12156,6 +12257,7 @@ export function createPublicSandboxDatabase(
           area_code: string;
           area_display_name: string;
           area_id: string;
+          base_hourly_cents: number;
           config_version: number;
           effective_from: Date;
           effective_until: Date | null;
@@ -12165,13 +12267,16 @@ export function createPublicSandboxDatabase(
           machine_code: MachineProfileCode;
           machine_display_name: string;
           machine_profile_id: string;
+          pricing_model: "explicit-half-hour" | "legacy";
           starts_at: string;
           status: "active" | "archived";
           version: number;
           weekday_half_hour_cents: number;
           weekend_half_hour_cents: number;
         }>(
-          `select plan.id, plan.version, plan.config_version, plan.starts_at, plan.ends_at,
+          `select plan.id, plan.version, plan.config_version,
+                  plan.base_hourly_cents, plan.pricing_model,
+                  plan.starts_at, plan.ends_at,
                   plan.ends_next_day, plan.weekday_half_hour_cents,
                   plan.weekend_half_hour_cents, plan.effective_from,
                   plan.effective_until, plan.status,
@@ -12333,7 +12438,25 @@ export function createPublicSandboxDatabase(
               displayName: plan.machine_display_name,
               machineProfileId: plan.machine_profile_id,
             },
+            legacyWeekdayBreakdown:
+              plan.pricing_model === "legacy"
+                ? {
+                    baseHalfHourCents: legacyHalfHourCents(
+                      plan.base_hourly_cents,
+                      10_000,
+                    ),
+                    eveningHalfHourCents: legacyHalfHourCents(
+                      plan.base_hourly_cents,
+                      12_000,
+                    ),
+                    overnightHalfHourCents: legacyHalfHourCents(
+                      plan.base_hourly_cents,
+                      9_000,
+                    ),
+                  }
+                : null,
             pricePlanId: plan.id,
+            pricingModel: plan.pricing_model,
             configVersion: plan.config_version,
             startsAt: plan.starts_at.slice(0, 5),
             status:
@@ -13377,37 +13500,68 @@ export function createPublicSandboxDatabase(
           const plans = await client.query<{
             effective_from: Date;
             effective_until: Date | null;
+            ends_at: string;
+            ends_next_day: boolean;
             id: string;
+            starts_at: string;
             version: number;
           }>(
-            `select id, version, effective_from, effective_until
+            `select id, version, starts_at, ends_at, ends_next_day,
+                    effective_from, effective_until
                from price_plans
               where sandbox_id = $1 and store_id = $2 and area_id = $3
-                and machine_profile_id = $4 and starts_at = $5
-                and ends_at = $6 and ends_next_day = $7
-                and status = 'active'
+                and machine_profile_id = $4 and status = 'active'
               order by effective_from for update`,
             [
               input.sandboxId,
               input.storeId,
               input.areaId,
               input.machineProfileId,
-              input.startsAt,
-              input.endsAt,
-              input.endsNextDay,
             ],
           );
+          const candidateClockRange = {
+            endsAt: input.endsAt,
+            endsNextDay: input.endsNextDay,
+            startsAt: input.startsAt,
+          };
+          const clockOverlappingPlans = plans.rows.filter((plan) =>
+            pricePlanClockRangesOverlap(candidateClockRange, {
+              endsAt: plan.ends_at.slice(0, 5),
+              endsNextDay: plan.ends_next_day,
+              startsAt: plan.starts_at.slice(0, 5),
+            }),
+          );
+          const exactScopePlans = clockOverlappingPlans.filter(
+            (plan) =>
+              plan.starts_at.slice(0, 5) === input.startsAt &&
+              plan.ends_at.slice(0, 5) === input.endsAt &&
+              plan.ends_next_day === input.endsNextDay,
+          );
           if (
-            plans.rows.some(
+            exactScopePlans.some(
               (plan) =>
                 plan.effective_from.getTime() >= input.effectiveFrom.getTime(),
-            )
+            ) ||
+            clockOverlappingPlans
+              .filter((plan) => !exactScopePlans.includes(plan))
+              .some((plan) =>
+                pricePlanEffectiveRangesOverlap(
+                  {
+                    effectiveFrom: plan.effective_from,
+                    effectiveUntil: plan.effective_until,
+                  },
+                  {
+                    effectiveFrom: input.effectiveFrom,
+                    effectiveUntil: null,
+                  },
+                ),
+              )
           ) {
             throw new ManagerStoreConfigurationConflictError(
               "price-plan-overlap",
             );
           }
-          const predecessor = plans.rows.at(-1) ?? null;
+          const predecessor = exactScopePlans.at(-1) ?? null;
           if (
             predecessor &&
             (predecessor.effective_until === null ||
@@ -14649,41 +14803,17 @@ export function createPublicSandboxDatabase(
         if (!area) {
           throw new CustomerSeatBrowseValidationError("area-not-found");
         }
-        const machineResult = await client.query<MachineSelectionRow>(
-          `select profile.id, profile.code, profile.display_name,
-                  profile.experience_description, plan.base_hourly_cents,
-                  plan.starts_at, plan.ends_at, plan.ends_next_day,
-                  plan.weekday_half_hour_cents,
-                  plan.weekend_half_hour_cents, plan.pricing_model
-             from machine_profiles profile
-             join price_plans plan on plan.machine_profile_id = profile.id
-            where profile.sandbox_id = $1 and profile.code = $2
-              and profile.archived = false and plan.store_id = $3
-              and plan.area_id = $4 and plan.status = 'active'
-              and plan.effective_from <= $5
-              and (plan.effective_until is null or plan.effective_until > $5)
-              and (
-                (plan.ends_next_day and (
-                  ($5 at time zone 'Asia/Shanghai')::time >= plan.starts_at
-                  or ($5 at time zone 'Asia/Shanghai')::time < plan.ends_at
-                ))
-                or (not plan.ends_next_day
-                  and ($5 at time zone 'Asia/Shanghai')::time >= plan.starts_at
-                  and ($5 at time zone 'Asia/Shanghai')::time < plan.ends_at)
-              )
-            order by plan.version desc limit 1`,
-          [
-            input.sandboxId,
-            input.machineProfileCode,
-            store.id,
-            area.id,
-            window.startsAt,
-          ],
-        );
-        const machine = machineResult.rows[0];
-        if (!machine) {
+        const machinePricing = await loadMachinePricingSelection(client, {
+          areaId: area.id,
+          effectiveAt: window.startsAt,
+          machineProfileCode: input.machineProfileCode,
+          sandboxId: input.sandboxId,
+          storeId: store.id,
+        });
+        if (!machinePricing) {
           throw new CustomerSeatBrowseValidationError("price-plan-not-found");
         }
+        const { machine } = machinePricing;
         const seatResult = await client.query<SeatBrowseRow>(
           `select id, code, operational_status
              from seats
@@ -14733,24 +14863,10 @@ export function createPublicSandboxDatabase(
           throw new CustomerReservationCreateConflictError("customer-conflict");
         }
 
-        const price =
-          machine.pricing_model === "explicit-half-hour"
-            ? priceReservationWindowForPlan({
-                endsAt: window.endsAt,
-                plan: {
-                  endsAt: machine.ends_at.slice(0, 5),
-                  endsNextDay: machine.ends_next_day,
-                  startsAt: machine.starts_at.slice(0, 5),
-                  weekdayHalfHourCents: machine.weekday_half_hour_cents,
-                  weekendHalfHourCents: machine.weekend_half_hour_cents,
-                },
-                startsAt: window.startsAt,
-              })
-            : priceReservationWindow({
-                baseHourlyCents: machine.base_hourly_cents,
-                endsAt: window.endsAt,
-                startsAt: window.startsAt,
-              });
+        const price = priceMachineReservationWindow(
+          machinePricing.plans,
+          window,
+        );
         let selectedCoupon: ExperienceCouponRow | null = null;
         let couponEligibility: ReservationCouponEligibility | null = null;
         if (input.couponId) {
@@ -16709,39 +16825,14 @@ export function createPublicSandboxDatabase(
         if (!area) {
           throw new CustomerSeatBrowseValidationError("area-not-found");
         }
-        const machineResult = await client.query<MachineSelectionRow>(
-          `select profile.id, profile.code, profile.display_name,
-                  profile.experience_description, plan.base_hourly_cents,
-                  plan.starts_at, plan.ends_at, plan.ends_next_day,
-                  plan.weekday_half_hour_cents,
-                  plan.weekend_half_hour_cents, plan.pricing_model
-             from machine_profiles profile
-             join price_plans plan on plan.machine_profile_id = profile.id
-            where profile.sandbox_id = $1 and profile.code = $2
-              and profile.archived = false and plan.store_id = $3
-              and plan.area_id = $4 and plan.status = 'active'
-              and plan.effective_from <= $5
-              and (plan.effective_until is null or plan.effective_until > $5)
-              and (
-                (plan.ends_next_day and (
-                  ($5 at time zone 'Asia/Shanghai')::time >= plan.starts_at
-                  or ($5 at time zone 'Asia/Shanghai')::time < plan.ends_at
-                ))
-                or (not plan.ends_next_day
-                  and ($5 at time zone 'Asia/Shanghai')::time >= plan.starts_at
-                  and ($5 at time zone 'Asia/Shanghai')::time < plan.ends_at)
-              )
-            order by plan.version desc limit 1`,
-          [
-            input.sandboxId,
-            input.machineProfileCode,
-            store.id,
-            area.id,
-            window.startsAt,
-          ],
-        );
-        const machine = machineResult.rows[0];
-        if (!machine) {
+        const machinePricing = await loadMachinePricingSelection(client, {
+          areaId: area.id,
+          effectiveAt: window.startsAt,
+          machineProfileCode: input.machineProfileCode,
+          sandboxId: input.sandboxId,
+          storeId: store.id,
+        });
+        if (!machinePricing) {
           const profileExists = await client.query<{ exists: boolean }>(
             `select exists(
                select 1 from machine_profiles
@@ -16755,6 +16846,7 @@ export function createPublicSandboxDatabase(
               : "machine-profile-not-found",
           );
         }
+        const { machine } = machinePricing;
         const seatResult = await client.query<SeatBrowseRow>(
           `select id, code, operational_status
              from seats
@@ -16788,24 +16880,10 @@ export function createPublicSandboxDatabase(
           reservations.push(reservation);
           reservationsBySeat.set(reservation.seat_id, reservations);
         }
-        const price =
-          machine.pricing_model === "explicit-half-hour"
-            ? priceReservationWindowForPlan({
-                endsAt: window.endsAt,
-                plan: {
-                  endsAt: machine.ends_at.slice(0, 5),
-                  endsNextDay: machine.ends_next_day,
-                  startsAt: machine.starts_at.slice(0, 5),
-                  weekdayHalfHourCents: machine.weekday_half_hour_cents,
-                  weekendHalfHourCents: machine.weekend_half_hour_cents,
-                },
-                startsAt: window.startsAt,
-              })
-            : priceReservationWindow({
-                baseHourlyCents: machine.base_hourly_cents,
-                endsAt: window.endsAt,
-                startsAt: window.startsAt,
-              });
+        const price = priceMachineReservationWindow(
+          machinePricing.plans,
+          window,
+        );
         const couponResult = await client.query<ExperienceCouponRow>(
           `select coupon.id, coupon.code, coupon.display_name,
                   coupon.business_kind, coupon.discount_cents,

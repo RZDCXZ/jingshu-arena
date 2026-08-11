@@ -2192,6 +2192,17 @@ button.metric-card:hover {
   text-align: right;
 }
 
+.table-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.muted-copy {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .app-body,
   .sidebar-context,
