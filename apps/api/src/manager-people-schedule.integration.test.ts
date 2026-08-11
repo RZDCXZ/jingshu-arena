@@ -133,6 +133,9 @@ describe("manager people schedule API", () => {
 
   it("keeps headquarters read-only and records a denied manager capability", async () => {
     const hq = await createRoleSession("hq");
+    const auditCountBefore = await sql.query<{ count: number }>(
+      "select count(*)::integer as count from audit_events",
+    );
     const readResponse = await app.request("/api/v1/hq/people-schedule", {
       headers: { Cookie: hq.cookie },
     });
@@ -140,13 +143,42 @@ describe("manager people schedule API", () => {
       (await readResponse.json()) as HeadquartersPeopleScheduleResponse;
     expect(readResponse.status).toBe(200);
     expect(payload.stores.map((store) => store.employeeCount)).toEqual([
-      7, 16, 10,
+      16, 10, 7,
     ]);
     expect(
       payload.stores.every((store) =>
         Number.isInteger(store.attendanceAnomalyCount),
       ),
     ).toBe(true);
+    expect(
+      payload.stores.every(
+        (store) =>
+          store.employees.length === store.employeeCount &&
+          store.employees.every(
+            (employee) =>
+              employee.displayName.length > 0 &&
+              employee.employeeCode.length > 0 &&
+              ["manager", "staff"].includes(employee.role),
+          ) &&
+          store.futureShifts.every(
+            (shift) =>
+              shift.employee.displayName.length > 0 &&
+              new Date(shift.startsAt).getTime() <
+                new Date(shift.endsAt).getTime(),
+          ) &&
+          store.coverage.endsAt > store.coverage.startsAt,
+      ),
+    ).toBe(true);
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toMatch(
+      /employeeId|personaId|phone|mobile|email|address|identity/iu,
+    );
+    const auditCountAfter = await sql.query<{ count: number }>(
+      "select count(*)::integer as count from audit_events",
+    );
+    expect(auditCountAfter.rows[0]!.count).toBe(
+      auditCountBefore.rows[0]!.count,
+    );
 
     const denied = await app.request(
       "/api/v1/manager/people-schedule/commands",

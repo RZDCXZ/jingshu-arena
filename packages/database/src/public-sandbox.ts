@@ -1068,10 +1068,10 @@ export interface ExecuteStaffOrderCommandInput extends ReadStaffOrderDetailInput
 
 export type ReadStoreInventoryInput = ReadStaffReservationWorkbenchInput;
 
-export type ReadManagerStoreConfigurationInput =
-  ReadStaffReservationWorkbenchInput & {
-    readonly role: "manager";
-  };
+export interface ReadManagerStoreConfigurationInput extends ReadRoleContextInput {
+  readonly role: "hq" | "manager";
+  readonly storeId?: string;
+}
 
 export type ReadManagerPeopleScheduleInput =
   ReadStaffReservationWorkbenchInput & {
@@ -1386,8 +1386,28 @@ export interface DatabaseHeadquartersPeopleSchedule {
   readonly stores: ReadonlyArray<{
     readonly activeEmployeeCount: number;
     readonly attendanceAnomalyCount: number;
+    readonly coverage: {
+      readonly endsAt: Date;
+      readonly startsAt: Date;
+      readonly warnings: ReadonlyArray<StaffCoverageWarning>;
+    };
     readonly coverageWarnings: number;
+    readonly employees: ReadonlyArray<{
+      readonly active: boolean;
+      readonly displayName: string;
+      readonly employeeCode: string;
+      readonly role: FrontlineRole;
+    }>;
     readonly employeeCount: number;
+    readonly futureShifts: ReadonlyArray<{
+      readonly employee: {
+        readonly displayName: string;
+        readonly employeeCode: string;
+        readonly role: FrontlineRole;
+      };
+      readonly endsAt: Date;
+      readonly startsAt: Date;
+    }>;
     readonly futureShiftCount: number;
     readonly managerCount: number;
     readonly staffCount: number;
@@ -5024,6 +5044,38 @@ async function assertHeadquartersContext(
   );
   if (!persona.rows[0]) throw new RoleContextUnavailableError();
   return sandboxRow;
+}
+
+async function assertStoreConfigurationContext(
+  client: PoolClient,
+  input: ReadManagerStoreConfigurationInput,
+  wallTime: Date,
+): Promise<FrontlineContext> {
+  if (input.role === "manager") {
+    const context = await assertFrontlineContext(
+      client,
+      { ...input, role: "manager" },
+      wallTime,
+    );
+    return context;
+  }
+
+  const sandbox = await assertHeadquartersContext(
+    client,
+    { ...input, role: "hq" },
+    wallTime,
+  );
+  if (!input.storeId) {
+    throw new ManagerStoreConfigurationConflictError("cross-store");
+  }
+  const store = await client.query<{ id: string }>(
+    `select id from stores where sandbox_id = $1 and id = $2`,
+    [input.sandboxId, input.storeId],
+  );
+  if (!store.rows[0]) {
+    throw new ManagerStoreConfigurationConflictError("cross-store");
+  }
+  return { actorStoreId: input.storeId, sandbox };
 }
 
 async function managerShiftPreviewWithClient(
@@ -13927,7 +13979,6 @@ export function createPublicSandboxDatabase(
           input.sandboxId,
         ]);
         const context = await assertFrontlineContext(client, input, wallTime);
-        if (input.role !== "manager") throw new RoleContextStaleError();
         const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
         const deny = async (
           denialReason: ManagerInventoryConflictReason,
@@ -15353,7 +15404,12 @@ export function createPublicSandboxDatabase(
              left join employees employee on employee.store_id = store.id
             where store.sandbox_id = $1
             group by store.id
-            order by store.code`,
+            order by case store.code
+              when 'prism-flagship' then 1
+              when 'starbridge-standard' then 2
+              when 'apex-new' then 3
+              else 4
+            end, store.code`,
           [input.sandboxId, currentTime],
         );
         const startsAt = new Date(
@@ -15364,6 +15420,34 @@ export function createPublicSandboxDatabase(
           DatabaseHeadquartersPeopleSchedule["stores"][number]
         > = [];
         for (const store of stores.rows) {
+          const employees = await client.query<{
+            active: boolean;
+            display_name: string;
+            employee_code: string;
+            role: FrontlineRole;
+          }>(
+            `select employee_code, display_name, role, active
+               from employees
+              where sandbox_id = $1 and store_id = $2
+              order by active desc, role, employee_code`,
+            [input.sandboxId, store.id],
+          );
+          const futureShifts = await client.query<{
+            display_name: string;
+            employee_code: string;
+            ends_at: Date;
+            role: FrontlineRole;
+            starts_at: Date;
+          }>(
+            `select shift.starts_at, shift.ends_at, employee.employee_code,
+                    employee.display_name, employee.role
+               from shifts shift
+               join employees employee on employee.id = shift.employee_id
+              where shift.sandbox_id = $1 and shift.store_id = $2
+                and shift.status = 'scheduled' and shift.starts_at > $3
+              order by shift.starts_at, employee.employee_code`,
+            [input.sandboxId, store.id, currentTime],
+          );
           const shifts = await client.query<{
             ends_at: Date;
             starts_at: Date;
@@ -15377,18 +15461,35 @@ export function createPublicSandboxDatabase(
                 and shift.ends_at > $4`,
             [input.sandboxId, store.id, endsAt, startsAt],
           );
+          const coverageWarnings = evaluateStaffCoverage({
+            minimumStaff: 3,
+            range: { endsAt, startsAt },
+            shifts: shifts.rows.map((shift) => ({
+              endsAt: shift.ends_at,
+              startsAt: shift.starts_at,
+            })),
+          });
           summaries.push({
             activeEmployeeCount: store.active_employee_count,
             attendanceAnomalyCount: store.attendance_anomaly_count,
-            coverageWarnings: evaluateStaffCoverage({
-              minimumStaff: 3,
-              range: { endsAt, startsAt },
-              shifts: shifts.rows.map((shift) => ({
-                endsAt: shift.ends_at,
-                startsAt: shift.starts_at,
-              })),
-            }).length,
+            coverage: { endsAt, startsAt, warnings: coverageWarnings },
+            coverageWarnings: coverageWarnings.length,
+            employees: employees.rows.map((employee) => ({
+              active: employee.active,
+              displayName: employee.display_name,
+              employeeCode: employee.employee_code,
+              role: employee.role,
+            })),
             employeeCount: store.employee_count,
+            futureShifts: futureShifts.rows.map((shift) => ({
+              employee: {
+                displayName: shift.display_name,
+                employeeCode: shift.employee_code,
+                role: shift.role,
+              },
+              endsAt: shift.ends_at,
+              startsAt: shift.starts_at,
+            })),
             futureShiftCount: store.future_shift_count,
             managerCount: store.manager_count,
             staffCount: store.staff_count,
@@ -16733,8 +16834,11 @@ export function createPublicSandboxDatabase(
         await client.query("select set_config('app.sandbox_id', $1, true)", [
           input.sandboxId,
         ]);
-        const context = await assertFrontlineContext(client, input, wallTime);
-        if (input.role !== "manager") throw new RoleContextStaleError();
+        const context = await assertStoreConfigurationContext(
+          client,
+          input,
+          wallTime,
+        );
         const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
         await processFrontlineReservationDeadlines(client, {
           currentTime,
@@ -17154,7 +17258,11 @@ export function createPublicSandboxDatabase(
         await client.query("select set_config('app.sandbox_id', $1, true)", [
           input.sandboxId,
         ]);
-        const context = await assertFrontlineContext(client, input, wallTime);
+        const context = await assertStoreConfigurationContext(
+          client,
+          input,
+          wallTime,
+        );
         const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
         const idempotencyKeyHash = hash(input.idempotencyKey);
         const commandPayload = (() => {
@@ -17320,10 +17428,7 @@ export function createPublicSandboxDatabase(
           return { ...existingRow.result_data, replayed: true };
         }
         idempotencySlotAvailable = true;
-        if (
-          input.role !== "manager" ||
-          context.actorStoreId !== input.storeId
-        ) {
+        if (context.actorStoreId !== input.storeId) {
           throw new ManagerStoreConfigurationConflictError("cross-store");
         }
         await processFrontlineReservationDeadlines(client, {
@@ -17423,7 +17528,9 @@ export function createPublicSandboxDatabase(
                id, sandbox_id, store_id, persona_id, role, action,
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, 'manager', 'store-area.create',
+             ) values ($1, $2, $3, $4,
+               (select role_context_role from sandboxes where id = $2),
+               'store-area.create',
                'store_area', $5, 'allowed', null, $6, null, $7::jsonb, $8, $9)`,
             [
               randomUUID(),
@@ -17553,7 +17660,9 @@ export function createPublicSandboxDatabase(
                id, sandbox_id, store_id, persona_id, role, action,
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, 'manager', 'store-area.update',
+             ) values ($1, $2, $3, $4,
+               (select role_context_role from sandboxes where id = $2),
+               'store-area.update',
                'store_area', $5, 'allowed', null, $6, $7::jsonb, $8::jsonb,
                $9, $10)`,
             [
@@ -17630,7 +17739,9 @@ export function createPublicSandboxDatabase(
                id, sandbox_id, store_id, persona_id, role, action,
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, 'manager', 'store-area.delete-draft',
+             ) values ($1, $2, $3, $4,
+               (select role_context_role from sandboxes where id = $2),
+               'store-area.delete-draft',
                'store_area', $5, 'allowed', null, $6, $7::jsonb, null, $8, $9)`,
             [
               randomUUID(),
@@ -17739,7 +17850,9 @@ export function createPublicSandboxDatabase(
                id, sandbox_id, store_id, persona_id, role, action,
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, 'manager', 'seat.create', 'seat', $5,
+             ) values ($1, $2, $3, $4,
+               (select role_context_role from sandboxes where id = $2),
+               'seat.create', 'seat', $5,
                'allowed', null, $6, null, $7::jsonb, $8, $9)`,
             [
               randomUUID(),
@@ -17938,7 +18051,9 @@ export function createPublicSandboxDatabase(
                id, sandbox_id, store_id, persona_id, role, action,
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, 'manager', 'seat.update', 'seat', $5,
+             ) values ($1, $2, $3, $4,
+               (select role_context_role from sandboxes where id = $2),
+               'seat.update', 'seat', $5,
                'allowed', null, $6, $7::jsonb, $8::jsonb, $9, $10)`,
             [
               randomUUID(),
@@ -18019,7 +18134,9 @@ export function createPublicSandboxDatabase(
                id, sandbox_id, store_id, persona_id, role, action,
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, 'manager', 'seat.delete-draft', 'seat',
+             ) values ($1, $2, $3, $4,
+               (select role_context_role from sandboxes where id = $2),
+               'seat.delete-draft', 'seat',
                $5, 'allowed', null, $6, $7::jsonb, null, $8, $9)`,
             [
               randomUUID(),
@@ -18218,7 +18335,9 @@ export function createPublicSandboxDatabase(
                id, sandbox_id, store_id, persona_id, role, action,
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, 'manager', 'price-plan.create-version',
+             ) values ($1, $2, $3, $4,
+               (select role_context_role from sandboxes where id = $2),
+               'price-plan.create-version',
                'price_plan', $5, 'allowed', null, $6, $7::jsonb, $8::jsonb,
                $9, $10)`,
             [
@@ -18330,7 +18449,9 @@ export function createPublicSandboxDatabase(
                id, sandbox_id, store_id, persona_id, role, action,
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, 'manager', 'price-plan.archive',
+             ) values ($1, $2, $3, $4,
+               (select role_context_role from sandboxes where id = $2),
+               'price-plan.archive',
                'price_plan', $5, 'allowed', null, $6, $7::jsonb, $8::jsonb,
                $9, $10)`,
             [
@@ -18454,7 +18575,9 @@ export function createPublicSandboxDatabase(
                id, sandbox_id, store_id, persona_id, role, action,
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, 'manager', $5, 'store_product', $6,
+             ) values ($1, $2, $3, $4,
+               (select role_context_role from sandboxes where id = $2),
+               $5, 'store_product', $6,
                'allowed', null, $7, $8::jsonb, $9::jsonb, $10, $11)`,
             [
               randomUUID(),
@@ -18545,7 +18668,8 @@ export function createPublicSandboxDatabase(
                id, sandbox_id, store_id, persona_id, role, action,
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
-             ) values ($1, $2, $3, $4, 'manager',
+             ) values ($1, $2, $3, $4,
+               (select role_context_role from sandboxes where id = $2),
                'store.business-hours.schedule', 'store_business_hours', $5,
                'allowed', null, $6, null, $7::jsonb, $8, $9)`,
             [
@@ -18657,7 +18781,9 @@ export function createPublicSandboxDatabase(
              id, sandbox_id, store_id, persona_id, role, action, object_type,
              object_id, result, reason, request_id, before_data, after_data,
              business_occurred_at, recorded_at
-           ) values ($1, $2, $3, $4, 'manager', 'store.profile.update',
+           ) values ($1, $2, $3, $4,
+             (select role_context_role from sandboxes where id = $2),
+             'store.profile.update',
              'store', $3, 'allowed', null, $5, $6::jsonb, $7::jsonb, $8, $9)`,
           [
             randomUUID(),
@@ -18749,7 +18875,9 @@ export function createPublicSandboxDatabase(
                  id, sandbox_id, store_id, persona_id, role, action,
                  object_type, object_id, result, reason, request_id,
                  before_data, after_data, business_occurred_at, recorded_at
-               ) values ($1, $2, $3, $4, 'manager', $5, $6, $7, 'denied',
+               ) values ($1, $2, $3, $4,
+                 (select role_context_role from sandboxes where id = $2),
+                 $5, $6, $7, 'denied',
                  $8, $9, null, $10::jsonb, $11, $12)`,
               [
                 randomUUID(),

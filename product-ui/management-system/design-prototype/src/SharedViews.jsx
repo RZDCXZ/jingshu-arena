@@ -52,8 +52,7 @@ function clockRangesOverlap(left, right) {
   };
   return intervals(left).some(([leftStart, leftEnd]) =>
     intervals(right).some(
-      ([rightStart, rightEnd]) =>
-        leftStart < rightEnd && rightStart < leftEnd,
+      ([rightStart, rightEnd]) => leftStart < rightEnd && rightStart < leftEnd,
     ),
   );
 }
@@ -546,7 +545,9 @@ export function TimeAdvanceModal({
               onClick={() => setMode("next-event")}
             >
               <strong>推进到下一事件</strong>
-              <small>{businessTime} → {shiftClockTime(businessTime, 15)}</small>
+              <small>
+                {businessTime} → {shiftClockTime(businessTime, 15)}
+              </small>
               <span>1 条预约进入爽约处理</span>
             </button>
             <button
@@ -555,7 +556,9 @@ export function TimeAdvanceModal({
               onClick={() => setMode("half-hour")}
             >
               <strong>向前推进 30 分钟</strong>
-              <small>{businessTime} → {shiftClockTime(businessTime, 30)}</small>
+              <small>
+                {businessTime} → {shiftClockTime(businessTime, 30)}
+              </small>
               <span>2 个待支付订单过期</span>
             </button>
           </div>
@@ -668,7 +671,11 @@ export function ResetModal({
             <Button tone="secondary" onClick={onClose}>
               保留当前沙箱
             </Button>
-            <Button tone="primary" trailing={ArrowRight} onClick={() => setConfirming(true)}>
+            <Button
+              tone="primary"
+              trailing={ArrowRight}
+              onClick={() => setConfirming(true)}
+            >
               继续二次确认
             </Button>
           </>
@@ -686,10 +693,18 @@ export function ResetModal({
       )}
       {!confirming ? (
         <div className="reset-impact">
-          <span><strong>顾客</strong>预约、订单、会员与个人故事进度</span>
-          <span><strong>店员</strong>当班队列、考勤与交接故事进度</span>
-          <span><strong>店长</strong>门店配置、库存与人员管理故事进度</span>
-          <span><strong>总部运营</strong>跨店对比、连锁配置与审计故事进度</span>
+          <span>
+            <strong>顾客</strong>预约、订单、会员与个人故事进度
+          </span>
+          <span>
+            <strong>店员</strong>当班队列、考勤与交接故事进度
+          </span>
+          <span>
+            <strong>店长</strong>门店配置、库存与人员管理故事进度
+          </span>
+          <span>
+            <strong>总部运营</strong>跨店对比、连锁配置与审计故事进度
+          </span>
         </div>
       ) : (
         <label className="check-row">
@@ -698,7 +713,9 @@ export function ResetModal({
             checked={confirmed}
             onChange={(event) => setConfirmed(event.target.checked)}
           />
-          <span>我了解顾客、店员、店长与总部运营的当前数据和故事进度都会被全新标准种子替换。</span>
+          <span>
+            我了解顾客、店员、店长与总部运营的当前数据和故事进度都会被全新标准种子替换。
+          </span>
         </label>
       )}
     </Modal>
@@ -1200,29 +1217,29 @@ function resolveActionModal(action) {
             },
           ]
         : [
-        { label: "员工工作名", value: action.name || "背景员工 17" },
-        {
-          label: "员工编号",
-          value: editing ? action.code || "" : action.code || "PRISM-S017",
-        },
-        {
-          label: "角色",
-          value: action.role || "店员",
-          options: ["店员", "店长"],
-          readOnly: editing,
-        },
-        {
-          label: "任职状态",
-          value: "任职",
-          readOnly: true,
-        },
-        {
-          label: "所属门店",
-          value: "棱镜旗舰店（固定，不跨店任职）",
-          readOnly: true,
-          full: true,
-        },
-      ],
+            { label: "员工工作名", value: action.name || "背景员工 17" },
+            {
+              label: "员工编号",
+              value: editing ? action.code || "" : action.code || "PRISM-S017",
+            },
+            {
+              label: "角色",
+              value: action.role || "店员",
+              options: ["店员", "店长"],
+              readOnly: editing,
+            },
+            {
+              label: "任职状态",
+              value: "任职",
+              readOnly: true,
+            },
+            {
+              label: "所属门店",
+              value: "棱镜旗舰店（固定，不跨店任职）",
+              readOnly: true,
+              full: true,
+            },
+          ],
     };
   }
 
@@ -1523,6 +1540,46 @@ function resolveActionModal(action) {
     };
   }
 
+  if (action?.kind === "hq-product-scope") {
+    const item = action.item || {};
+    return {
+      eyebrow: "连锁商品范围 · 固定三店",
+      title: `商品适用门店范围 · ${item.name || "新商品资料"}`,
+      noticeTitle: "只影响新目录与新订单",
+      noticeBody:
+        "范围变化不会改写既有门店商品、库存流水或历史订单；售价、上架和库存数量仍由对应店长管理。",
+      confirmLabel: "保存商品范围",
+      fields: [
+        {
+          label: "商品代码",
+          value: "pulse-energy-drink",
+          readOnly: true,
+        },
+        {
+          label: "总部商品资料",
+          value: item.name || "新商品资料",
+          readOnly: true,
+        },
+        {
+          label: "适用固定门店",
+          key: "availableStores",
+          checkboxOptions: ["棱镜旗舰店", "星桥标准店", "极点新店"],
+          value:
+            item.detail === "三店可用"
+              ? ["棱镜旗舰店", "星桥标准店", "极点新店"]
+              : ["棱镜旗舰店", "极点新店"],
+          full: true,
+        },
+        {
+          label: "未来影响",
+          value: "仅新目录与新订单；历史订单与库存记录保持不变",
+          readOnly: true,
+          full: true,
+        },
+      ],
+    };
+  }
+
   if (action?.kind === "store-future-config") {
     const editing = action.mode === "edit";
     const item = action.item || {};
@@ -1696,59 +1753,92 @@ export function GenericActionModal({ action, onArchive, onClose, onConfirm }) {
           : modal.noticeBody}
       </InlineNotice>
       <div className="form-grid modal-form">
-        {renderedFields.map((field, index) => (
-          <label
-            className={`field ${field.full ? "field-full" : ""}`}
-            key={`${field.label}-${index}`}
-          >
-            <span>{field.label}</span>
-            {field.options ? (
-              <select
-                value={fieldValues[field.key || index] ?? field.value}
-                disabled={field.readOnly}
-                onChange={(event) =>
-                  setFieldValues((values) => ({
-                    ...values,
-                    [field.key || index]: event.target.value,
-                  }))
-                }
+        {renderedFields.map((field, index) => {
+          const fieldKey = field.key || index;
+          if (field.checkboxOptions) {
+            const selected = fieldValues[fieldKey] || [];
+            return (
+              <fieldset
+                className={`field modal-checkbox-field ${field.full ? "field-full" : ""}`}
+                key={`${field.label}-${index}`}
               >
-                {field.options.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            ) : field.multiline ? (
-              <textarea
-                value={fieldValues[field.key || index] ?? field.value}
-                onChange={(event) =>
-                  setFieldValues((values) => ({
-                    ...values,
-                    [field.key || index]: event.target.value,
-                  }))
-                }
-                readOnly={field.readOnly}
-              />
-            ) : (
-              <input
-                type={field.type || "text"}
-                value={
-                  field.key === "overlap"
-                    ? field.value
-                    : (fieldValues[field.key || index] ?? field.value)
-                }
-                onChange={(event) =>
-                  setFieldValues((values) => ({
-                    ...values,
-                    [field.key || index]: event.target.value,
-                  }))
-                }
-                readOnly={field.readOnly}
-              />
-            )}
-          </label>
-        ))}
+                <legend>{field.label}</legend>
+                <div>
+                  {field.checkboxOptions.map((option) => (
+                    <label key={option}>
+                      <input
+                        checked={selected.includes(option)}
+                        onChange={(event) =>
+                          setFieldValues((values) => ({
+                            ...values,
+                            [fieldKey]: event.target.checked
+                              ? [...selected, option]
+                              : selected.filter((value) => value !== option),
+                          }))
+                        }
+                        type="checkbox"
+                      />
+                      <span>{option}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            );
+          }
+          return (
+            <label
+              className={`field ${field.full ? "field-full" : ""}`}
+              key={`${field.label}-${index}`}
+            >
+              <span>{field.label}</span>
+              {field.options ? (
+                <select
+                  value={fieldValues[fieldKey] ?? field.value}
+                  disabled={field.readOnly}
+                  onChange={(event) =>
+                    setFieldValues((values) => ({
+                      ...values,
+                      [fieldKey]: event.target.value,
+                    }))
+                  }
+                >
+                  {field.options.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              ) : field.multiline ? (
+                <textarea
+                  value={fieldValues[fieldKey] ?? field.value}
+                  onChange={(event) =>
+                    setFieldValues((values) => ({
+                      ...values,
+                      [fieldKey]: event.target.value,
+                    }))
+                  }
+                  readOnly={field.readOnly}
+                />
+              ) : (
+                <input
+                  type={field.type || "text"}
+                  value={
+                    field.key === "overlap"
+                      ? field.value
+                      : (fieldValues[fieldKey] ?? field.value)
+                  }
+                  onChange={(event) =>
+                    setFieldValues((values) => ({
+                      ...values,
+                      [fieldKey]: event.target.value,
+                    }))
+                  }
+                  readOnly={field.readOnly}
+                />
+              )}
+            </label>
+          );
+        })}
       </div>
     </Modal>
   );

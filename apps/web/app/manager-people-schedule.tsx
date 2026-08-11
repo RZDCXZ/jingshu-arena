@@ -1571,6 +1571,18 @@ export function HeadquartersPeopleSchedule({
     null,
   );
   const [error, setError] = useState("");
+  const stores = useMemo(() => {
+    const order = new Map([
+      ["prism-flagship", 0],
+      ["starbridge-standard", 1],
+      ["apex-new", 2],
+    ]);
+    return [...(data?.stores ?? [])].sort(
+      (left, right) =>
+        (order.get(left.store.code) ?? Number.MAX_SAFE_INTEGER) -
+        (order.get(right.store.code) ?? Number.MAX_SAFE_INTEGER),
+    );
+  }, [data]);
   useEffect(() => {
     const controller = new AbortController();
     setError("");
@@ -1612,53 +1624,164 @@ export function HeadquartersPeopleSchedule({
           {error}
         </div>
       ) : null}
-      <section className="people-hq-grid">
-        {data?.stores.map((store) => (
-          <article key={store.store.code}>
+      <section className="people-hq-readonly-notice">
+        <ShieldCheck />
+        <span>
+          <strong>总部只读，不产生访问审计噪声</strong>
+          <small>
+            需要调整员工或排班时，请切换到对应门店的店长角色；总部不能签到、签退或确认交接。
+          </small>
+        </span>
+      </section>
+      <section className="people-hq-summary-wrap">
+        {data ? (
+          <table aria-label="三店人员与排班汇总">
+            <thead>
+              <tr>
+                <th>门店</th>
+                <th>任职人数</th>
+                <th>店员 / 店长</th>
+                <th>未来班次</th>
+                <th>考勤异常</th>
+                <th>未来覆盖</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stores.map((store) => (
+                <tr key={store.store.code}>
+                  <td>
+                    <strong>{store.store.displayName}</strong>
+                    <small>{store.store.code}</small>
+                  </td>
+                  <td>
+                    {store.activeEmployeeCount}/{store.employeeCount}
+                  </td>
+                  <td>
+                    {store.staffCount} / {store.managerCount}
+                  </td>
+                  <td>{store.futureShiftCount}</td>
+                  <td>
+                    <span
+                      className={`people-hq-status ${store.attendanceAnomalyCount ? "is-warning" : "is-active"}`}
+                    >
+                      {store.attendanceAnomalyCount
+                        ? `${store.attendanceAnomalyCount} 项`
+                        : "无异常"}
+                    </span>
+                  </td>
+                  <td>
+                    <span
+                      className={`people-hq-status ${store.coverageWarnings ? "is-warning" : "is-active"}`}
+                    >
+                      {store.coverage.warnings.length
+                        ? `${shanghai(store.coverage.warnings[0]!.startsAt)} 起覆盖不足`
+                        : "覆盖充足"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="people-loading">正在读取三店人员汇总…</div>
+        )}
+      </section>
+      {data ? (
+        <div className="people-hq-detail-grid">
+          <section>
             <header>
               <span>
-                <small>{store.store.code}</small>
-                <h2>{store.store.displayName}</h2>
+                <UsersThree />
               </span>
-              <em>
-                {store.activeEmployeeCount}/{store.employeeCount} 任职
-              </em>
+              <div>
+                <small>虚构工作名 · 业务所需字段</small>
+                <h2>三店人员明细</h2>
+              </div>
             </header>
-            <dl>
+            <div className="people-hq-table-wrap">
+              <table aria-label="三店人员只读明细">
+                <thead>
+                  <tr>
+                    <th>门店</th>
+                    <th>员工</th>
+                    <th>角色</th>
+                    <th>任职</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stores.flatMap((store) =>
+                    store.employees.map((employee) => (
+                      <tr key={`${store.store.code}-${employee.employeeCode}`}>
+                        <td>{store.store.displayName}</td>
+                        <td>
+                          <strong>
+                            {employee.displayName} · {employee.employeeCode}
+                          </strong>
+                        </td>
+                        <td>{employee.role === "manager" ? "店长" : "店员"}</td>
+                        <td>
+                          <span
+                            className={`people-hq-status ${employee.active ? "is-active" : ""}`}
+                          >
+                            {employee.active ? "任职中" : "已停用"}
+                          </span>
+                        </td>
+                      </tr>
+                    )),
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <section>
+            <header>
+              <span>
+                <CalendarDots />
+              </span>
               <div>
-                <dt>店员</dt>
-                <dd>{store.staffCount}</dd>
+                <small>服务端未来班次 · 上海业务时间</small>
+                <h2>未来班次明细</h2>
               </div>
-              <div>
-                <dt>店长</dt>
-                <dd>{store.managerCount}</dd>
-              </div>
-              <div>
-                <dt>未来班次</dt>
-                <dd>{store.futureShiftCount}</dd>
-              </div>
-              <div>
-                <dt>考勤异常</dt>
-                <dd
-                  className={store.attendanceAnomalyCount ? "is-warning" : ""}
-                >
-                  {store.attendanceAnomalyCount}
-                </dd>
-              </div>
-              <div>
-                <dt>覆盖告警</dt>
-                <dd className={store.coverageWarnings ? "is-warning" : ""}>
-                  {store.coverageWarnings}
-                </dd>
-              </div>
-            </dl>
-            <footer>
-              <ShieldCheck />
-              总部范围仅用于只读经营判断
-            </footer>
-          </article>
-        )) ?? <div className="people-loading">正在读取三店人员汇总…</div>}
-      </section>
+            </header>
+            <div className="people-hq-table-wrap">
+              <table aria-label="三店未来班次只读明细">
+                <thead>
+                  <tr>
+                    <th>门店</th>
+                    <th>员工</th>
+                    <th>角色</th>
+                    <th>班次</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stores.flatMap((store) =>
+                    store.futureShifts.map((shift) => (
+                      <tr
+                        key={`${store.store.code}-${shift.employee.employeeCode}-${shift.startsAt}`}
+                      >
+                        <td>{store.store.displayName}</td>
+                        <td>
+                          <strong>
+                            {shift.employee.displayName} ·{" "}
+                            {shift.employee.employeeCode}
+                          </strong>
+                        </td>
+                        <td>
+                          {shift.employee.role === "manager" ? "店长" : "店员"}
+                        </td>
+                        <td>
+                          <strong>{shanghai(shift.startsAt)}</strong>
+                          <small>至 {shanghai(shift.endsAt)}</small>
+                        </td>
+                      </tr>
+                    )),
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

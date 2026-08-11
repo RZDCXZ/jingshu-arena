@@ -425,14 +425,16 @@ export function StoreComparePage() {
 
 export function ChainConfigPage({ onAction, readonly }) {
   const [tab, setTab] = useState("products");
-  const productRows = productCatalog.map(([name, category, scope, state, code, description]) => ({
-    name,
-    category,
-    scope,
-    state,
-    code,
-    description,
-  }));
+  const productRows = productCatalog.map(
+    ([name, category, scope, state, code, description]) => ({
+      name,
+      category,
+      scope,
+      state,
+      code,
+      description,
+    }),
+  );
   const machineRows = machineProfiles.map(
     ([name, spec, description, seats]) => ({
       name,
@@ -626,7 +628,11 @@ export function HqStoreConfigPage({ onAction, readonly }) {
   const [store, setStore] = useState("棱镜旗舰店");
   const [tab, setTab] = useState("overview");
   const scopeLabel =
-    tab === "areas" ? "区域与座位" : tab === "pricing" ? "价格计划" : "商品范围";
+    tab === "areas"
+      ? "区域与座位"
+      : tab === "pricing"
+        ? "价格计划"
+        : "商品范围";
   const configItems =
     tab === "areas"
       ? [
@@ -684,6 +690,24 @@ export function HqStoreConfigPage({ onAction, readonly }) {
           </span>
           <StatusPill tone="success">配置可编辑</StatusPill>
         </div>
+        <nav className="hq-store-switcher" aria-label="固定三店快捷切换">
+          {stores.map((item) => (
+            <button
+              aria-current={item.name === store ? "page" : undefined}
+              className={item.name === store ? "is-active" : ""}
+              data-store-tone={item.label}
+              key={item.name}
+              onClick={() => setStore(item.name)}
+              type="button"
+            >
+              <Storefront />
+              <span>
+                <strong>{item.name}</strong>
+                <small>{item.label}</small>
+              </span>
+            </button>
+          ))}
+        </nav>
         <Tabs
           value={tab}
           onChange={setTab}
@@ -799,7 +823,10 @@ export function HqStoreConfigPage({ onAction, readonly }) {
                     disabled={readonly}
                     onClick={() =>
                       onAction({
-                        kind: "store-future-config",
+                        kind:
+                          tab === "products"
+                            ? "hq-product-scope"
+                            : "store-future-config",
                         mode: "edit",
                         scope: tab,
                         scopeLabel,
@@ -827,25 +854,74 @@ export function HqPeoplePage() {
       store: "棱镜旗舰店",
       staff: 14,
       managers: 2,
-      current: 8,
+      employees: "16/16",
+      future: 48,
       coverage: "覆盖充足",
-      alert: "交接待提交 1",
+      alert: "考勤异常 1",
     },
     {
       store: "星桥标准店",
       staff: 9,
       managers: 1,
-      current: 5,
+      employees: "10/10",
+      future: 30,
       coverage: "覆盖充足",
-      alert: "交接未确认 1",
+      alert: "无异常",
     },
     {
       store: "极点新店",
       staff: 6,
       managers: 1,
-      current: 3,
+      employees: "7/7",
+      future: 21,
       coverage: "00:00 前覆盖不足",
-      alert: "缺勤 1",
+      alert: "考勤异常 1",
+    },
+  ];
+  const people = [
+    {
+      store: "棱镜旗舰店",
+      employee: "许知远 · PRISM-M001",
+      role: "店长",
+      status: "任职中",
+    },
+    {
+      store: "棱镜旗舰店",
+      employee: "周宁 · PRISM-S001",
+      role: "店员",
+      status: "任职中",
+    },
+    {
+      store: "星桥标准店",
+      employee: "叶澄 · STAR-S003",
+      role: "店员",
+      status: "任职中",
+    },
+    {
+      store: "极点新店",
+      employee: "程熙 · APEX-S002",
+      role: "店员",
+      status: "任职中",
+    },
+  ];
+  const futureShifts = [
+    {
+      store: "棱镜旗舰店",
+      employee: "周宁 · PRISM-S001",
+      role: "店员",
+      shift: "08月12日 10:00–18:00",
+    },
+    {
+      store: "星桥标准店",
+      employee: "叶澄 · STAR-S003",
+      role: "店员",
+      shift: "08月12日 12:00–20:00",
+    },
+    {
+      store: "极点新店",
+      employee: "程熙 · APEX-S002",
+      role: "店员",
+      shift: "08月12日 16:00–次日00:00",
     },
   ];
   return (
@@ -861,7 +937,7 @@ export function HqPeoplePage() {
           </div>
         </div>
         <InlineNotice title="总部只读" tone="info">
-          需要调整排班时，请切换到对应门店的店长角色；总部权限不继承一线动作。
+          需要调整员工或排班时，请切换到对应门店的店长角色；只读访问不产生审计噪声，总部权限不继承一线动作。
         </InlineNotice>
         <Surface className="table-surface section-gap">
           <DataTable
@@ -871,9 +947,13 @@ export function HqPeoplePage() {
                 label: "门店",
                 render: (row) => <strong>{row.store}</strong>,
               },
-              { key: "staff", label: "店员" },
-              { key: "managers", label: "店长" },
-              { key: "current", label: "当前在班" },
+              { key: "employees", label: "任职人数" },
+              {
+                key: "roles",
+                label: "店员 / 店长",
+                render: (row) => `${row.staff} / ${row.managers}`,
+              },
+              { key: "future", label: "未来班次" },
               {
                 key: "coverage",
                 label: "未来覆盖",
@@ -885,12 +965,48 @@ export function HqPeoplePage() {
                   </StatusPill>
                 ),
               },
-              { key: "alert", label: "异常" },
+              { key: "alert", label: "考勤异常" },
             ]}
             rows={summaries}
             rowKey="store"
           />
         </Surface>
+        <div className="hq-people-detail-grid section-gap">
+          <Surface className="table-surface">
+            <SectionHeading title="三店人员明细" icon={UsersThree} />
+            <DataTable
+              columns={[
+                { key: "store", label: "门店" },
+                {
+                  key: "employee",
+                  label: "虚构工作名 / 编号",
+                  render: (row) => <strong>{row.employee}</strong>,
+                },
+                { key: "role", label: "角色" },
+                { key: "status", label: "任职" },
+              ]}
+              rows={people}
+              rowKey="employee"
+            />
+          </Surface>
+          <Surface className="table-surface">
+            <SectionHeading title="未来班次明细" icon={CalendarBlank} />
+            <DataTable
+              columns={[
+                { key: "store", label: "门店" },
+                {
+                  key: "employee",
+                  label: "员工",
+                  render: (row) => <strong>{row.employee}</strong>,
+                },
+                { key: "role", label: "角色" },
+                { key: "shift", label: "上海业务时间" },
+              ]}
+              rows={futureShifts}
+              rowKey="employee"
+            />
+          </Surface>
+        </div>
         <div className="dashboard-grid dashboard-grid-secondary">
           <Surface>
             <SectionHeading title="角色结构" icon={UsersThree} />

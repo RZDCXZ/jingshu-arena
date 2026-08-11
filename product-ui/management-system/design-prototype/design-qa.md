@@ -2,8 +2,19 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-11
-- 已验证契约版本：`product-ui/management-system/prod.md` 1.13
-- 验证范围：[`24 — 总部商品资料与机型档案`](../../../.scratch/jingshu-basic-rc/issues/24-hq-catalogs.md)；保留 ticket 23 本店审计与筛选 CSV 导出和更早结论
+- 已验证契约版本：`product-ui/management-system/prod.md` 1.14
+- 验证范围：[`25 — 总部固定三店配置与人员排班汇总`](../../../.scratch/jingshu-basic-rc/issues/25-hq-store-people.md)；保留 ticket 24 总部商品资料与机型档案和更早结论
+
+## Ticket 25 `WEB-H05/WEB-H06` 对照目标与结论
+
+- 视觉方向继续使用选定源 `design/reference/selected-night-operations-console.png`，页面状态源为正式原型总部“门店配置”和“人员与排班”。应用内浏览器以精确 `1440 × 1024 CSS px` 与 `1024 × 768 CSS px` 打开正式原型和真实 Web → Hono → PostgreSQL 生产页；两档页面均为 `documentScrollWidth = viewportWidth`。
+- `1440 × 1024` 门店资料原始证据为 `design/source-ticket25-store-profile-1440.png` 与 `design/implementation-ticket25-store-profile-1440.png`，同屏比较为 `design/comparison-ticket25-store-profile-1440.png`。棱镜旗舰店、星桥标准店、极点新店以青柠、青色、琥珀三色标记和固定顺序呈现；选择器只含服务端返回的三店，不存在新增、删除或停用门店入口。
+- `1024 × 768` 商品范围原始证据为 `design/source-ticket25-product-scope-1024.png` 与 `design/implementation-ticket25-product-scope-1024.png`，同屏比较为 `design/comparison-ticket25-product-scope-1024.png`。专用弹窗把商品代码/名称固定为只读，把三店适用范围作为唯一可编辑字段，并说明未来订单、历史订单与库存记录的不同影响；弹窗实测 `610 × 539.45px`、底部位于 `653.7px`，没有裁切。
+- `1024 × 768` 人员汇总原始证据为 `design/source-ticket25-people-1024.png` 与 `design/implementation-ticket25-people-1024.png`，同屏比较为 `design/comparison-ticket25-people-1024.png`。两侧均按棱镜、星桥、极点顺序展示任职人数、店员/店长、未来班次、考勤异常和未来覆盖；生产另提供只含虚构工作名、员工编号、角色、任职状态和未来班次的安全明细，不显示人物 ID、联系方式或一线动作。
+- `design/implementation-ticket25-dependencies-1024.png` 记录总部查看座位依赖时的安全只读弹窗：仅显示有效预约、未关闭报修和“切换到对应门店的店长角色”说明，没有前往实时运营或报修队列按钮。商品范围弹窗打开后聚焦第一个门店复选框，`Escape` 关闭并返回“编辑商品范围”触发器；页面和正式源 warning/error 均为 0。
+- 第 1 轮 P1 已关闭：正式原型的通用商品动作原先不能表达当前商品及逐店范围，生产弹窗字段也曾因错误容器类发生重叠；正式源改为当前记录专用商品范围弹窗，生产改用专用字段与未来影响审阅区。
+- 第 1 轮 P2 已关闭：正式源和生产最初没有稳定共享三店颜色/顺序，人员汇总也分别使用卡片与表格导致信息层级不一致；两侧统一为三色固定顺序和六列高密度汇总表，并收敛窄视口内部滚动。当前没有仍需处理的 P0、P1 或 P2 差异；P3 仅为生产展示完整权威人员和未来班次数量、正式源保留代表性安全样例。
+- 定向 strict TypeScript、2 个总部 Chromium E2E、正式管理端原型生产构建和 4 个 Sites 包装测试通过。完整仓库门禁在双轴代码审查完成后执行。
 
 ## Ticket 24 `WEB-H03/WEB-H04` 对照目标与结论
 

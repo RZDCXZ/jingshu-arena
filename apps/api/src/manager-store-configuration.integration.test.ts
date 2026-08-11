@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 
 import type {
+  HeadquartersCatalogsResponse,
   ManagerPricePlanOverlapPreviewResponse,
   ManagerStoreConfigurationResponse,
   RoleContextReadyResponse,
@@ -71,6 +72,99 @@ async function createRoleSession(role: "hq" | "manager" | "staff") {
 }
 
 describe("manager store configuration API", () => {
+  it("lets headquarters configure any fixed store without exposing store lifecycle commands", async () => {
+    const headquarters = await createRoleSession("hq");
+    const catalogsResponse = await app.request("/api/v1/hq/catalogs", {
+      headers: { Cookie: headquarters.cookie },
+    });
+    const catalogs =
+      (await catalogsResponse.json()) as HeadquartersCatalogsResponse;
+    const targetStore = catalogs.stores.find(
+      (store) => store.code === "starbridge-standard",
+    )!;
+
+    const beforeResponse = await app.request(
+      `/api/v1/hq/store-configuration?storeId=${targetStore.storeId}`,
+      { headers: { Cookie: headquarters.cookie } },
+    );
+    const before =
+      (await beforeResponse.json()) as ManagerStoreConfigurationResponse;
+
+    expect(beforeResponse.status).toBe(200);
+    expect(before.store).toMatchObject({
+      code: "starbridge-standard",
+      displayName: "星桥标准店",
+      fixed: true,
+    });
+
+    const idempotencyKey = crypto.randomUUID();
+    const submit = () =>
+      app.request("/api/v1/hq/store-configuration/commands", {
+        body: JSON.stringify({
+          action: "update-store-profile",
+          displayName: "星桥标准演示店",
+          expectedVersion: before.store.version,
+          fictitiousCity: before.store.fictitiousCity,
+          introduction: "总部配置的固定虚构演示门店，历史业务事实保持不变。",
+          storeId: before.store.storeId,
+        }),
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: headquarters.cookie,
+          "Idempotency-Key": idempotencyKey,
+          Origin: publicOrigin,
+          "X-CSRF-Token": headquarters.context.csrfToken,
+        },
+        method: "POST",
+      });
+    const saved = await submit();
+    expect(saved.status).toBe(200);
+    await expect(saved.json()).resolves.toMatchObject({ replayed: false });
+    const replayed = await submit();
+    await expect(replayed.json()).resolves.toMatchObject({ replayed: true });
+
+    const confirmedResponse = await app.request(
+      `/api/v1/hq/store-configuration?storeId=${targetStore.storeId}`,
+      { headers: { Cookie: headquarters.cookie } },
+    );
+    await expect(confirmedResponse.json()).resolves.toMatchObject({
+      store: { displayName: "星桥标准演示店" },
+    });
+    const allowedAudit = await sql.query<{ role: string }>(
+      `select role from audit_events
+        where action = 'store.profile.update'
+          and after_data ->> 'displayName' = $1`,
+      ["星桥标准演示店"],
+    );
+    expect(allowedAudit.rows).toEqual([{ role: "hq" }]);
+
+    const forbidden = await app.request(
+      "/api/v1/hq/store-configuration/commands",
+      {
+        body: JSON.stringify({ action: "delete-store" }),
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: headquarters.cookie,
+          "Idempotency-Key": crypto.randomUUID(),
+          Origin: publicOrigin,
+          "X-CSRF-Token": headquarters.context.csrfToken,
+        },
+        method: "POST",
+      },
+    );
+    expect(forbidden.status).toBe(422);
+    await expect(forbidden.json()).resolves.toMatchObject({
+      error: { code: "STORE_CONFIGURATION_COMMAND_INVALID" },
+    });
+
+    const manager = await createRoleSession("manager");
+    const managerUsingHeadquartersRoute = await app.request(
+      `/api/v1/hq/store-configuration?storeId=${before.store.storeId}`,
+      { headers: { Cookie: manager.cookie } },
+    );
+    expect(managerUsingHeadquartersRoute.status).toBe(403);
+  });
+
   it("returns the manager's authoritative fixed-store configuration", async () => {
     const manager = await createRoleSession("manager");
 

@@ -634,6 +634,35 @@ test.beforeEach(async ({ context }) => {
       version: 5,
     },
   };
+  const headquartersStoreConfigurations = new Map(
+    headquartersCatalogs.stores.map((headquartersStore) => {
+      const seatCount = {
+        "apex-new": 40,
+        "prism-flagship": 96,
+        "starbridge-standard": 64,
+      }[headquartersStore.code]!;
+      return [
+        headquartersStore.storeId,
+        {
+          ...structuredClone(storeConfiguration),
+          pricePlans: storeConfiguration.pricePlans.map((plan) => ({
+            ...plan,
+            store: {
+              code: headquartersStore.code,
+              displayName: headquartersStore.displayName,
+            },
+          })),
+          store: {
+            ...storeConfiguration.store,
+            code: headquartersStore.code,
+            displayName: headquartersStore.displayName,
+            seatCount,
+            storeId: headquartersStore.storeId,
+          },
+        } satisfies ManagerStoreConfigurationResponse,
+      ] as const;
+    }),
+  );
   const managerEmployeeIds = Array.from({ length: 16 }, () =>
     crypto.randomUUID(),
   );
@@ -1656,8 +1685,45 @@ test.beforeEach(async ({ context }) => {
           {
             activeEmployeeCount: 7,
             attendanceAnomalyCount: 2,
+            coverage: {
+              endsAt: "2026-08-11T11:30:00.000Z",
+              startsAt: businessTime,
+              warnings: [
+                {
+                  actualStaff: 2,
+                  endsAt: "2026-08-10T16:00:00.000Z",
+                  minimumStaff: 3,
+                  startsAt: "2026-08-10T15:30:00.000Z",
+                },
+              ],
+            },
             coverageWarnings: 18,
+            employees: [
+              {
+                active: true,
+                displayName: "新店店员甲",
+                employeeCode: "APEX-S001",
+                role: "staff",
+              },
+              {
+                active: true,
+                displayName: "新店店长",
+                employeeCode: "APEX-M001",
+                role: "manager",
+              },
+            ],
             employeeCount: 7,
+            futureShifts: [
+              {
+                employee: {
+                  displayName: "新店店员甲",
+                  employeeCode: "APEX-S001",
+                  role: "staff",
+                },
+                endsAt: "2026-08-11T08:00:00.000Z",
+                startsAt: "2026-08-11T00:00:00.000Z",
+              },
+            ],
             futureShiftCount: 21,
             managerCount: 1,
             staffCount: 6,
@@ -1666,8 +1732,38 @@ test.beforeEach(async ({ context }) => {
           {
             activeEmployeeCount: 16,
             attendanceAnomalyCount: 1,
+            coverage: {
+              endsAt: "2026-08-11T11:30:00.000Z",
+              startsAt: businessTime,
+              warnings: [],
+            },
             coverageWarnings: 3,
+            employees: [
+              {
+                active: true,
+                displayName: "周宁",
+                employeeCode: "PRISM-S001",
+                role: "staff",
+              },
+              {
+                active: true,
+                displayName: "许知远",
+                employeeCode: "PRISM-M001",
+                role: "manager",
+              },
+            ],
             employeeCount: 16,
+            futureShifts: [
+              {
+                employee: {
+                  displayName: "周宁",
+                  employeeCode: "PRISM-S001",
+                  role: "staff",
+                },
+                endsAt: "2026-08-11T02:00:00.000Z",
+                startsAt: "2026-08-10T18:00:00.000Z",
+              },
+            ],
             futureShiftCount: 48,
             managerCount: 2,
             staffCount: 14,
@@ -1676,8 +1772,38 @@ test.beforeEach(async ({ context }) => {
           {
             activeEmployeeCount: 10,
             attendanceAnomalyCount: 3,
+            coverage: {
+              endsAt: "2026-08-11T11:30:00.000Z",
+              startsAt: businessTime,
+              warnings: [],
+            },
             coverageWarnings: 9,
+            employees: [
+              {
+                active: true,
+                displayName: "标准店店员甲",
+                employeeCode: "STAR-S001",
+                role: "staff",
+              },
+              {
+                active: true,
+                displayName: "标准店店长",
+                employeeCode: "STAR-M001",
+                role: "manager",
+              },
+            ],
             employeeCount: 10,
+            futureShifts: [
+              {
+                employee: {
+                  displayName: "标准店店员甲",
+                  employeeCode: "STAR-S001",
+                  role: "staff",
+                },
+                endsAt: "2026-08-11T06:00:00.000Z",
+                startsAt: "2026-08-10T22:00:00.000Z",
+              },
+            ],
             futureShiftCount: 30,
             managerCount: 1,
             staffCount: 9,
@@ -1795,6 +1921,62 @@ test.beforeEach(async ({ context }) => {
         replayed: false,
         status: "ready",
         version,
+      },
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/hq/store-configuration**", async (route) => {
+    expect(currentRole).toBe("hq");
+    const request = route.request();
+    const requestUrl = new URL(request.url());
+    const selectedStoreId =
+      requestUrl.searchParams.get("storeId") ??
+      (request.method() === "POST"
+        ? (request.postDataJSON() as { storeId?: string }).storeId
+        : null);
+    const selected = selectedStoreId
+      ? headquartersStoreConfigurations.get(selectedStoreId)
+      : null;
+    if (!selected) {
+      await route.fulfill({
+        json: { error: { message: "请选择固定三店。" } },
+        status: 404,
+      });
+      return;
+    }
+    if (request.method() === "GET") {
+      await route.fulfill({ json: selected, status: 200 });
+      return;
+    }
+    expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+    if (requestUrl.pathname.endsWith("/price-overlap-preview")) {
+      await route.fulfill({
+        json: { overlap: null, status: "ready" },
+        status: 200,
+      });
+      return;
+    }
+    expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+    const body =
+      request.postDataJSON() as ManagerStoreConfigurationCommandRequest;
+    if (body.action === "update-store-profile") {
+      headquartersStoreConfigurations.set(selected.store.storeId, {
+        ...selected,
+        store: {
+          ...selected.store,
+          displayName: body.displayName,
+          fictitiousCity: body.fictitiousCity,
+          introduction: body.introduction,
+          version: selected.store.version + 1,
+        },
+      });
+    }
+    await route.fulfill({
+      json: {
+        action: body.action,
+        objectId: selected.store.storeId,
+        replayed: false,
+        version: selected.store.version + 1,
       },
       status: 200,
     });
@@ -3309,6 +3491,89 @@ test("manager maintains owned-store employees, previews savable coverage warning
   expect(layout.scrollWidth).toBe(layout.clientWidth);
 });
 
+test("headquarters configures only the fixed three stores and edits product scope through dedicated fields", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "总部运营 沈微 · 虚构人物 固定三店",
+    })
+    .click();
+  await page.getByRole("button", { name: "门店配置" }).click();
+
+  await expect(page.getByRole("heading", { name: "门店配置" })).toBeVisible();
+  const storeSelector = page.getByLabel("当前门店");
+  await expect(storeSelector.locator("option")).toHaveCount(3);
+  await expect(storeSelector).toContainText("棱镜旗舰店");
+  await expect(storeSelector).toContainText("星桥标准店");
+  await expect(storeSelector).toContainText("极点新店");
+  const fixedStoreSwitcher = page.getByRole("navigation", {
+    name: "固定三店快捷切换",
+  });
+  await expect(fixedStoreSwitcher.getByRole("button")).toHaveCount(3);
+  await expect(
+    fixedStoreSwitcher.getByRole("button", { name: /棱镜旗舰店/u }),
+  ).toHaveAttribute("aria-current", "page");
+  await expect(page.getByText("不可新增、删除或停用门店")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /新增门店|删除门店|停用门店/u }),
+  ).toHaveCount(0);
+
+  await storeSelector.selectOption({ label: "星桥标准店" });
+  await expect(page.getByText("星桥标准店 · 固定三店配置")).toBeVisible();
+  await page.getByLabel("门店工作名称").fill("星桥标准演示店");
+  await page.getByRole("button", { name: "保存资料" }).click();
+  await expect(page.getByText("门店展示资料已由服务端确认保存")).toBeVisible();
+
+  await page.getByRole("tab", { name: /价格计划/u }).click();
+  await expect(
+    page.getByRole("button", { name: "基于当前调整" }).first(),
+  ).toBeVisible();
+
+  await page.getByRole("tab", { name: /商品范围/u }).click();
+  const productRow = page.getByRole("row", {
+    name: /^虚构商品 1 fictional-product-1/u,
+  });
+  await productRow.getByRole("button", { name: "编辑商品范围" }).click();
+  const scopeDialog = page.getByRole("dialog", {
+    name: "商品适用门店范围 · 虚构商品 1",
+  });
+  await expect(scopeDialog.getByLabel("商品代码")).toBeDisabled();
+  await scopeDialog.getByLabel("极点新店").check();
+  await scopeDialog.getByRole("button", { name: "保存商品范围" }).click();
+  await expect(
+    page.getByText("商品适用门店范围已保存，历史订单与库存记录保持不变"),
+  ).toBeVisible();
+  await expect(productRow).toContainText("三店可用");
+
+  await page.getByRole("tab", { name: /区域与座位/u }).click();
+  await page.locator(".store-config-dependency-link").first().click();
+  const dependencyDialog = page.getByRole("dialog");
+  await expect(
+    dependencyDialog.getByText(/切换到对应门店的店长角色/u),
+  ).toBeVisible();
+  await expect(
+    dependencyDialog.getByRole("button", {
+      name: /前往实时运营|前往报修队列/u,
+    }),
+  ).toHaveCount(0);
+  await dependencyDialog.getByRole("button", { name: "知道了" }).click();
+  await expect(
+    page.getByRole("button", {
+      name: /到店|制作|维修处理|入库|盘点|签到|交接/u,
+    }),
+  ).toHaveCount(0);
+
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.body.clientWidth,
+    scrollWidth: document.body.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBe(layout.clientWidth);
+});
+
 test("headquarters sees only the three-store people and schedule summary", async ({
   page,
 }) => {
@@ -3326,13 +3591,21 @@ test("headquarters sees only the three-store people and schedule summary", async
     page.getByRole("heading", { name: "人员与排班汇总" }),
   ).toBeVisible();
   await expect(page.getByText("全门店只读")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "棱镜旗舰店" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "星桥标准店" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "极点新店" })).toBeVisible();
-  await expect(page.getByText("考勤异常", { exact: true })).toHaveCount(3);
-  await expect(page.locator(".people-hq-grid").getByRole("button")).toHaveCount(
-    0,
-  );
+  const summaryTable = page.getByRole("table", {
+    name: "三店人员与排班汇总",
+  });
+  await expect(summaryTable.getByText("棱镜旗舰店")).toBeVisible();
+  await expect(summaryTable.getByText("星桥标准店")).toBeVisible();
+  await expect(summaryTable.getByText("极点新店")).toBeVisible();
+  await expect(
+    summaryTable.getByText("未来班次", { exact: true }),
+  ).toBeVisible();
+  const peopleTable = page.getByRole("table", { name: "三店人员只读明细" });
+  await expect(peopleTable.getByText("周宁 · PRISM-S001")).toBeVisible();
+  await expect(peopleTable.getByText("标准店店长 · STAR-M001")).toBeVisible();
+  await expect(page.getByText("未来班次明细")).toBeVisible();
+  await expect(page.getByText(/切换到对应门店的店长角色/u)).toBeVisible();
+  await expect(page.locator(".people-main").getByRole("button")).toHaveCount(0);
 });
 
 test("headquarters maintains fictional product and machine catalogs through dedicated dialogs", async ({

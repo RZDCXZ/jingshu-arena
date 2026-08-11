@@ -11959,7 +11959,7 @@ strong {
   font-size: 8px;
 }
 
-.store-config-fields > label.is-wide {
+.store-config-fields > .is-wide {
   grid-column: 1 / -1;
 }
 
@@ -14934,6 +14934,316 @@ strong {
   }
 
   .manager-export-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Ticket 25 — WEB-H05/H06 fixed-store headquarters configuration and read-only people */
+.store-config-store-selector {
+  min-width: 220px;
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.store-config-store-selector select {
+  min-height: 36px;
+  padding: 0 30px 0 10px;
+  border: 1px solid #2d536a;
+  border-radius: var(--radius-sm);
+  background: #0b2130;
+  color: var(--text);
+  font: inherit;
+  font-size: 10px;
+}
+
+.store-config-store-switcher {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.store-config-store-switcher button {
+  min-width: 0;
+  min-height: 50px;
+  display: grid;
+  grid-template-columns: 27px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #0a1a23;
+  color: var(--muted);
+  text-align: left;
+}
+
+.store-config-store-switcher button:hover,
+.store-config-store-switcher button.is-active {
+  border-color: #3a687d;
+  background: #0d2632;
+  color: var(--text);
+}
+
+.store-config-store-switcher button svg {
+  width: 19px;
+  height: 19px;
+}
+
+.store-config-store-switcher button[data-store-tone="prism-flagship"] svg {
+  color: var(--lime);
+}
+
+.store-config-store-switcher button[data-store-tone="starbridge-standard"] svg {
+  color: var(--cyan);
+}
+
+.store-config-store-switcher button[data-store-tone="apex-new"] svg {
+  color: var(--amber);
+}
+
+.store-config-store-switcher button span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.store-config-store-switcher button strong,
+.store-config-store-switcher button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.store-config-store-switcher button strong {
+  font-size: 9px;
+}
+
+.store-config-store-switcher button small {
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.store-config-dependency-cards > article {
+  min-height: 78px;
+  display: grid;
+  grid-template-columns: 27px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--cyan);
+}
+
+.people-hq-readonly-notice {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 13px;
+  padding: 10px 13px;
+  border: 1px solid #2d536a;
+  border-radius: var(--radius);
+  background: #0b2130;
+}
+
+.people-hq-readonly-notice > svg {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  color: var(--cyan);
+}
+
+.people-hq-readonly-notice > span {
+  display: grid;
+  gap: 4px;
+}
+
+.people-hq-readonly-notice strong {
+  font-size: 10px;
+}
+
+.people-hq-readonly-notice small {
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.people-hq-summary-wrap {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid #294653;
+  border-radius: var(--radius);
+  background: #0a1a23;
+}
+
+.people-hq-summary-wrap table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: 9px;
+}
+
+.people-hq-summary-wrap th,
+.people-hq-summary-wrap td {
+  height: 48px;
+  padding: 9px 13px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.people-hq-summary-wrap th {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.people-hq-summary-wrap tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.people-hq-summary-wrap td strong,
+.people-hq-summary-wrap td small {
+  display: block;
+}
+
+.people-hq-summary-wrap td small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 7px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.people-hq-status.is-warning {
+  background: #3a2b16;
+  color: #e7c75d;
+}
+
+.people-hq-detail-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 13px;
+  margin-top: 13px;
+}
+
+.people-hq-detail-grid > section {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #294653;
+  border-radius: var(--radius);
+  background: #0a1a23;
+}
+
+.people-hq-detail-grid > section > header {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--line);
+  background: #0d222c;
+}
+
+.people-hq-detail-grid > section > header > span {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  flex: none;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: #0e2c3a;
+  color: var(--cyan);
+}
+
+.people-hq-detail-grid header svg {
+  width: 17px;
+  height: 17px;
+}
+
+.people-hq-detail-grid header small {
+  color: var(--cyan);
+  font-size: 7px;
+  letter-spacing: 0.07em;
+}
+
+.people-hq-detail-grid header h2 {
+  margin-top: 3px;
+  font-size: 14px;
+}
+
+.people-hq-table-wrap {
+  max-height: 390px;
+  overflow: auto;
+}
+
+.people-hq-table-wrap table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  font-size: 8px;
+}
+
+.people-hq-table-wrap th,
+.people-hq-table-wrap td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.people-hq-table-wrap th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: #0c202a;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.people-hq-table-wrap td strong,
+.people-hq-table-wrap td small {
+  display: block;
+}
+
+.people-hq-table-wrap td small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.people-hq-status {
+  display: inline-flex;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  background: #202a30;
+  color: var(--muted);
+}
+
+.people-hq-status.is-active {
+  background: #153227;
+  color: #79d9a2;
+}
+
+@media (max-width: 1100px) {
+  .people-hq-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .store-config-store-selector {
+    width: 100%;
+  }
+
+  .store-config-store-switcher {
     grid-template-columns: 1fr;
   }
 }

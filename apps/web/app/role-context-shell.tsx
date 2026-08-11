@@ -31,7 +31,10 @@ import { StaffOrderFulfillment } from "./staff-order-fulfillment";
 import { StoreInventory } from "./store-inventory";
 import { StaffRepairQueue } from "./staff-repair-queue";
 import { StaffShiftAttendance } from "./staff-shift-attendance";
-import { ManagerStoreConfiguration } from "./manager-store-configuration";
+import {
+  HeadquartersStoreConfiguration,
+  ManagerStoreConfiguration,
+} from "./manager-store-configuration";
 import {
   HeadquartersPeopleSchedule,
   ManagerPeopleSchedule,
@@ -673,6 +676,12 @@ export function RoleContextShell({
             />
           ) : context.role.id === "hq" && activePage === "hq-people" ? (
             <HeadquartersPeopleSchedule
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+            />
+          ) : context.role.id === "hq" && activePage === "hq-store-config" ? (
+            <HeadquartersStoreConfiguration
+              csrfToken={context.csrfToken}
+              onToast={setToast}
               refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
             />
           ) : (context.role.id === "staff" && activePage === "inventory") ||

@@ -19,6 +19,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import type {
+  HeadquartersCatalogCommandRequest,
+  HeadquartersCatalogsResponse,
   ManagerPricePlanOverlapPreviewRequest,
   ManagerPricePlanOverlapPreviewResponse,
   ManagerStoreConfigurationCommandRequest,
@@ -33,11 +35,16 @@ type Area = Configuration["areas"][number];
 type StoreProduct = Configuration["products"][number];
 type StoreSeat = Configuration["seats"][number];
 type Command = ManagerStoreConfigurationCommandRequest;
+type HeadquartersProduct = HeadquartersCatalogsResponse["products"][number];
 type ConfigurationTab = "profile" | "seats" | "pricing" | "products";
 
 type DialogState =
   | { readonly kind: "area"; readonly area?: Area }
   | { readonly kind: "hours" }
+  | {
+      readonly kind: "headquarters-product";
+      readonly product: HeadquartersProduct;
+    }
   | { readonly kind: "price" }
   | { readonly kind: "product"; readonly product: StoreProduct }
   | { readonly kind: "seat"; readonly seat?: StoreSeat }
@@ -165,6 +172,7 @@ function useDialogFocus(
 
 function DialogFrame({
   children,
+  eyebrow = "所属门店 · 服务端确认",
   firstFieldRef,
   icon,
   onClose,
@@ -172,6 +180,7 @@ function DialogFrame({
   title,
 }: {
   children: ReactNode;
+  eyebrow?: string;
   firstFieldRef: RefObject<HTMLElement | null>;
   icon: ReactNode;
   onClose: () => void;
@@ -198,7 +207,7 @@ function DialogFrame({
         <header>
           <span>{icon}</span>
           <div>
-            <small>所属门店 · 服务端确认</small>
+            <small>{eyebrow}</small>
             <h2 id="store-config-dialog-title">{title}</h2>
           </div>
           <button aria-label="关闭" disabled={submitting} onClick={onClose}>
@@ -991,11 +1000,13 @@ function DependencyDialog({
   onClose,
   onNavigateRepairs,
   onNavigateReservations,
+  readOnly,
   seat,
 }: {
   onClose: () => void;
   onNavigateRepairs: () => void;
   onNavigateReservations: () => void;
+  readOnly: boolean;
   seat: StoreSeat;
 }) {
   const firstFieldRef = useRef<HTMLButtonElement>(null);
@@ -1008,47 +1019,73 @@ function DependencyDialog({
       title={`${seat.code} 暂不能停用`}
     >
       <p className="store-config-dialog-notice is-warning">
-        先处理仍在生效的业务依赖，再返回门店配置停用座位。服务端会再次核验，不会提前隐藏座位。
+        {readOnly
+          ? "总部只能理解当前业务依赖，不能从配置页处理预约或报修；请切换到对应门店的店长角色。"
+          : "先处理仍在生效的业务依赖，再返回门店配置停用座位。服务端会再次核验，不会提前隐藏座位。"}
       </p>
       <div className="store-config-dependency-cards">
-        <button
-          disabled={seat.dependencies.activeReservations === 0}
-          onClick={onNavigateReservations}
-          {...(seat.dependencies.activeReservations > 0
-            ? { ref: firstFieldRef }
-            : {})}
-        >
-          <CalendarPlus />
-          <span>
-            <strong>{seat.dependencies.activeReservations} 条有效预约</strong>
-            <small>
-              {seat.dependencies.activeReservations > 0
-                ? "前往实时运营处理预约"
-                : "当前无预约依赖"}
-            </small>
-          </span>
-        </button>
-        <button
-          disabled={seat.dependencies.openRepairs === 0}
-          onClick={onNavigateRepairs}
-          {...(seat.dependencies.activeReservations === 0 &&
-          seat.dependencies.openRepairs > 0
-            ? { ref: firstFieldRef }
-            : {})}
-        >
-          <Wrench />
-          <span>
-            <strong>{seat.dependencies.openRepairs} 条未关闭报修</strong>
-            <small>
-              {seat.dependencies.openRepairs > 0
-                ? "前往报修队列处理工单"
-                : "当前无报修依赖"}
-            </small>
-          </span>
-        </button>
+        {readOnly ? (
+          <article>
+            <CalendarPlus />
+            <span>
+              <strong>{seat.dependencies.activeReservations} 条有效预约</strong>
+              <small>只读依赖 · 配置页不可履约</small>
+            </span>
+          </article>
+        ) : (
+          <button
+            disabled={seat.dependencies.activeReservations === 0}
+            onClick={onNavigateReservations}
+            {...(seat.dependencies.activeReservations > 0
+              ? { ref: firstFieldRef }
+              : {})}
+          >
+            <CalendarPlus />
+            <span>
+              <strong>{seat.dependencies.activeReservations} 条有效预约</strong>
+              <small>
+                {seat.dependencies.activeReservations > 0
+                  ? "前往实时运营处理预约"
+                  : "当前无预约依赖"}
+              </small>
+            </span>
+          </button>
+        )}
+        {readOnly ? (
+          <article>
+            <Wrench />
+            <span>
+              <strong>{seat.dependencies.openRepairs} 条未关闭报修</strong>
+              <small>只读依赖 · 配置页不可处理</small>
+            </span>
+          </article>
+        ) : (
+          <button
+            disabled={seat.dependencies.openRepairs === 0}
+            onClick={onNavigateRepairs}
+            {...(seat.dependencies.activeReservations === 0 &&
+            seat.dependencies.openRepairs > 0
+              ? { ref: firstFieldRef }
+              : {})}
+          >
+            <Wrench />
+            <span>
+              <strong>{seat.dependencies.openRepairs} 条未关闭报修</strong>
+              <small>
+                {seat.dependencies.openRepairs > 0
+                  ? "前往报修队列处理工单"
+                  : "当前无报修依赖"}
+              </small>
+            </span>
+          </button>
+        )}
       </div>
       <footer>
-        <button className="is-primary" onClick={onClose}>
+        <button
+          className="is-primary"
+          onClick={onClose}
+          {...(readOnly ? { ref: firstFieldRef } : {})}
+        >
           知道了
         </button>
       </footer>
@@ -1061,11 +1098,13 @@ function PricePlanDialog({
   csrfToken,
   onClose,
   onSubmit,
+  previewEndpoint,
 }: {
   configuration: Configuration;
   csrfToken: string;
   onClose: () => void;
   onSubmit: (command: Command, success: string) => Promise<string | null>;
+  previewEndpoint: string;
 }) {
   const baseline =
     configuration.pricePlans.find((plan) => plan.status === "current") ??
@@ -1159,20 +1198,17 @@ function PricePlanDialog({
     const timeout = window.setTimeout(() => {
       void (async () => {
         try {
-          const response = await fetch(
-            "/api/v1/manager/store-configuration/price-overlap-preview",
-            {
-              body: JSON.stringify(previewRequest),
-              cache: "no-store",
-              credentials: "same-origin",
-              headers: {
-                "Content-Type": "application/json",
-                "X-CSRF-Token": csrfToken,
-              },
-              method: "POST",
-              signal: controller.signal,
+          const response = await fetch(previewEndpoint, {
+            body: JSON.stringify(previewRequest),
+            cache: "no-store",
+            credentials: "same-origin",
+            headers: {
+              "Content-Type": "application/json",
+              "X-CSRF-Token": csrfToken,
             },
-          );
+            method: "POST",
+            signal: controller.signal,
+          });
           const payload: unknown = await response.json();
           if (!response.ok) {
             setPreviewError(
@@ -1197,7 +1233,7 @@ function PricePlanDialog({
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [csrfToken, previewKey, previewRequest]);
+  }, [csrfToken, previewEndpoint, previewKey, previewRequest]);
 
   const previewReady = preview?.key === previewKey;
   const overlappingPlan = previewReady ? preview.result.overlap : null;
@@ -1592,18 +1628,153 @@ function StoreProductDialog({
   );
 }
 
-export function ManagerStoreConfiguration({
+function HeadquartersProductScopeDialog({
+  catalogs,
+  onClose,
+  onSubmit,
+  product,
+}: {
+  catalogs: HeadquartersCatalogsResponse;
+  onClose: () => void;
+  onSubmit: (
+    command: HeadquartersCatalogCommandRequest,
+    success: string,
+  ) => Promise<string | null>;
+  product: HeadquartersProduct;
+}) {
+  const [availableStoreIds, setAvailableStoreIds] = useState(
+    product.availableStores.map((store) => store.storeId),
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const firstFieldRef = useRef<HTMLInputElement>(null);
+
+  async function submit() {
+    if (!availableStoreIds.length) {
+      setError("商品范围至少保留一家固定门店。");
+      return;
+    }
+    setSubmitting(true);
+    setError("");
+    const failure = await onSubmit(
+      {
+        action: "update-product",
+        availableStoreIds,
+        category: product.category,
+        description: product.description,
+        displayName: product.displayName,
+        expectedVersion: product.version,
+        productId: product.productId,
+      },
+      "商品适用门店范围已保存，历史订单与库存记录保持不变",
+    );
+    if (failure) setError(failure);
+    else onClose();
+    setSubmitting(false);
+  }
+
+  return (
+    <DialogFrame
+      eyebrow="连锁商品范围 · 服务端确认"
+      firstFieldRef={firstFieldRef}
+      icon={<Package />}
+      onClose={onClose}
+      submitting={submitting}
+      title={`商品适用门店范围 · ${product.displayName}`}
+    >
+      <p className="store-config-dialog-notice">
+        范围变化只影响新目录与新订单；既有门店商品、库存和历史订单继续保留，只读事实不会被改写。
+      </p>
+      <div className="store-config-fields">
+        <label>
+          <span>商品代码</span>
+          <input disabled value={product.code} />
+        </label>
+        <label>
+          <span>总部商品资料</span>
+          <input disabled value={product.displayName} />
+        </label>
+        <fieldset className="hq-catalog-store-scope is-wide">
+          <legend>适用固定门店</legend>
+          {catalogs.stores.map((store, index) => (
+            <label key={store.storeId}>
+              <input
+                checked={availableStoreIds.includes(store.storeId)}
+                onChange={(event) =>
+                  setAvailableStoreIds((current) =>
+                    event.target.checked
+                      ? [...current, store.storeId]
+                      : current.filter((storeId) => storeId !== store.storeId),
+                  )
+                }
+                ref={index === 0 ? firstFieldRef : undefined}
+                type="checkbox"
+              />
+              <span>{store.displayName}</span>
+            </label>
+          ))}
+        </fieldset>
+      </div>
+      <section className="store-config-review">
+        <header>提交前核对</header>
+        <div>
+          <span>适用范围</span>
+          <strong>{availableStoreIds.length}/3 家固定门店</strong>
+        </div>
+        <div>
+          <span>未来影响</span>
+          <strong>仅新目录与新订单</strong>
+        </div>
+        <p>既有门店商品、库存流水与历史订单保持不变。</p>
+      </section>
+      {error ? (
+        <p className="store-config-form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <footer>
+        <button disabled={submitting} onClick={onClose}>
+          返回
+        </button>
+        <button
+          className="is-primary"
+          disabled={submitting}
+          onClick={() => void submit()}
+        >
+          {submitting ? "提交中…" : "保存商品范围"}
+        </button>
+      </footer>
+    </DialogFrame>
+  );
+}
+
+function StoreConfiguration({
+  catalogs,
   csrfToken,
+  mode,
   onNavigateRepairs,
   onNavigateReservations,
+  onProductScopeSubmit,
+  onSelectStore,
   onToast,
   refreshKey,
+  selectedStoreId,
+  storeOptions,
 }: {
+  catalogs?: HeadquartersCatalogsResponse;
   csrfToken: string;
+  mode: "headquarters" | "manager";
   onNavigateRepairs: () => void;
   onNavigateReservations: () => void;
+  onProductScopeSubmit?: (
+    command: HeadquartersCatalogCommandRequest,
+    success: string,
+  ) => Promise<string | null>;
+  onSelectStore?: (storeId: string) => void;
   onToast: (message: string) => void;
   refreshKey: string;
+  selectedStoreId?: string;
+  storeOptions?: HeadquartersCatalogsResponse["stores"];
 }) {
   const [configuration, setConfiguration] = useState<Configuration | null>(
     null,
@@ -1620,12 +1791,28 @@ export function ManagerStoreConfiguration({
   const pricingTabRef = useRef<HTMLButtonElement>(null);
   const productsTabRef = useRef<HTMLButtonElement>(null);
   const pendingCommandKeysRef = useRef(new Map<string, string>());
+  const headquartersQuery =
+    mode === "headquarters" && selectedStoreId
+      ? `?storeId=${encodeURIComponent(selectedStoreId)}`
+      : "";
+  const configurationEndpoint =
+    mode === "headquarters"
+      ? `/api/v1/hq/store-configuration${headquartersQuery}`
+      : "/api/v1/manager/store-configuration";
+  const commandEndpoint =
+    mode === "headquarters"
+      ? "/api/v1/hq/store-configuration/commands"
+      : "/api/v1/manager/store-configuration/commands";
+  const previewEndpoint =
+    mode === "headquarters"
+      ? `/api/v1/hq/store-configuration/price-overlap-preview${headquartersQuery}`
+      : "/api/v1/manager/store-configuration/price-overlap-preview";
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/v1/manager/store-configuration", {
+      const response = await fetch(configurationEndpoint, {
         cache: "no-store",
         credentials: "same-origin",
       });
@@ -1642,7 +1829,7 @@ export function ManagerStoreConfiguration({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [configurationEndpoint]);
 
   useEffect(() => {
     void load();
@@ -1656,20 +1843,17 @@ export function ManagerStoreConfiguration({
         crypto.randomUUID();
       pendingCommandKeysRef.current.set(requestPayload, idempotencyKey);
       try {
-        const response = await fetch(
-          "/api/v1/manager/store-configuration/commands",
-          {
-            body: requestPayload,
-            cache: "no-store",
-            credentials: "same-origin",
-            headers: {
-              "Content-Type": "application/json",
-              "Idempotency-Key": idempotencyKey,
-              "X-CSRF-Token": csrfToken,
-            },
-            method: "POST",
+        const response = await fetch(commandEndpoint, {
+          body: requestPayload,
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+            "X-CSRF-Token": csrfToken,
           },
-        );
+          method: "POST",
+        });
         const payload: unknown = await response.json();
         const outcomeUnknown =
           response.status === 408 || response.status >= 500;
@@ -1704,7 +1888,7 @@ export function ManagerStoreConfiguration({
         return "提交结果暂时未知，请使用原提交标识安全重试。";
       }
     },
-    [csrfToken, load, onToast],
+    [commandEndpoint, csrfToken, load, onToast],
   );
 
   const seats = useMemo(() => {
@@ -1760,7 +1944,11 @@ export function ManagerStoreConfiguration({
   if (loading && !configuration)
     return (
       <main className="store-config-main">
-        <section className="store-config-state">正在读取所属门店配置…</section>
+        <section className="store-config-state">
+          {mode === "headquarters"
+            ? "正在读取固定三店配置…"
+            : "正在读取所属门店配置…"}
+        </section>
       </main>
     );
   if (error && !configuration)
@@ -1779,20 +1967,76 @@ export function ManagerStoreConfiguration({
     <main className="store-config-main">
       <header className="store-config-title-row">
         <div>
-          <span>{configuration.store.displayName} · 固定所属门店</span>
+          <span>
+            {configuration.store.displayName} ·{" "}
+            {mode === "headquarters" ? "固定三店配置" : "固定所属门店"}
+          </span>
           <h1>门店配置</h1>
           <p>被业务引用的配置只能归档或停用；历史预约与价格快照保持不可变。</p>
         </div>
-        <strong>
-          <MapPin /> {configuration.store.fictitiousCity}
-        </strong>
+        {mode === "headquarters" ? (
+          <label className="store-config-store-selector">
+            <span>当前门店</span>
+            <select
+              onChange={(event) => {
+                setDialog(null);
+                setAreaFilter("all");
+                setSearch("");
+                onSelectStore?.(event.target.value);
+              }}
+              value={selectedStoreId}
+            >
+              {storeOptions?.map((store) => (
+                <option key={store.storeId} value={store.storeId}>
+                  {store.displayName}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <strong>
+            <MapPin /> {configuration.store.fictitiousCity}
+          </strong>
+        )}
       </header>
+      {mode === "headquarters" ? (
+        <nav
+          aria-label="固定三店快捷切换"
+          className="store-config-store-switcher"
+        >
+          {storeOptions?.map((store) => (
+            <button
+              aria-current={
+                store.storeId === selectedStoreId ? "page" : undefined
+              }
+              className={store.storeId === selectedStoreId ? "is-active" : ""}
+              data-store-tone={store.code}
+              key={store.storeId}
+              onClick={() => {
+                setDialog(null);
+                setAreaFilter("all");
+                setSearch("");
+                onSelectStore?.(store.storeId);
+              }}
+              type="button"
+            >
+              <Storefront />
+              <span>
+                <strong>{store.displayName}</strong>
+                <small>{store.code}</small>
+              </span>
+            </button>
+          ))}
+        </nav>
+      ) : null}
       <section className="store-config-fixed-note">
         <Archive />
         <span>
           <strong>固定演示门店 · 不可新增、删除或停用门店</strong>
           <small>
-            店长只能维护当前所属门店；城市和介绍必须保持为虚构演示数据。
+            {mode === "headquarters"
+              ? "总部只能在棱镜旗舰店、星桥标准店和极点新店间切换；不继承到店、履约、维修、库存、签到或交接入口。"
+              : "店长只能维护当前所属门店；城市和介绍必须保持为虚构演示数据。"}
           </small>
         </span>
       </section>
@@ -1857,7 +2101,12 @@ export function ManagerStoreConfiguration({
           role="tab"
           tabIndex={tab === "products" ? 0 : -1}
         >
-          商品上架 <span>{configuration.products.length}</span>
+          {mode === "headquarters" ? "商品范围" : "商品上架"}{" "}
+          <span>
+            {mode === "headquarters"
+              ? (catalogs?.products.length ?? 0)
+              : configuration.products.length}
+          </span>
         </button>
       </div>
       {tab === "profile" ? (
@@ -2243,9 +2492,96 @@ export function ManagerStoreConfiguration({
                         >
                           <Archive /> 归档
                         </button>
+                      ) : mode === "headquarters" &&
+                        plan.status === "current" ? (
+                        <button
+                          className="store-config-edit-button"
+                          onClick={(event) =>
+                            openDialog({ kind: "price" }, event.currentTarget)
+                          }
+                        >
+                          <PencilSimple /> 基于当前调整
+                        </button>
                       ) : (
                         <span className="store-config-no-dependency">只读</span>
                       )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : mode === "headquarters" ? (
+        <section
+          aria-labelledby="store-config-products-tab"
+          className="store-config-data-panel"
+          id="store-config-products-panel"
+          role="tabpanel"
+        >
+          <header>
+            <span>
+              <Package />
+            </span>
+            <div>
+              <small>连锁主资料 · 固定门店集合</small>
+              <h2>商品适用门店范围</h2>
+              <p>
+                只维护新销售的适用范围；售价、上架、阈值和库存仍由对应店长管理。
+              </p>
+            </div>
+          </header>
+          <div className="store-config-seat-table-wrap store-config-data-table-wrap">
+            <table className="store-config-seat-table store-config-data-table is-products">
+              <thead>
+                <tr>
+                  <th>总部商品</th>
+                  <th>分类</th>
+                  <th>当前范围</th>
+                  <th>未来影响</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {catalogs?.products.map((product) => (
+                  <tr key={product.productId}>
+                    <td>
+                      <strong>{product.displayName}</strong>
+                      <small>{product.code}</small>
+                    </td>
+                    <td>{productCategoryLabel(product.category)}</td>
+                    <td>
+                      <strong>
+                        {product.availableStores.length === 3
+                          ? "三店可用"
+                          : product.availableStores
+                              .map((store) => store.displayName)
+                              .join("、") || "暂无适用门店"}
+                      </strong>
+                      <small>
+                        {product.availableStores.length}/3 家固定门店
+                      </small>
+                    </td>
+                    <td>
+                      <span className="store-config-no-dependency">
+                        新目录与新订单
+                      </span>
+                      <small>历史订单与库存记录不变</small>
+                    </td>
+                    <td>
+                      <button
+                        aria-label="编辑商品范围"
+                        className="store-config-edit-button"
+                        disabled={product.archived}
+                        onClick={(event) =>
+                          openDialog(
+                            { kind: "headquarters-product", product },
+                            event.currentTarget,
+                          )
+                        }
+                      >
+                        <PencilSimple /> 编辑
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -2365,6 +2701,17 @@ export function ManagerStoreConfiguration({
           csrfToken={csrfToken}
           onClose={closeDialog}
           onSubmit={execute}
+          previewEndpoint={previewEndpoint}
+        />
+      ) : null}
+      {dialog?.kind === "headquarters-product" &&
+      catalogs &&
+      onProductScopeSubmit ? (
+        <HeadquartersProductScopeDialog
+          catalogs={catalogs}
+          onClose={closeDialog}
+          onSubmit={onProductScopeSubmit}
+          product={dialog.product}
         />
       ) : null}
       {dialog?.kind === "product" ? (
@@ -2395,9 +2742,168 @@ export function ManagerStoreConfiguration({
             closeDialog();
             onNavigateReservations();
           }}
+          readOnly={mode === "headquarters"}
           seat={dialog.seat}
         />
       ) : null}
     </main>
+  );
+}
+
+export function ManagerStoreConfiguration({
+  csrfToken,
+  onNavigateRepairs,
+  onNavigateReservations,
+  onToast,
+  refreshKey,
+}: {
+  csrfToken: string;
+  onNavigateRepairs: () => void;
+  onNavigateReservations: () => void;
+  onToast: (message: string) => void;
+  refreshKey: string;
+}) {
+  return (
+    <StoreConfiguration
+      csrfToken={csrfToken}
+      mode="manager"
+      onNavigateRepairs={onNavigateRepairs}
+      onNavigateReservations={onNavigateReservations}
+      onToast={onToast}
+      refreshKey={refreshKey}
+    />
+  );
+}
+
+export function HeadquartersStoreConfiguration({
+  csrfToken,
+  onToast,
+  refreshKey,
+}: {
+  csrfToken: string;
+  onToast: (message: string) => void;
+  refreshKey: string;
+}) {
+  const [catalogs, setCatalogs] = useState<HeadquartersCatalogsResponse | null>(
+    null,
+  );
+  const [selectedStoreId, setSelectedStoreId] = useState("");
+  const [error, setError] = useState("");
+  const pendingKeysRef = useRef(new Map<string, string>());
+
+  const loadCatalogs = useCallback(async () => {
+    setError("");
+    try {
+      const response = await fetch("/api/v1/hq/catalogs", {
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) {
+        setError(failureMessage(payload, "固定三店资料读取失败。"));
+        return false;
+      }
+      const next = payload as HeadquartersCatalogsResponse;
+      const storeOrder = new Map([
+        ["prism-flagship", 0],
+        ["starbridge-standard", 1],
+        ["apex-new", 2],
+      ]);
+      const stores = [...next.stores].sort(
+        (left, right) =>
+          (storeOrder.get(left.code) ?? Number.MAX_SAFE_INTEGER) -
+          (storeOrder.get(right.code) ?? Number.MAX_SAFE_INTEGER),
+      );
+      setCatalogs({ ...next, stores });
+      setSelectedStoreId((current) =>
+        stores.some((store) => store.storeId === current)
+          ? current
+          : (stores[0]?.storeId ?? ""),
+      );
+      return true;
+    } catch {
+      setError("固定三店资料读取失败，页面不会使用客户端预置范围。");
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCatalogs();
+  }, [loadCatalogs, refreshKey]);
+
+  const executeProductScope = useCallback(
+    async (command: HeadquartersCatalogCommandRequest, success: string) => {
+      const requestPayload = JSON.stringify(command);
+      const idempotencyKey =
+        pendingKeysRef.current.get(requestPayload) ?? crypto.randomUUID();
+      pendingKeysRef.current.set(requestPayload, idempotencyKey);
+      try {
+        const response = await fetch("/api/v1/hq/catalogs/commands", {
+          body: requestPayload,
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+            "X-CSRF-Token": csrfToken,
+          },
+          method: "POST",
+        });
+        const payload: unknown = await response.json();
+        const outcomeUnknown =
+          response.status === 408 || response.status >= 500;
+        if (!outcomeUnknown) pendingKeysRef.current.delete(requestPayload);
+        if (!response.ok) {
+          return outcomeUnknown
+            ? "商品范围提交结果暂时未知，请使用原提交标识安全重试。"
+            : failureMessage(payload, "商品范围没有改变，请修正后重试。");
+        }
+        if (!(await loadCatalogs())) {
+          return "服务端已保存商品范围，但最新范围回读失败；请刷新后核对。";
+        }
+        onToast(success);
+        return null;
+      } catch {
+        return "商品范围提交结果暂时未知，请使用原提交标识安全重试。";
+      }
+    },
+    [csrfToken, loadCatalogs, onToast],
+  );
+
+  if (!catalogs || !selectedStoreId) {
+    return (
+      <main className="store-config-main">
+        <section
+          className={`store-config-state${error ? " is-error" : ""}`}
+          {...(error ? { role: "alert" } : {})}
+        >
+          {error ? (
+            <>
+              <Warning />
+              <span>{error}</span>
+              <button onClick={() => void loadCatalogs()}>重新读取</button>
+            </>
+          ) : (
+            "正在读取固定三店范围…"
+          )}
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <StoreConfiguration
+      catalogs={catalogs}
+      csrfToken={csrfToken}
+      mode="headquarters"
+      onNavigateRepairs={() => undefined}
+      onNavigateReservations={() => undefined}
+      onProductScopeSubmit={executeProductScope}
+      onSelectStore={setSelectedStoreId}
+      onToast={onToast}
+      refreshKey={refreshKey}
+      selectedStoreId={selectedStoreId}
+      storeOptions={catalogs.stores}
+    />
   );
 }

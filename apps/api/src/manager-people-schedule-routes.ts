@@ -498,6 +498,23 @@ export function registerManagerPeopleScheduleRoutes(
       return context.json({
         ...result,
         currentTime: result.currentTime.toISOString(),
+        stores: result.stores.map((store) => ({
+          ...store,
+          coverage: {
+            endsAt: store.coverage.endsAt.toISOString(),
+            startsAt: store.coverage.startsAt.toISOString(),
+            warnings: store.coverage.warnings.map((warning) => ({
+              ...warning,
+              endsAt: warning.endsAt.toISOString(),
+              startsAt: warning.startsAt.toISOString(),
+            })),
+          },
+          futureShifts: store.futureShifts.map((shift) => ({
+            ...shift,
+            endsAt: shift.endsAt.toISOString(),
+            startsAt: shift.startsAt.toISOString(),
+          })),
+        })),
         status: "ready",
       } satisfies HeadquartersPeopleScheduleResponse);
     } catch (error) {

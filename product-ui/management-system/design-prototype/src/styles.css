@@ -2941,6 +2941,100 @@ button.store-row:hover {
   display: grid;
   gap: 3px;
 }
+.hq-store-switcher {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.hq-store-switcher button {
+  min-width: 0;
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--muted);
+  text-align: left;
+}
+.hq-store-switcher button:hover,
+.hq-store-switcher button.is-active {
+  border-color: var(--line-strong);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+.hq-store-switcher button svg {
+  width: 20px;
+  height: 20px;
+}
+.hq-store-switcher button[data-store-tone="旗舰店"] svg {
+  color: var(--lime);
+}
+.hq-store-switcher button[data-store-tone="标准店"] svg {
+  color: var(--cyan);
+}
+.hq-store-switcher button[data-store-tone="新店"] svg {
+  color: var(--amber);
+}
+.hq-store-switcher button span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.hq-store-switcher button strong,
+.hq-store-switcher button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hq-store-switcher button small {
+  color: var(--muted);
+}
+.hq-people-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.hq-people-detail-grid > .surface {
+  min-width: 0;
+}
+.hq-people-detail-grid .section-heading {
+  padding: 14px 16px;
+}
+.modal-checkbox-field {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.modal-checkbox-field legend {
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.modal-checkbox-field > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.modal-checkbox-field label {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+.modal-checkbox-field input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--lime);
+}
 .big-fact {
   display: grid;
   gap: 8px;
@@ -4107,6 +4201,9 @@ progress::-webkit-progress-value {
   .split-layout {
     grid-template-columns: 1fr;
   }
+  .hq-people-detail-grid {
+    grid-template-columns: 1fr;
+  }
   .public-hero {
     grid-template-columns: 1fr;
   }
@@ -4175,6 +4272,9 @@ progress::-webkit-progress-value {
   }
   .page-title-row {
     flex-direction: column;
+  }
+  .hq-store-switcher {
+    grid-template-columns: 1fr;
   }
   .filter-bar {
     align-items: stretch;

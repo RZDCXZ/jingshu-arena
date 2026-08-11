@@ -2262,8 +2262,28 @@ export interface HeadquartersPeopleScheduleResponse {
   readonly stores: ReadonlyArray<{
     readonly activeEmployeeCount: number;
     readonly attendanceAnomalyCount: number;
+    readonly coverage: {
+      readonly endsAt: string;
+      readonly startsAt: string;
+      readonly warnings: ReadonlyArray<ManagerCoverageWarningResponse>;
+    };
     readonly coverageWarnings: number;
+    readonly employees: ReadonlyArray<{
+      readonly active: boolean;
+      readonly displayName: string;
+      readonly employeeCode: string;
+      readonly role: ManagerPeopleFrontlineRole;
+    }>;
     readonly employeeCount: number;
+    readonly futureShifts: ReadonlyArray<{
+      readonly employee: {
+        readonly displayName: string;
+        readonly employeeCode: string;
+        readonly role: ManagerPeopleFrontlineRole;
+      };
+      readonly endsAt: string;
+      readonly startsAt: string;
+    }>;
     readonly futureShiftCount: number;
     readonly managerCount: number;
     readonly staffCount: number;

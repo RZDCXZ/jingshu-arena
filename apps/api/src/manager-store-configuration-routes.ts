@@ -214,7 +214,17 @@ function failure(error: unknown, requestId: string) {
   };
 }
 
-async function managerSession(
+function configurationRole(context: Context): "hq" | "manager" {
+  return context.req.path.startsWith("/api/v1/hq/") ? "hq" : "manager";
+}
+
+function headquartersStoreId(context: Context): string | null {
+  if (configurationRole(context) !== "hq") return null;
+  const storeId = context.req.query("storeId");
+  return storeId && UUID_V4_PATTERN.test(storeId) ? storeId : null;
+}
+
+async function configurationSession(
   context: Context,
   services: AppServices,
   requestId: string,
@@ -233,7 +243,8 @@ async function managerSession(
       session: null,
     };
   }
-  if (session.role !== "manager") {
+  const requiredRole = configurationRole(context);
+  if (session.role !== requiredRole) {
     await recordRoleContextDenial(
       services,
       session,
@@ -243,8 +254,12 @@ async function managerSession(
     return {
       response: context.json(
         errorBody(
-          "STORE_CONFIGURATION_MANAGER_REQUIRED",
-          "请切换到店长角色维护所属门店配置。",
+          requiredRole === "hq"
+            ? "STORE_CONFIGURATION_HEADQUARTERS_REQUIRED"
+            : "STORE_CONFIGURATION_MANAGER_REQUIRED",
+          requiredRole === "hq"
+            ? "请切换到总部运营角色配置固定三店。"
+            : "请切换到店长角色维护所属门店配置。",
           requestId,
         ),
         403,
@@ -543,53 +558,74 @@ export function registerManagerStoreConfigurationRoutes(
   app: Hono,
   services: AppServices,
 ) {
-  app.get("/api/v1/manager/store-configuration", async (context) => {
-    const requestId = randomUUID();
-    context.header("X-Request-Id", requestId);
-    context.header("Cache-Control", "no-store");
-    if (!services.sandboxDatabase || !services.sessionSecret) {
-      const mapped = failure(null, requestId);
-      return context.json(mapped.body, mapped.status);
-    }
-    const auth = await managerSession(context, services, requestId);
-    if (!auth.session) return auth.response;
-    try {
-      const result =
-        await services.sandboxDatabase.readManagerStoreConfiguration({
-          contextVersion: auth.session.contextVersion,
-          personaId: auth.session.personaId,
-          role: "manager",
-          sandboxId: auth.session.sandboxId,
-        });
-      return context.json({
-        ...result,
-        businessHours: {
-          ...result.businessHours,
-          effective: result.businessHours.effective.map((hours) => ({
-            ...hours,
-            effectiveFrom: hours.effectiveFrom.toISOString(),
+  app.on(
+    "GET",
+    ["/api/v1/manager/store-configuration", "/api/v1/hq/store-configuration"],
+    async (context) => {
+      const requestId = randomUUID();
+      context.header("X-Request-Id", requestId);
+      context.header("Cache-Control", "no-store");
+      if (!services.sandboxDatabase || !services.sessionSecret) {
+        const mapped = failure(null, requestId);
+        return context.json(mapped.body, mapped.status);
+      }
+      const auth = await configurationSession(context, services, requestId);
+      if (!auth.session) return auth.response;
+      const role = configurationRole(context);
+      const storeId = headquartersStoreId(context);
+      if (role === "hq" && !storeId) {
+        return context.json(
+          errorBody(
+            "STORE_CONFIGURATION_STORE_REQUIRED",
+            "请选择服务端授权的固定门店后再读取配置。",
+            requestId,
+          ),
+          422,
+        );
+      }
+      try {
+        const result =
+          await services.sandboxDatabase.readManagerStoreConfiguration({
+            contextVersion: auth.session.contextVersion,
+            personaId: auth.session.personaId,
+            role,
+            sandboxId: auth.session.sandboxId,
+            ...(storeId ? { storeId } : {}),
+          });
+        return context.json({
+          ...result,
+          businessHours: {
+            ...result.businessHours,
+            effective: result.businessHours.effective.map((hours) => ({
+              ...hours,
+              effectiveFrom: hours.effectiveFrom.toISOString(),
+            })),
+            scheduled: result.businessHours.scheduled.map((hours) => ({
+              ...hours,
+              effectiveFrom: hours.effectiveFrom.toISOString(),
+            })),
+          },
+          pricePlans: result.pricePlans.map((plan) => ({
+            ...plan,
+            effectiveFrom: plan.effectiveFrom.toISOString(),
+            effectiveUntil: plan.effectiveUntil?.toISOString() ?? null,
           })),
-          scheduled: result.businessHours.scheduled.map((hours) => ({
-            ...hours,
-            effectiveFrom: hours.effectiveFrom.toISOString(),
-          })),
-        },
-        pricePlans: result.pricePlans.map((plan) => ({
-          ...plan,
-          effectiveFrom: plan.effectiveFrom.toISOString(),
-          effectiveUntil: plan.effectiveUntil?.toISOString() ?? null,
-        })),
-        currentTime: result.currentTime.toISOString(),
-        status: "ready",
-      } satisfies ManagerStoreConfigurationResponse);
-    } catch (error) {
-      const mapped = failure(error, requestId);
-      return context.json(mapped.body, mapped.status);
-    }
-  });
+          currentTime: result.currentTime.toISOString(),
+          status: "ready",
+        } satisfies ManagerStoreConfigurationResponse);
+      } catch (error) {
+        const mapped = failure(error, requestId);
+        return context.json(mapped.body, mapped.status);
+      }
+    },
+  );
 
-  app.post(
-    "/api/v1/manager/store-configuration/price-overlap-preview",
+  app.on(
+    "POST",
+    [
+      "/api/v1/manager/store-configuration/price-overlap-preview",
+      "/api/v1/hq/store-configuration/price-overlap-preview",
+    ],
     bodyLimit({
       maxSize: 2 * 1024,
       onError: (context) => {
@@ -614,8 +650,20 @@ export function registerManagerStoreConfigurationRoutes(
         const mapped = failure(null, requestId);
         return context.json(mapped.body, mapped.status);
       }
-      const auth = await managerSession(context, services, requestId);
+      const auth = await configurationSession(context, services, requestId);
       if (!auth.session) return auth.response;
+      const role = configurationRole(context);
+      const storeId = headquartersStoreId(context);
+      if (role === "hq" && !storeId) {
+        return context.json(
+          errorBody(
+            "STORE_CONFIGURATION_STORE_REQUIRED",
+            "请选择服务端授权的固定门店后再检查价格版本。",
+            requestId,
+          ),
+          422,
+        );
+      }
       if (!services.allowedOrigins.has(context.req.header("Origin") ?? "")) {
         await recordRoleContextDenial(
           services,
@@ -671,8 +719,9 @@ export function registerManagerStoreConfigurationRoutes(
           await services.sandboxDatabase.readManagerStoreConfiguration({
             contextVersion: auth.session.contextVersion,
             personaId: auth.session.personaId,
-            role: "manager",
+            role,
             sandboxId: auth.session.sandboxId,
+            ...(storeId ? { storeId } : {}),
           });
         const effectiveFrom = new Date(body.effectiveFrom);
         const overlap = configuration.pricePlans.find(
@@ -719,8 +768,12 @@ export function registerManagerStoreConfigurationRoutes(
     },
   );
 
-  app.post(
-    "/api/v1/manager/store-configuration/commands",
+  app.on(
+    "POST",
+    [
+      "/api/v1/manager/store-configuration/commands",
+      "/api/v1/hq/store-configuration/commands",
+    ],
     bodyLimit({
       maxSize: 4 * 1024,
       onError: (context) => {
@@ -745,7 +798,7 @@ export function registerManagerStoreConfigurationRoutes(
         const mapped = failure(null, requestId);
         return context.json(mapped.body, mapped.status);
       }
-      const auth = await managerSession(context, services, requestId);
+      const auth = await configurationSession(context, services, requestId);
       if (!auth.session) return auth.response;
       if (!services.allowedOrigins.has(context.req.header("Origin") ?? "")) {
         await recordRoleContextDenial(
@@ -835,7 +888,7 @@ export function registerManagerStoreConfigurationRoutes(
               idempotencyKey,
               personaId: auth.session.personaId,
               requestId,
-              role: "manager",
+              role: configurationRole(context),
               sandboxId: auth.session.sandboxId,
             } as Parameters<
               typeof services.sandboxDatabase.executeManagerStoreConfigurationCommand
