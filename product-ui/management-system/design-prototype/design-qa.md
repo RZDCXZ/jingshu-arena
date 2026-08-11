@@ -3,7 +3,22 @@
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-11
 - 已验证契约版本：`product-ui/management-system/prod.md` 1.12
-- 验证范围：[`22 — 单店经营看板与经营日下钻`](../../../.scratch/jingshu-basic-rc/issues/22-manager-dashboard.md)；保留 ticket 21 员工/排班/考勤和更早结论
+- 验证范围：[`23 — 本店审计与筛选 CSV 导出`](../../../.scratch/jingshu-basic-rc/issues/23-manager-audit-export.md)；保留 ticket 22 单店经营看板和更早结论
+
+## Ticket 23 `WEB-M10` 对照目标与结论
+
+- 视觉方向继续使用选定源 `design/reference/selected-night-operations-console.png`，页面状态源为正式原型店长“本店审计”。应用内浏览器以精确 `1440 × 1024 CSS px` 和 `1024 × 768 CSS px` 打开正式原型与真实 Web → Hono → PostgreSQL 生产页；设备像素比为 1。
+- 两档原始证据分别保存在 `design/ticket-23-prototype-audit-1440x1024.png`、`ticket-23-implementation-audit-1440x1024.png`、`ticket-23-prototype-audit-1024x768.png` 与 `ticket-23-implementation-audit-1024x768.png`。同屏比较输入为 `ticket-23-comparison-audit-1440x1024.png`（`2880 × 1024`）和 `ticket-23-comparison-audit-1024x768.png`（`2048 × 768`）。
+- 两侧都保留“固定门店与十四日边界 → 七类组合筛选与双时间排序 → 高密度审计表 → 安全详情检查器 → 筛选 CSV 导出”的信息层级。生产数据来自真实沙箱，因此记录数量和请求 ID 与正式样例不同；海军蓝高密度壳层、青色信息反馈、青柠唯一主动作、琥珀/红色风险、正式品牌资产和 Phosphor 图标保持一致。
+- 真实路径验证角色筛选缩小结果、双时间排序切换、清除筛选和安全前后差异。检查器只显示白名单业务字段、原因、沙箱/门店和请求关联 ID，不显示 Cookie、令牌、Secret、图片内容、完整请求体、SQL 或其他未授权自由文本。
+- 导出确认覆盖预约、订单、库存流水、报修、排班和审计六种数据类型；审计导出复用页面当前结果筛选与排序，其他类型使用各自搜索、状态和排序控件。弹窗持续展示固定棱镜旗舰店、经营日范围和预计行数，初始焦点、Tab 循环、Escape 与触发器焦点返回均通过。
+- `design/ticket-23-export-ready-1024x768.png`、`ticket-23-export-failure-1024x768.png` 和 `ticket-23-export-success-1024x768.png` 分别记录预览就绪、受控网络失败与原筛选重试成功。失败时没有声称已下载，原类型/筛选/范围均保留；恢复网络后相同请求成功返回文件名、行数并追加导出审计。故障注入后已恢复浏览器网络规则。
+- 两档视口均有 `bodyScrollWidth = bodyClientWidth`，没有页面级横向溢出或被裁切的主操作；表格与检查器在窄档使用受控内部布局。干净生产标签在筛选、排序、详情、预览、失败和成功后 warning/error 均为 0。
+- 第 1 轮 P1 已关闭：生产主动作最初被共享壳层的透明按钮样式覆盖，网络断开时也暴露浏览器英文错误；局部按钮层级和安全中文错误映射修复后，导出入口恢复青柠主动作，失败状态只显示可操作的本地化说明。
+- 第 1 轮 P2 已关闭：筛选摘要曾显示不自然的“无 项筛选”，窄档筛选、表格和检查器密度也高于正式源；最终文案改为“无筛选”，并在 `1024px` 断点收敛筛选轨道、表格最小宽度和检查器层级。当前没有仍需处理的 P0、P1 或 P2 差异。
+- 完整 `pnpm verify` 通过：331 个 Vitest 单元测试、2 个开发启动测试、172 个真实 PostgreSQL/API 集成测试、2 个设计内容基线测试与 56 个 Chromium E2E；全部格式、lint、strict TypeScript、构建、工作区边界与敏感数据扫描通过，high 级依赖审计仅报告 1 个不阻塞门禁的 moderate 漏洞。正式管理端原型生产构建与 4 个 Sites 包装测试通过。
+
+final result: passed
 
 ## Ticket 22 `WEB-M01` 对照目标与结论
 

@@ -5,9 +5,12 @@ import type {
   CustomerReservationStatus,
   HandoverCommandResponse,
   HeadquartersPeopleScheduleResponse,
+  ManagerAuditResponse,
   ManagerHandoverExceptionsResponse,
   ManagerDashboardResponse,
   ManagerDashboardDrilldownKind,
+  ManagerExportPreviewResponse,
+  ManagerExportRequest,
   ManagerPeopleCommandRequest,
   ManagerPeopleScheduleResponse,
   ManagerShiftCoveragePreviewRequest,
@@ -777,6 +780,157 @@ test.beforeEach(async ({ context }) => {
     } satisfies ManagerDashboardResponse;
   }
 
+  function managerAuditPayload(requestUrl: string) {
+    const url = new URL(requestUrl);
+    const from = url.searchParams.get("from") ?? managerDashboardKeys[0];
+    const to = url.searchParams.get("to") ?? managerDashboardKeys.at(-1)!;
+    const role = url.searchParams.get("role");
+    const action = url.searchParams.get("action");
+    const objectType = url.searchParams.get("objectType");
+    const result = url.searchParams.get("result");
+    const managerId = "00000000-0000-4000-8000-000000000231";
+    const staffId = "00000000-0000-4000-8000-000000000232";
+    const events: ManagerAuditResponse["events"] = [
+      {
+        action: "export.csv",
+        actor: { displayName: "许知远", personaId: managerId },
+        after: {
+          dataType: "audits",
+          fromBusinessDay: "2026-07-27",
+          rowCount: 18,
+          toBusinessDay: "2026-08-09",
+        },
+        before: null,
+        businessOccurredAt: "2026-08-09T11:28:00.000Z",
+        eventId: "00000000-0000-4000-8000-000000000241",
+        objectId: null,
+        objectType: "export",
+        reason: null,
+        recordedAt: "2026-08-09T11:28:01.000Z",
+        requestId: "00000000-0000-4000-8000-000000000251",
+        result: "allowed",
+        role: "manager",
+        store: {
+          code: "prism-flagship",
+          displayName: "棱镜旗舰店",
+          storeId,
+        },
+      },
+      {
+        action: "repair.verify",
+        actor: { displayName: "许知远", personaId: managerId },
+        after: { operationalStatus: "normal", status: "verified" },
+        before: { operationalStatus: "maintenance", status: "resolved" },
+        businessOccurredAt: "2026-08-09T10:46:00.000Z",
+        eventId: "00000000-0000-4000-8000-000000000242",
+        objectId: "00000000-0000-4000-8000-000000000261",
+        objectType: "repair",
+        reason: null,
+        recordedAt: "2026-08-09T10:46:03.000Z",
+        requestId: "00000000-0000-4000-8000-000000000252",
+        result: "allowed",
+        role: "manager",
+        store: {
+          code: "prism-flagship",
+          displayName: "棱镜旗舰店",
+          storeId,
+        },
+      },
+      {
+        action: "inventory.adjust",
+        actor: { displayName: "周宁", personaId: staffId },
+        after: { availableQuantity: 3, quantity: -2 },
+        before: { availableQuantity: 5 },
+        businessOccurredAt: "2026-08-08T16:05:00.000Z",
+        eventId: "00000000-0000-4000-8000-000000000243",
+        objectId: "00000000-0000-4000-8000-000000000262",
+        objectType: "inventory",
+        reason: "交接盘点修正",
+        recordedAt: "2026-08-08T16:05:04.000Z",
+        requestId: "00000000-0000-4000-8000-000000000253",
+        result: "allowed",
+        role: "staff",
+        store: {
+          code: "prism-flagship",
+          displayName: "棱镜旗舰店",
+          storeId,
+        },
+      },
+      {
+        action: "repair.verify",
+        actor: { displayName: "周宁", personaId: staffId },
+        after: null,
+        before: null,
+        businessOccurredAt: "2026-08-08T15:42:00.000Z",
+        eventId: "00000000-0000-4000-8000-000000000244",
+        objectId: null,
+        objectType: "repair",
+        reason: "capability-denied",
+        recordedAt: "2026-08-08T15:42:01.000Z",
+        requestId: "00000000-0000-4000-8000-000000000254",
+        result: "denied",
+        role: "staff",
+        store: {
+          code: "prism-flagship",
+          displayName: "棱镜旗舰店",
+          storeId,
+        },
+      },
+    ];
+    const filtered = events.filter(
+      (event) =>
+        (!role || event.role === role) &&
+        (!action || event.action === action) &&
+        (!objectType || event.objectType === objectType) &&
+        (!result || event.result === result),
+    );
+    return {
+      availableBusinessDays: managerDashboardKeys.map((key) => {
+        const startsAt = new Date(key + "T06:00:00.000+08:00");
+        return {
+          endsAt: new Date(startsAt.getTime() + 24 * 60 * 60_000).toISOString(),
+          key,
+          startsAt: startsAt.toISOString(),
+        };
+      }),
+      currentTime: businessTime,
+      events: filtered,
+      filterOptions: {
+        actions: ["export.csv", "inventory.adjust", "repair.verify"],
+        objectTypes: ["export", "inventory", "repair"],
+        personas: [
+          { displayName: "许知远", personaId: managerId },
+          { displayName: "周宁", personaId: staffId },
+        ],
+        roles: ["manager", "staff"],
+      },
+      range: {
+        endsAt: new Date(to + "T06:00:00.000+08:00").toISOString(),
+        fromBusinessDay: from,
+        startsAt: new Date(from + "T06:00:00.000+08:00").toISOString(),
+        toBusinessDay: to,
+      },
+      sort: {
+        direction: url.searchParams.get("sort")?.endsWith(":asc")
+          ? "asc"
+          : "desc",
+        field:
+          (url.searchParams
+            .get("sort")
+            ?.split(":")[0] as ManagerAuditResponse["sort"]["field"]) ??
+          "businessOccurredAt",
+      },
+      status: "ready",
+      store: {
+        code: "prism-flagship",
+        displayName: "棱镜旗舰店",
+        fixed: true,
+        storeId,
+      },
+      totalCount: filtered.length,
+    } satisfies ManagerAuditResponse;
+  }
+
   function staffOrderDetail(
     row: MutableStaffOrderSummary,
   ): StaffOrderDetailResponse {
@@ -1335,6 +1489,76 @@ test.beforeEach(async ({ context }) => {
     expect(currentRole).toBe("manager");
     await route.fulfill({
       json: managerDashboardPayload(route.request().url()),
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/manager/audits**", async (route) => {
+    expect(currentRole).toBe("manager");
+    await route.fulfill({
+      json: managerAuditPayload(route.request().url()),
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/manager/exports/preview", async (route) => {
+    expect(currentRole).toBe("manager");
+    expect(route.request().headers()["x-csrf-token"]).toBe(csrfToken);
+    const body = route.request().postDataJSON() as ManagerExportRequest;
+    const rowCount =
+      body.dataType === "audits"
+        ? body.filters.result === "denied"
+          ? 1
+          : 4
+        : 12;
+    await route.fulfill({
+      json: {
+        dataType: body.dataType,
+        estimatedRowCount: rowCount,
+        range: {
+          endsAt: new Date(
+            body.toBusinessDay + "T06:00:00.000+08:00",
+          ).toISOString(),
+          fromBusinessDay: body.fromBusinessDay,
+          startsAt: new Date(
+            body.fromBusinessDay + "T06:00:00.000+08:00",
+          ).toISOString(),
+          toBusinessDay: body.toBusinessDay,
+        },
+        status: "ready",
+        store: {
+          code: "prism-flagship",
+          displayName: "棱镜旗舰店",
+          storeId,
+        },
+      } satisfies ManagerExportPreviewResponse,
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/manager/exports", async (route) => {
+    expect(currentRole).toBe("manager");
+    expect(route.request().headers()["x-csrf-token"]).toBe(csrfToken);
+    const body = route.request().postDataJSON() as ManagerExportRequest;
+    const rowCount =
+      body.dataType === "audits"
+        ? body.filters.result === "denied"
+          ? 1
+          : 4
+        : 12;
+    await route.fulfill({
+      body:
+        "\uFEFF业务发生时间,服务端记录时间,动作\r\n" +
+        "2026-08-09 19:28:00 +08:00,2026-08-09 19:28:01 +08:00,export.csv\r\n",
+      headers: {
+        "Content-Disposition":
+          'attachment; filename="jingshu-' +
+          body.dataType +
+          "-" +
+          body.fromBusinessDay +
+          "-" +
+          body.toBusinessDay +
+          '.csv"',
+        "Content-Type": "text/csv; charset=utf-8",
+        "X-Export-Row-Count": String(rowCount),
+      },
       status: 200,
     });
   });
@@ -2504,6 +2728,12 @@ async function enterManagerDashboard(page: Page) {
   await expect(page.getByText("模拟营业额", { exact: true })).toBeVisible();
 }
 
+async function enterManagerAudit(page: Page) {
+  await enterManagerDashboard(page);
+  await page.getByRole("button", { name: "审计与导出" }).click();
+  await expect(page.getByRole("heading", { name: "审计与导出" })).toBeVisible();
+}
+
 test("manager dashboard keeps real metrics, ranges and drilldowns in one store context", async ({
   page,
 }) => {
@@ -2511,9 +2741,13 @@ test("manager dashboard keeps real metrics, ranges and drilldowns in one store c
   await enterManagerDashboard(page);
 
   await expect(page.getByText("运营座位利用率", { exact: true })).toBeVisible();
-  await expect(page.getByText("维护不可用率", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /维护不可用率/u }),
+  ).toBeVisible();
   await expect(page.getByText("订单完成率", { exact: true })).toBeVisible();
-  await expect(page.getByText("3 人次", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "考勤 3 人次迟到或缺勤" }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "最近 7 日" }).click();
   await expect(page.getByText(/2026-08-03 至 2026-08-09/u)).toBeVisible();
@@ -2548,10 +2782,9 @@ test("manager dashboard keeps real metrics, ranges and drilldowns in one store c
 test("manager dashboard failure stays actionable and retries without fallback data", async ({
   page,
 }) => {
-  let first = true;
+  let failDashboard = true;
   await page.route("**/api/v1/manager/dashboard**", async (route) => {
-    if (first) {
-      first = false;
+    if (failDashboard) {
       await route.fulfill({
         json: {
           error: {
@@ -2579,8 +2812,93 @@ test("manager dashboard failure stays actionable and retries without fallback da
     }),
   ).toBeVisible();
   await expect(page.getByText("经营事实服务暂时不可用。")).toBeVisible();
+  failDashboard = false;
   await page.getByRole("button", { name: "重新读取经营看板" }).click();
   await expect(page.getByRole("heading", { name: "经营看板" })).toBeVisible();
+});
+
+test("manager audit keeps dual-time evidence and retries the same scoped CSV export", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  const previewBodies: ManagerExportRequest[] = [];
+  let exportAttempts = 0;
+  await page.route("**/api/v1/manager/exports/preview", async (route) => {
+    previewBodies.push(route.request().postDataJSON() as ManagerExportRequest);
+    await route.fallback();
+  });
+  await page.route("**/api/v1/manager/exports", async (route) => {
+    exportAttempts += 1;
+    if (exportAttempts === 1) {
+      await route.fulfill({
+        json: {
+          error: {
+            code: "MANAGER_EXPORT_SERVICE_UNAVAILABLE",
+            message: "导出暂时失败；筛选保持不变，请使用相同范围重试。",
+            requestId: crypto.randomUUID(),
+          },
+        },
+        status: 503,
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await enterManagerAudit(page);
+  await expect(page.getByText("4 条服务端记录")).toBeVisible();
+  await expect(page.getByText("录入", { exact: false }).first()).toBeVisible();
+  await page
+    .getByRole("button", {
+      name: "查看 周宁 的 repair.verify 审计详情",
+    })
+    .click();
+  await expect(page.getByText("capability-denied")).toBeVisible();
+  await expect(page.getByText("变更前")).toBeVisible();
+  await expect(
+    page.getByText(/凭据、原始请求体与图片内容不会进入详情/u),
+  ).toBeVisible();
+
+  await page.getByLabel("按结果筛选审计").selectOption("denied");
+  await expect(page.getByText("1 条服务端记录")).toBeVisible();
+  await expect(
+    page
+      .getByRole("table", { name: "本店审计记录" })
+      .getByText("inventory.adjust", { exact: true }),
+  ).toHaveCount(0);
+
+  const exportTrigger = page.getByRole("button", { name: "导出 CSV" });
+  await exportTrigger.click();
+  const dialog = page.getByRole("dialog", {
+    name: "导出当前门店数据",
+  });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "关闭导出" })).toBeFocused();
+  await expect(dialog.getByLabel("导出门店")).toHaveValue("棱镜旗舰店 · 固定");
+  await expect(dialog.getByText(/可导出 1 行 · 审计记录/u)).toBeVisible();
+  expect(previewBodies.at(-1)?.filters).toEqual({ result: "denied" });
+
+  await dialog.getByRole("button", { name: "生成并下载 CSV" }).click();
+  await expect(
+    dialog.getByText("导出暂时失败；筛选保持不变，请使用相同范围重试。"),
+  ).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "使用相同筛选重试" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe(
+    "jingshu-audits-2026-07-27-2026-08-09.csv",
+  );
+  await expect(dialog.getByText("导出完成 · 1 行")).toBeVisible();
+  await expect(dialog.getByText(/导出审计已写入/u)).toBeVisible();
+  await dialog.getByRole("button", { name: "完成" }).click();
+  await expect(exportTrigger).toBeFocused();
+
+  const widths = await page.evaluate(() => ({
+    client: document.body.clientWidth,
+    scroll: document.body.scrollWidth,
+  }));
+  expect(widths.scroll).toBe(widths.client);
 });
 
 test("staff sees own shift summary, explicit simulation boundary and manual attendance actions", async ({

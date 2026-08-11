@@ -37,6 +37,7 @@ import {
   ManagerPeopleSchedule,
 } from "./manager-people-schedule";
 import { ManagerDashboard } from "./manager-dashboard";
+import { ManagerAuditExport } from "./manager-audit-export";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -653,6 +654,12 @@ export function RoleContextShell({
           ) : context.role.id === "manager" &&
             activePage === "people-schedule" ? (
             <ManagerPeopleSchedule
+              csrfToken={context.csrfToken}
+              onToast={setToast}
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+            />
+          ) : context.role.id === "manager" && activePage === "store-audit" ? (
+            <ManagerAuditExport
               csrfToken={context.csrfToken}
               onToast={setToast}
               refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}

@@ -169,6 +169,13 @@
       "when": 1786442400000,
       "tag": "0023_manager_people_schedule",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786446000000,
+      "tag": "0024_manager_audit_export",
+      "breakpoints": true
     }
   ]
 }

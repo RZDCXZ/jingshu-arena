@@ -38,7 +38,7 @@ const customerContext: RoleContextReadyResponse = {
       timeZone: "Asia/Shanghai",
     },
     expiresAt: "2026-08-11T11:47:23.000Z",
-    schemaVersion: "20",
+    schemaVersion: "21",
     seedVersion: "2026-08-11.5",
   },
   status: "ready",

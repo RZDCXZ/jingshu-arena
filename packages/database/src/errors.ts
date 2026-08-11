@@ -357,6 +357,23 @@ export class ManagerDashboardRangeError extends Error {
   }
 }
 
+export type ManagerAuditExportReason =
+  | "invalid-filter"
+  | "outside-seed-range"
+  | "reversed-range"
+  | "store-not-found";
+
+export class ManagerAuditExportError extends Error {
+  readonly code = "MANAGER_AUDIT_EXPORT_INVALID";
+  readonly reason: ManagerAuditExportReason;
+
+  constructor(reason: ManagerAuditExportReason) {
+    super(`Manager audit or export request was rejected: ${reason}.`);
+    this.name = "ManagerAuditExportError";
+    this.reason = reason;
+  }
+}
+
 export type RepairIntakeConflictReason =
   | "description-invalid"
   | "idempotency-conflict"

@@ -2267,7 +2267,7 @@ export const auditEvents = pgTable(
     afterData: jsonb("after_data"),
     businessOccurredAt: timestamp("business_occurred_at", {
       withTimezone: true,
-    }),
+    }).notNull(),
     recordedAt: timestamp("recorded_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -2278,6 +2278,18 @@ export const auditEvents = pgTable(
       sql`${table.role} IN ('customer', 'staff', 'manager', 'hq')`,
     ),
     check("audit_events_result", sql`${table.result} IN ('allowed', 'denied')`),
+    index("audit_events_store_business_idx").on(
+      table.sandboxId,
+      table.storeId,
+      table.businessOccurredAt,
+      table.id,
+    ),
+    index("audit_events_store_recorded_idx").on(
+      table.sandboxId,
+      table.storeId,
+      table.recordedAt,
+      table.id,
+    ),
     pgPolicy("audit_events_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,

@@ -1933,6 +1933,137 @@ export interface ManagerDashboardResponse {
   readonly trend: ReadonlyArray<ManagerDashboardDayResponse>;
 }
 
+export const MANAGER_EXPORT_DATA_TYPES = [
+  "reservations",
+  "orders",
+  "inventoryMovements",
+  "repairs",
+  "shifts",
+  "audits",
+] as const;
+
+export type ManagerExportDataType = (typeof MANAGER_EXPORT_DATA_TYPES)[number];
+
+export const MANAGER_AUDIT_RESULTS = ["allowed", "denied"] as const;
+export type ManagerAuditResult = (typeof MANAGER_AUDIT_RESULTS)[number];
+
+export const MANAGER_EXPORT_SORT_FIELDS = [
+  "businessOccurredAt",
+  "recordedAt",
+  "persona",
+  "role",
+  "action",
+  "objectType",
+  "result",
+  "amountCents",
+  "status",
+] as const;
+
+export type ManagerExportSortField =
+  (typeof MANAGER_EXPORT_SORT_FIELDS)[number];
+export type ManagerExportSortDirection = "asc" | "desc";
+
+export interface ManagerAuditFilters {
+  readonly action?: string;
+  readonly objectType?: string;
+  readonly personaId?: string;
+  readonly result?: ManagerAuditResult;
+  readonly role?: PublicRole;
+}
+
+export interface ManagerAuditEventResponse {
+  readonly action: string;
+  readonly actor: {
+    readonly displayName: string;
+    readonly personaId: string | null;
+  };
+  readonly after: Record<string, unknown> | null;
+  readonly before: Record<string, unknown> | null;
+  readonly businessOccurredAt: string;
+  readonly eventId: string;
+  readonly objectId: string | null;
+  readonly objectType: string;
+  readonly reason: string | null;
+  readonly recordedAt: string;
+  readonly requestId: string;
+  readonly result: ManagerAuditResult;
+  readonly role: PublicRole;
+  readonly store: {
+    readonly code: string;
+    readonly displayName: string;
+    readonly storeId: string;
+  };
+}
+
+export interface ManagerAuditResponse {
+  readonly status: "ready";
+  readonly availableBusinessDays: ReadonlyArray<{
+    readonly endsAt: string;
+    readonly key: string;
+    readonly startsAt: string;
+  }>;
+  readonly currentTime: string;
+  readonly events: ReadonlyArray<ManagerAuditEventResponse>;
+  readonly filterOptions: {
+    readonly actions: ReadonlyArray<string>;
+    readonly objectTypes: ReadonlyArray<string>;
+    readonly personas: ReadonlyArray<{
+      readonly displayName: string;
+      readonly personaId: string;
+    }>;
+    readonly roles: ReadonlyArray<PublicRole>;
+  };
+  readonly range: {
+    readonly endsAt: string;
+    readonly fromBusinessDay: string;
+    readonly startsAt: string;
+    readonly toBusinessDay: string;
+  };
+  readonly sort: {
+    readonly direction: ManagerExportSortDirection;
+    readonly field: ManagerExportSortField;
+  };
+  readonly store: {
+    readonly code: string;
+    readonly displayName: string;
+    readonly fixed: true;
+    readonly storeId: string;
+  };
+  readonly totalCount: number;
+}
+
+export interface ManagerExportRequest {
+  readonly dataType: ManagerExportDataType;
+  readonly filters: ManagerAuditFilters & {
+    readonly search?: string;
+    readonly status?: string;
+  };
+  readonly fromBusinessDay: string;
+  readonly sort: {
+    readonly direction: ManagerExportSortDirection;
+    readonly field: ManagerExportSortField;
+  };
+  readonly storeId: string;
+  readonly toBusinessDay: string;
+}
+
+export interface ManagerExportPreviewResponse {
+  readonly dataType: ManagerExportDataType;
+  readonly estimatedRowCount: number;
+  readonly range: {
+    readonly endsAt: string;
+    readonly fromBusinessDay: string;
+    readonly startsAt: string;
+    readonly toBusinessDay: string;
+  };
+  readonly status: "ready";
+  readonly store: {
+    readonly code: string;
+    readonly displayName: string;
+    readonly storeId: string;
+  };
+}
+
 export type ManagerPeopleFrontlineRole = "manager" | "staff";
 
 export interface ManagerCoverageWarningResponse {

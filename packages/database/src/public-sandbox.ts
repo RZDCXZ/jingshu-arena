@@ -4,7 +4,12 @@ import pg from "pg";
 import type { PoolClient } from "pg";
 import type {
   FrontlineReservationAction,
+  ManagerAuditFilters,
+  ManagerAuditResult,
   ManagerDashboardDrilldownKind,
+  ManagerExportDataType,
+  ManagerExportSortDirection,
+  ManagerExportSortField,
   PublicRole,
   RepairImageContentType,
   StaffOrderAction,
@@ -70,6 +75,7 @@ import {
   FrontlineReservationConflictError,
   ManagerInventoryConflictError,
   type ManagerInventoryConflictReason,
+  ManagerAuditExportError,
   ManagerDashboardRangeError,
   ManagerStoreConfigurationConflictError,
   type ManagerStoreConfigurationConflictReason,
@@ -1076,6 +1082,109 @@ export interface ReadManagerDashboardInput extends ReadStaffReservationWorkbench
   readonly toBusinessDay?: string;
 }
 
+export interface ReadManagerAuditsInput extends ReadStaffReservationWorkbenchInput {
+  readonly filters: ManagerAuditFilters;
+  readonly fromBusinessDay?: string;
+  readonly sort: {
+    readonly direction: ManagerExportSortDirection;
+    readonly field: ManagerExportSortField;
+  };
+  readonly storeId: string;
+  readonly toBusinessDay?: string;
+}
+
+export interface DatabaseManagerAuditEvent {
+  readonly action: string;
+  readonly actor: {
+    readonly displayName: string;
+    readonly personaId: string | null;
+  };
+  readonly after: Record<string, unknown> | null;
+  readonly before: Record<string, unknown> | null;
+  readonly businessOccurredAt: Date;
+  readonly eventId: string;
+  readonly objectId: string | null;
+  readonly objectType: string;
+  readonly reason: string | null;
+  readonly recordedAt: Date;
+  readonly requestId: string;
+  readonly result: ManagerAuditResult;
+  readonly role: PublicRole;
+  readonly store: {
+    readonly code: string;
+    readonly displayName: string;
+    readonly storeId: string;
+  };
+}
+
+export interface DatabaseManagerAudits {
+  readonly availableBusinessDays: ReturnType<
+    typeof managerDashboardBusinessDays
+  >;
+  readonly currentTime: Date;
+  readonly events: ReadonlyArray<DatabaseManagerAuditEvent>;
+  readonly filterOptions: {
+    readonly actions: ReadonlyArray<string>;
+    readonly objectTypes: ReadonlyArray<string>;
+    readonly personas: ReadonlyArray<{
+      readonly displayName: string;
+      readonly personaId: string;
+    }>;
+    readonly roles: ReadonlyArray<PublicRole>;
+  };
+  readonly range: {
+    readonly endsAt: Date;
+    readonly fromBusinessDay: string;
+    readonly startsAt: Date;
+    readonly toBusinessDay: string;
+  };
+  readonly sort: ReadManagerAuditsInput["sort"];
+  readonly store: {
+    readonly code: string;
+    readonly displayName: string;
+    readonly storeId: string;
+  };
+  readonly totalCount: number;
+}
+
+export interface ManagerExportInput extends ReadStaffReservationWorkbenchInput {
+  readonly dataType: ManagerExportDataType;
+  readonly filters: ManagerAuditFilters & {
+    readonly search?: string;
+    readonly status?: string;
+  };
+  readonly fromBusinessDay: string;
+  readonly requestId?: string;
+  readonly sort: {
+    readonly direction: ManagerExportSortDirection;
+    readonly field: ManagerExportSortField;
+  };
+  readonly storeId: string;
+  readonly toBusinessDay: string;
+}
+
+export type ManagerExportCellKind = "datetime" | "json" | "money" | "text";
+
+export interface DatabaseManagerExport {
+  readonly columns: ReadonlyArray<{
+    readonly header: string;
+    readonly kind: ManagerExportCellKind;
+  }>;
+  readonly dataType: ManagerExportDataType;
+  readonly range: {
+    readonly endsAt: Date;
+    readonly fromBusinessDay: string;
+    readonly startsAt: Date;
+    readonly toBusinessDay: string;
+  };
+  readonly rows: ReadonlyArray<ReadonlyArray<Date | number | string | null>>;
+  readonly store: {
+    readonly code: string;
+    readonly displayName: string;
+    readonly storeId: string;
+  };
+}
+
 export interface DatabaseManagerDashboard {
   readonly availableBusinessDays: ReadonlyArray<{
     readonly endsAt: Date;
@@ -2032,13 +2141,19 @@ export interface SwitchRoleContextInput extends ReadRoleContextInput {
 }
 
 export interface RecordRoleContextDenialInput extends ReadRoleContextInput {
-  action?: "role_capability.check" | "role_context.write";
+  action?:
+    | "audit.read"
+    | "export.csv"
+    | "role_capability.check"
+    | "role_context.write";
   objectId?: string | null;
-  objectType?: "demo_persona" | "role_context" | "sandbox" | "store";
+  objectType?:
+    "audit" | "demo_persona" | "export" | "role_context" | "sandbox" | "store";
   requestId: string;
   reason:
     | "capability_denied"
     | "context_version_stale"
+    | "cross-store-or-not-found"
     | "csrf_context_mismatch"
     | "forged_context_fields"
     | "invalid_origin";
@@ -2211,6 +2326,15 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readManagerDashboard(
     input: ReadManagerDashboardInput,
   ): Promise<DatabaseManagerDashboard>;
+  readManagerAudits(
+    input: ReadManagerAuditsInput,
+  ): Promise<DatabaseManagerAudits>;
+  prepareManagerExport(
+    input: ManagerExportInput,
+  ): Promise<DatabaseManagerExport>;
+  createManagerExport(
+    input: ManagerExportInput & { readonly requestId: string },
+  ): Promise<DatabaseManagerExport>;
   readManagerPeopleSchedule(
     input: ReadManagerPeopleScheduleInput,
   ): Promise<DatabaseManagerPeopleSchedule>;
@@ -8324,6 +8448,573 @@ async function materializePublicSandbox(input: {
   );
 }
 
+const auditDiffAllowedKeys = new Set([
+  "action",
+  "active",
+  "amountCents",
+  "availableQuantity",
+  "businessTime",
+  "configVersion",
+  "contextVersion",
+  "correctedBusinessAt",
+  "correctionKind",
+  "dataType",
+  "daySet",
+  "effectiveFrom",
+  "endsAt",
+  "endsNextDay",
+  "employeeCode",
+  "employeeRole",
+  "expectedVersion",
+  "filters",
+  "fromBusinessDay",
+  "isOpen24Hours",
+  "lifecycleStatus",
+  "listed",
+  "lowStockThreshold",
+  "movementKind",
+  "onHandAfter",
+  "onHandDelta",
+  "onHandQuantity",
+  "objectType",
+  "outcome",
+  "personaId",
+  "priority",
+  "quantity",
+  "reservedQuantity",
+  "resetToRole",
+  "result",
+  "role",
+  "rowCount",
+  "search",
+  "seedVersion",
+  "sortDirection",
+  "sortField",
+  "startsAt",
+  "status",
+  "toBusinessDay",
+  "unitPriceCents",
+  "version",
+  "weekdayHalfHourCents",
+  "weekendHalfHourCents",
+]);
+
+function sanitizeAuditValue(value: unknown, depth = 0): unknown {
+  if (depth > 3 || value === null) return value === null ? null : undefined;
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return typeof value === "string" ? value.slice(0, 200) : value;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, 50)
+      .map((item) => sanitizeAuditValue(item, depth + 1))
+      .filter((item) => item !== undefined);
+  }
+  if (typeof value !== "object") return undefined;
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!auditDiffAllowedKeys.has(key)) continue;
+    const safe = sanitizeAuditValue(item, depth + 1);
+    if (safe !== undefined) sanitized[key] = safe;
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+function sanitizeAuditRecord(value: unknown): Record<string, unknown> | null {
+  const sanitized = sanitizeAuditValue(value);
+  return sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)
+    ? (sanitized as Record<string, unknown>)
+    : null;
+}
+
+function sanitizeAuditReason(value: string | null): string | null {
+  if (!value) return null;
+  return isSafePlainTextReason(value)
+    ? value
+    : "已记录业务原因（内容已安全隐藏）";
+}
+
+function managerBusinessDaySelection(
+  currentTime: Date,
+  fromBusinessDay?: string,
+  toBusinessDay?: string,
+) {
+  const availableBusinessDays = managerDashboardBusinessDays(currentTime);
+  if (
+    (fromBusinessDay && !toBusinessDay) ||
+    (!fromBusinessDay && toBusinessDay)
+  ) {
+    throw new ManagerAuditExportError("invalid-filter");
+  }
+  const from = fromBusinessDay ?? availableBusinessDays.at(-1)!.key;
+  const to = toBusinessDay ?? availableBusinessDays.at(-1)!.key;
+  const fromIndex = availableBusinessDays.findIndex((day) => day.key === from);
+  const toIndex = availableBusinessDays.findIndex((day) => day.key === to);
+  if (fromIndex < 0 || toIndex < 0) {
+    throw new ManagerAuditExportError("outside-seed-range");
+  }
+  if (fromIndex > toIndex) {
+    throw new ManagerAuditExportError("reversed-range");
+  }
+  return {
+    availableBusinessDays,
+    endsAt: availableBusinessDays[toIndex]!.endsAt,
+    fromBusinessDay: from,
+    startsAt: availableBusinessDays[fromIndex]!.startsAt,
+    toBusinessDay: to,
+  };
+}
+
+interface ManagerScopedStore {
+  code: string;
+  display_name: string;
+  id: string;
+}
+
+async function managerStoreWithClient(
+  client: PoolClient,
+  input: ReadStaffReservationWorkbenchInput & { readonly storeId: string },
+  wallTime: Date,
+) {
+  const context = await assertFrontlineContext(client, input, wallTime);
+  if (input.role !== "manager") throw new RoleContextStaleError();
+  if (input.storeId !== context.actorStoreId) {
+    throw new ManagerAuditExportError("store-not-found");
+  }
+  const store = await client.query<ManagerScopedStore>(
+    `select id, code, display_name from stores
+      where sandbox_id = $1 and id = $2`,
+    [input.sandboxId, context.actorStoreId],
+  );
+  const storeRow = store.rows[0];
+  if (!storeRow) throw new RoleContextUnavailableError();
+  return { context, store: storeRow };
+}
+
+interface ManagerAuditRow {
+  action: string;
+  actor_display_name: string | null;
+  after_data: unknown;
+  before_data: unknown;
+  business_occurred_at: Date;
+  id: string;
+  object_id: string | null;
+  object_type: string;
+  persona_id: string | null;
+  reason: string | null;
+  recorded_at: Date;
+  request_id: string;
+  result: ManagerAuditResult;
+  role: PublicRole;
+  store_code: string;
+  store_display_name: string;
+  store_id: string;
+}
+
+function auditOrderBy(sort: ReadManagerAuditsInput["sort"]) {
+  const expressions: Record<ManagerExportSortField, string> = {
+    action: "audit.action",
+    amountCents: "audit.business_occurred_at",
+    businessOccurredAt: "audit.business_occurred_at",
+    objectType: "audit.object_type",
+    persona: "coalesce(persona.display_name, '系统')",
+    recordedAt: "audit.recorded_at",
+    result: "audit.result",
+    role: "audit.role",
+    status: "audit.business_occurred_at",
+  };
+  return `${expressions[sort.field]} ${sort.direction}, audit.id ${sort.direction}`;
+}
+
+async function managerAuditRowsWithClient(
+  client: PoolClient,
+  input: ReadManagerAuditsInput,
+  range: { readonly endsAt: Date; readonly startsAt: Date },
+) {
+  const rows = await client.query<ManagerAuditRow>(
+    `select audit.id, audit.action, audit.object_type, audit.object_id,
+            audit.result, audit.reason, audit.request_id, audit.before_data,
+            audit.after_data, audit.business_occurred_at, audit.recorded_at,
+            audit.role, audit.persona_id,
+            persona.display_name as actor_display_name,
+            store.id as store_id, store.code as store_code,
+            store.display_name as store_display_name
+       from audit_events audit
+       join stores store on store.id = audit.store_id
+       left join demo_personas persona on persona.id = audit.persona_id
+      where audit.sandbox_id = $1 and audit.store_id = $2
+        and audit.business_occurred_at >= $3
+        and audit.business_occurred_at < $4
+        and ($5::uuid is null or audit.persona_id = $5)
+        and ($6::text is null or audit.role = $6)
+        and ($7::text is null or audit.action = $7)
+        and ($8::text is null or audit.object_type = $8)
+        and ($9::text is null or audit.result = $9)
+      order by ${auditOrderBy(input.sort)}`,
+    [
+      input.sandboxId,
+      input.storeId,
+      range.startsAt,
+      range.endsAt,
+      input.filters.personaId ?? null,
+      input.filters.role ?? null,
+      input.filters.action ?? null,
+      input.filters.objectType ?? null,
+      input.filters.result ?? null,
+    ],
+  );
+  return rows.rows.map((row): DatabaseManagerAuditEvent => ({
+    action: row.action,
+    actor: {
+      displayName: row.actor_display_name ?? "系统",
+      personaId: row.persona_id,
+    },
+    after: sanitizeAuditRecord(row.after_data),
+    before: sanitizeAuditRecord(row.before_data),
+    businessOccurredAt: row.business_occurred_at,
+    eventId: row.id,
+    objectId: row.object_id,
+    objectType: row.object_type,
+    reason: sanitizeAuditReason(row.reason),
+    recordedAt: row.recorded_at,
+    requestId: row.request_id,
+    result: row.result,
+    role: row.role,
+    store: {
+      code: row.store_code,
+      displayName: row.store_display_name,
+      storeId: row.store_id,
+    },
+  }));
+}
+
+const exportColumns = {
+  audits: [
+    ["经营日", "text"],
+    ["业务发生时间", "datetime"],
+    ["服务器记录时间", "datetime"],
+    ["演示人物", "text"],
+    ["角色", "text"],
+    ["门店", "text"],
+    ["动作", "text"],
+    ["对象类型", "text"],
+    ["对象ID", "text"],
+    ["结果", "text"],
+    ["原因", "text"],
+    ["请求关联ID", "text"],
+    ["变更前", "json"],
+    ["变更后", "json"],
+  ],
+  inventoryMovements: [
+    ["经营日", "text"],
+    ["流水ID", "text"],
+    ["库存项目", "text"],
+    ["流水类型", "text"],
+    ["数量变化", "text"],
+    ["变动后账面库存", "text"],
+    ["业务发生时间", "datetime"],
+    ["服务器记录时间", "datetime"],
+    ["关联对象", "text"],
+  ],
+  orders: [
+    ["经营日", "text"],
+    ["订单ID", "text"],
+    ["顾客", "text"],
+    ["状态", "text"],
+    ["关联预约ID", "text"],
+    ["创建时间", "datetime"],
+    ["模拟金额（元）", "money"],
+  ],
+  repairs: [
+    ["经营日", "text"],
+    ["报修ID", "text"],
+    ["座位", "text"],
+    ["机型档案", "text"],
+    ["状态", "text"],
+    ["优先级", "text"],
+    ["创建时间", "datetime"],
+    ["关闭时间", "datetime"],
+  ],
+  reservations: [
+    ["经营日", "text"],
+    ["预约ID", "text"],
+    ["顾客", "text"],
+    ["座位", "text"],
+    ["状态", "text"],
+    ["开始时间", "datetime"],
+    ["结束时间", "datetime"],
+    ["模拟金额（元）", "money"],
+  ],
+  shifts: [
+    ["经营日", "text"],
+    ["班次ID", "text"],
+    ["员工编号", "text"],
+    ["员工", "text"],
+    ["角色", "text"],
+    ["开始时间", "datetime"],
+    ["结束时间", "datetime"],
+    ["状态", "text"],
+  ],
+} as const satisfies Record<
+  ManagerExportDataType,
+  ReadonlyArray<readonly [string, ManagerExportCellKind]>
+>;
+
+async function managerExportRowsWithClient(
+  client: PoolClient,
+  input: ManagerExportInput,
+  range: { readonly endsAt: Date; readonly startsAt: Date },
+): Promise<ReadonlyArray<ReadonlyArray<Date | number | string | null>>> {
+  const direction = input.sort.direction;
+  const search = input.filters.search?.trim() || null;
+  const status = input.filters.status?.trim() || null;
+  if (input.dataType === "audits") {
+    const events = await managerAuditRowsWithClient(
+      client,
+      {
+        ...input,
+        filters: input.filters,
+      },
+      range,
+    );
+    return events.map((event) => [
+      businessDayKey(event.businessOccurredAt),
+      event.businessOccurredAt,
+      event.recordedAt,
+      event.actor.displayName,
+      event.role,
+      event.store.displayName,
+      event.action,
+      event.objectType,
+      event.objectId,
+      event.result,
+      event.reason,
+      event.requestId,
+      event.before ? JSON.stringify(event.before) : null,
+      event.after ? JSON.stringify(event.after) : null,
+    ]);
+  }
+  if (input.dataType === "reservations") {
+    const result = await client.query<{
+      amount_cents: number;
+      customer_name: string;
+      ends_at: Date;
+      id: string;
+      seat_code: string;
+      starts_at: Date;
+      status: string;
+    }>(
+      `select reservation.id, customer.display_name as customer_name,
+              seat.code as seat_code, reservation.status,
+              reservation.starts_at, reservation.ends_at,
+              coalesce(reservation.simulated_payment_cents,
+                (reservation.price_snapshot->'price'->>'payableCents')::integer,
+                0) as amount_cents
+         from reservations reservation
+         join demo_personas customer on customer.id = reservation.customer_persona_id
+         join seats seat on seat.id = reservation.seat_id
+        where reservation.sandbox_id = $1 and reservation.store_id = $2
+          and reservation.starts_at >= $3 and reservation.starts_at < $4
+          and ($5::text is null or reservation.status = $5)
+          and ($6::text is null or reservation.id::text ilike '%' || $6 || '%'
+            or customer.display_name ilike '%' || $6 || '%'
+            or seat.code ilike '%' || $6 || '%')
+        order by ${input.sort.field === "amountCents" ? "amount_cents" : input.sort.field === "status" ? "reservation.status" : "reservation.starts_at"} ${direction}, reservation.id ${direction}`,
+      [
+        input.sandboxId,
+        input.storeId,
+        range.startsAt,
+        range.endsAt,
+        status,
+        search,
+      ],
+    );
+    return result.rows.map((row) => [
+      businessDayKey(row.starts_at),
+      row.id,
+      row.customer_name,
+      row.seat_code,
+      row.status,
+      row.starts_at,
+      row.ends_at,
+      row.amount_cents,
+    ]);
+  }
+  if (input.dataType === "orders") {
+    const result = await client.query<{
+      amount_cents: number;
+      created_business_at: Date;
+      customer_name: string;
+      id: string;
+      reservation_id: string;
+      status: string;
+    }>(
+      `select orders.id, customer.display_name as customer_name, orders.status,
+              orders.reservation_id, orders.created_business_at,
+              coalesce(orders.simulated_payment_cents,
+                (orders.order_snapshot->>'payableCents')::integer, 0) as amount_cents
+         from customer_orders orders
+         join demo_personas customer on customer.id = orders.customer_persona_id
+        where orders.sandbox_id = $1 and orders.store_id = $2
+          and orders.created_business_at >= $3 and orders.created_business_at < $4
+          and ($5::text is null or orders.status = $5)
+          and ($6::text is null or orders.id::text ilike '%' || $6 || '%'
+            or customer.display_name ilike '%' || $6 || '%')
+        order by ${input.sort.field === "amountCents" ? "amount_cents" : input.sort.field === "status" ? "orders.status" : "orders.created_business_at"} ${direction}, orders.id ${direction}`,
+      [
+        input.sandboxId,
+        input.storeId,
+        range.startsAt,
+        range.endsAt,
+        status,
+        search,
+      ],
+    );
+    return result.rows.map((row) => [
+      businessDayKey(row.created_business_at),
+      row.id,
+      row.customer_name,
+      row.status,
+      row.reservation_id,
+      row.created_business_at,
+      row.amount_cents,
+    ]);
+  }
+  if (input.dataType === "inventoryMovements") {
+    const result = await client.query<{
+      business_occurred_at: Date;
+      display_name: string;
+      id: string;
+      movement_kind: string | null;
+      on_hand_after: number;
+      on_hand_delta: number;
+      order_id: string | null;
+      recorded_at: Date;
+      repair_id: string | null;
+    }>(
+      `select movement.id, item.display_name, movement.movement_kind,
+              movement.on_hand_delta, movement.on_hand_after,
+              movement.business_occurred_at, movement.recorded_at,
+              movement.order_id, movement.repair_id
+         from inventory_movements movement
+         join inventory_items item on item.id = movement.inventory_item_id
+        where movement.sandbox_id = $1 and movement.store_id = $2
+          and movement.business_occurred_at >= $3
+          and movement.business_occurred_at < $4
+          and ($5::text is null or movement.movement_kind = $5)
+          and ($6::text is null or movement.id::text ilike '%' || $6 || '%'
+            or item.display_name ilike '%' || $6 || '%')
+        order by ${input.sort.field === "status" ? "movement.movement_kind" : "movement.business_occurred_at"} ${direction}, movement.id ${direction}`,
+      [
+        input.sandboxId,
+        input.storeId,
+        range.startsAt,
+        range.endsAt,
+        status,
+        search,
+      ],
+    );
+    return result.rows.map((row) => [
+      businessDayKey(row.business_occurred_at),
+      row.id,
+      row.display_name,
+      row.movement_kind,
+      row.on_hand_delta,
+      row.on_hand_after,
+      row.business_occurred_at,
+      row.recorded_at,
+      row.order_id ?? row.repair_id,
+    ]);
+  }
+  if (input.dataType === "repairs") {
+    const result = await client.query<{
+      closed_business_at: Date | null;
+      created_business_at: Date;
+      id: string;
+      machine_name: string;
+      priority: string;
+      seat_code: string;
+      status: string;
+    }>(
+      `select repair.id, seat.code as seat_code,
+              profile.display_name as machine_name, repair.status,
+              repair.priority, repair.created_business_at,
+              repair.closed_business_at
+         from repairs repair
+         join seats seat on seat.id = repair.seat_id
+         join machine_profiles profile on profile.id = repair.machine_profile_id
+        where repair.sandbox_id = $1 and repair.store_id = $2
+          and repair.created_business_at >= $3 and repair.created_business_at < $4
+          and ($5::text is null or repair.status = $5)
+          and ($6::text is null or repair.id::text ilike '%' || $6 || '%'
+            or seat.code ilike '%' || $6 || '%'
+            or profile.display_name ilike '%' || $6 || '%')
+        order by ${input.sort.field === "status" ? "repair.status" : "repair.created_business_at"} ${direction}, repair.id ${direction}`,
+      [
+        input.sandboxId,
+        input.storeId,
+        range.startsAt,
+        range.endsAt,
+        status,
+        search,
+      ],
+    );
+    return result.rows.map((row) => [
+      businessDayKey(row.created_business_at),
+      row.id,
+      row.seat_code,
+      row.machine_name,
+      row.status,
+      row.priority,
+      row.created_business_at,
+      row.closed_business_at,
+    ]);
+  }
+  const result = await client.query<{
+    display_name: string;
+    employee_code: string;
+    ends_at: Date;
+    id: string;
+    role: string;
+    starts_at: Date;
+    status: string;
+  }>(
+    `select shift.id, employee.employee_code, employee.display_name,
+            employee.role, shift.starts_at, shift.ends_at, shift.status
+       from shifts shift
+       join employees employee on employee.id = shift.employee_id
+      where shift.sandbox_id = $1 and shift.store_id = $2
+        and shift.starts_at >= $3 and shift.starts_at < $4
+        and ($5::text is null or shift.status = $5)
+        and ($6::text is null or shift.id::text ilike '%' || $6 || '%'
+          or employee.employee_code ilike '%' || $6 || '%'
+          or employee.display_name ilike '%' || $6 || '%')
+      order by ${input.sort.field === "status" ? "shift.status" : "shift.starts_at"} ${direction}, shift.id ${direction}`,
+    [
+      input.sandboxId,
+      input.storeId,
+      range.startsAt,
+      range.endsAt,
+      status,
+      search,
+    ],
+  );
+  return result.rows.map((row) => [
+    businessDayKey(row.starts_at),
+    row.id,
+    row.employee_code,
+    row.display_name,
+    row.role,
+    row.starts_at,
+    row.ends_at,
+    row.status,
+  ]);
+}
+
 export function createPublicSandboxDatabase(
   databaseUrl: string,
   options: PublicSandboxDatabaseOptions = {},
@@ -8345,6 +9036,89 @@ export function createPublicSandboxDatabase(
     materializePublicSandbox,
     readSandboxResult,
   );
+
+  async function executeManagerExport(
+    input: ManagerExportInput,
+    recordAudit: boolean,
+  ): Promise<DatabaseManagerExport> {
+    const client = await pool.connect();
+    const wallTime = wallClock.now();
+    try {
+      await client.query("begin");
+      await client.query("set local role jingshu_runtime");
+      await client.query("select set_config('app.sandbox_id', $1, true)", [
+        input.sandboxId,
+      ]);
+      const { context, store } = await managerStoreWithClient(
+        client,
+        input,
+        wallTime,
+      );
+      const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+      const selection = managerBusinessDaySelection(
+        currentTime,
+        input.fromBusinessDay,
+        input.toBusinessDay,
+      );
+      const rows = await managerExportRowsWithClient(client, input, selection);
+      if (recordAudit) {
+        if (!input.requestId) {
+          throw new ManagerAuditExportError("invalid-filter");
+        }
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, reason, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, 'manager', 'export.csv', 'export', null,
+             'allowed', null, $5, null, $6::jsonb, $7, $8)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            store.id,
+            input.personaId,
+            input.requestId,
+            JSON.stringify({
+              dataType: input.dataType,
+              filters: input.filters,
+              fromBusinessDay: selection.fromBusinessDay,
+              rowCount: rows.length,
+              sortDirection: input.sort.direction,
+              sortField: input.sort.field,
+              toBusinessDay: selection.toBusinessDay,
+            }),
+            currentTime,
+            wallTime,
+          ],
+        );
+      }
+      await client.query("commit");
+      return {
+        columns: exportColumns[input.dataType].map(([header, kind]) => ({
+          header,
+          kind,
+        })),
+        dataType: input.dataType,
+        range: {
+          endsAt: selection.endsAt,
+          fromBusinessDay: selection.fromBusinessDay,
+          startsAt: selection.startsAt,
+          toBusinessDay: selection.toBusinessDay,
+        },
+        rows,
+        store: {
+          code: store.code,
+          displayName: store.display_name,
+          storeId: store.id,
+        },
+      };
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 
   return {
     ...demoToolMethods,
@@ -13342,6 +14116,93 @@ export function createPublicSandboxDatabase(
       } finally {
         client.release();
       }
+    },
+    async readManagerAudits(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const { context, store } = await managerStoreWithClient(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const selection = managerBusinessDaySelection(
+          currentTime,
+          input.fromBusinessDay,
+          input.toBusinessDay,
+        );
+        const events = await managerAuditRowsWithClient(
+          client,
+          input,
+          selection,
+        );
+        const options = await client.query<{
+          actions: string[];
+          object_types: string[];
+          personas: Array<{ displayName: string; personaId: string }>;
+          roles: PublicRole[];
+        }>(
+          `select
+             coalesce(array_agg(distinct audit.action order by audit.action)
+               filter (where audit.action is not null), '{}') as actions,
+             coalesce(array_agg(distinct audit.object_type order by audit.object_type)
+               filter (where audit.object_type is not null), '{}') as object_types,
+             coalesce(array_agg(distinct audit.role order by audit.role)
+               filter (where audit.role is not null), '{}') as roles,
+             coalesce(jsonb_agg(distinct jsonb_build_object(
+               'personaId', persona.id, 'displayName', persona.display_name
+             )) filter (where persona.id is not null), '[]'::jsonb) as personas
+           from audit_events audit
+           left join demo_personas persona on persona.id = audit.persona_id
+          where audit.sandbox_id = $1 and audit.store_id = $2`,
+          [input.sandboxId, store.id],
+        );
+        const filterOptions = options.rows[0];
+        await client.query("commit");
+        return {
+          availableBusinessDays: selection.availableBusinessDays,
+          currentTime,
+          events,
+          filterOptions: {
+            actions: filterOptions?.actions ?? [],
+            objectTypes: filterOptions?.object_types ?? [],
+            personas: (filterOptions?.personas ?? []).toSorted((left, right) =>
+              left.displayName.localeCompare(right.displayName, "zh-CN"),
+            ),
+            roles: filterOptions?.roles ?? [],
+          },
+          range: {
+            endsAt: selection.endsAt,
+            fromBusinessDay: selection.fromBusinessDay,
+            startsAt: selection.startsAt,
+            toBusinessDay: selection.toBusinessDay,
+          },
+          sort: input.sort,
+          store: {
+            code: store.code,
+            displayName: store.display_name,
+            storeId: store.id,
+          },
+          totalCount: events.length,
+        };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async prepareManagerExport(input) {
+      return executeManagerExport(input, false);
+    },
+    async createManagerExport(input) {
+      return executeManagerExport(input, true);
     },
     async readManagerDashboard(input) {
       const client = await pool.connect();
