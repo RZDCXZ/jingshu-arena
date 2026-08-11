@@ -2,8 +2,20 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-11
-- 已验证契约版本：`product-ui/management-system/prod.md` 1.12
-- 验证范围：[`23 — 本店审计与筛选 CSV 导出`](../../../.scratch/jingshu-basic-rc/issues/23-manager-audit-export.md)；保留 ticket 22 单店经营看板和更早结论
+- 已验证契约版本：`product-ui/management-system/prod.md` 1.13
+- 验证范围：[`24 — 总部商品资料与机型档案`](../../../.scratch/jingshu-basic-rc/issues/24-hq-catalogs.md)；保留 ticket 23 本店审计与筛选 CSV 导出和更早结论
+
+## Ticket 24 `WEB-H03/WEB-H04` 对照目标与结论
+
+- 视觉方向继续使用选定源 `design/reference/selected-night-operations-console.png`，页面状态源为正式原型总部“连锁配置”。应用内浏览器分别以精确 `1440 × 1024 CSS px` 和 `1024 × 768 CSS px` 打开正式原型与真实 Web → Hono → PostgreSQL 生产页；两档真实页面均为 `documentScrollWidth = viewportWidth`。
+- `1440 × 1024` 商品目录原始证据为 `design/source-ticket24-catalogs-1440.png` 与 `design/implementation-ticket24-catalogs-1440.png`，同屏比较为 `design/comparison-ticket24-catalogs-1440.png`。两侧都保留“连锁配置标题 → 商品/机型 Tab → 总部边界 → 高密度资料表 → 行级编辑/归档”的信息层级；生产实现补充服务端能力标识、搜索和适用门店明细。
+- `1024 × 768` 商品编辑原始证据为 `design/source-ticket24-product-edit-1024.png` 与 `design/implementation-ticket24-product-edit-1024.png`，同屏比较为 `design/comparison-ticket24-product-edit-1024.png`。两侧弹窗均明确商品代码、名称、分类、适用门店和说明，并持续说明售价、上架和库存不属于总部表单；生产使用逐店勾选，避免把“适用范围”误作门店上架状态。
+- `1024 × 768` 机型档案原始证据为 `design/source-ticket24-machines-1024.png` 与 `design/implementation-ticket24-machines-1024.png`，同屏比较为 `design/comparison-ticket24-machines-1024.png`。标准型、竞技型、旗舰型和三档无品牌体验规格完整可见；生产另展示当前座位与历史报修引用数量，使“可归档、不可硬删除”的原因可直接核对。
+- 商品与机型各自拥有专用的新建、编辑、归档弹窗。键盘焦点进入首个可编辑业务字段，`Escape` 可关闭并返回触发器；归档确认明确历史订单、预约价格/机型、报修机型与审计事实不变。`1024 × 768` 自动化完成六类弹窗的创建、编辑、归档主路径，并确认页面级无横向溢出。
+- 新开正式源、生产 `1440 × 1024` 与生产 `1024 × 768` 标签页 warning/error 均为 0。当前没有仍需处理的 P0、P1 或 P2 差异；P3 为有意的数据密度差：正式原型使用代表性行内容，生产读取十二种商品、三种机型、服务端版本和真实引用数量，并以卡片内部滚动承载完整表格。
+- 领域、PostgreSQL 与 API 自动化覆盖总部允许动作、店员/店长拒绝、命令幂等、版本冲突、受限词汇、被引用机型归档、数据库外键硬删除拒绝，以及商品改名不改订单快照、机型改名/归档不改预约与报修快照、既有审计事实不改。完整 `pnpm verify` 通过；正式管理端原型生产构建通过。
+
+final result: passed
 
 ## Ticket 23 `WEB-M10` 对照目标与结论
 

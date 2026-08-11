@@ -315,6 +315,27 @@ export class ManagerStoreConfigurationConflictError extends Error {
   }
 }
 
+export type HeadquartersCatalogConflictReason =
+  | "archived"
+  | "code-conflict"
+  | "idempotency-conflict"
+  | "invalid-machine-profile"
+  | "invalid-product"
+  | "not-found"
+  | "product-store-scope"
+  | "version-conflict";
+
+export class HeadquartersCatalogConflictError extends Error {
+  readonly code = "HEADQUARTERS_CATALOG_CONFLICT";
+  readonly reason: HeadquartersCatalogConflictReason;
+
+  constructor(reason: HeadquartersCatalogConflictReason) {
+    super(`Headquarters catalog command was rejected: ${reason}.`);
+    this.name = "HeadquartersCatalogConflictError";
+    this.reason = reason;
+  }
+}
+
 export type ManagerPeopleConflictReason =
   | "cross-store"
   | "duplicate-employee-code"

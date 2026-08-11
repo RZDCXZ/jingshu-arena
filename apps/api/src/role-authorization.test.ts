@@ -130,6 +130,8 @@ describe("role capability authorization", () => {
     }
     expect(can(contexts.hq, "chain:compare")).toBe(true);
     expect(can(contexts.hq, "chain:configure")).toBe(true);
+    expect(can(contexts.hq, "chain:maintain-catalogs")).toBe(true);
+    expect(can(contexts.manager, "chain:maintain-catalogs")).toBe(false);
     expect(
       can(contexts.hq, "chain:compare", { sandboxId: otherSandboxId }),
     ).toBe(false);
@@ -168,6 +170,7 @@ describe("role capability authorization", () => {
       "store:configure",
       "chain:compare",
       "chain:configure",
+      "chain:maintain-catalogs",
       "audit:view",
     ]);
   });

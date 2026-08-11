@@ -1383,6 +1383,52 @@ function resolveActionModal(action) {
     };
   }
 
+  if (action?.kind === "machine-profile-archive") {
+    return {
+      eyebrow: "机型档案归档",
+      title: actionLabel,
+      noticeTitle: "保留引用与历史快照",
+      noticeBody:
+        "归档不会硬删除机型档案；当前座位引用继续存在，历史预约价格、报修机型和审计事实都保持不变。",
+      confirmLabel: "确认归档机型",
+      fields: [
+        { label: "机型档案", value: action.name, readOnly: true },
+        { label: "体验规格", value: action.spec, readOnly: true },
+        { label: "当前座位引用", value: action.seats, readOnly: true },
+        {
+          label: "归档结果",
+          value: "停止继续编辑与未来选用；保留所有已有引用和历史事实。",
+          multiline: true,
+          full: true,
+          readOnly: true,
+        },
+      ],
+    };
+  }
+
+  if (action?.kind === "catalog-product-archive") {
+    return {
+      eyebrow: "商品资料归档",
+      title: actionLabel,
+      noticeTitle: "历史订单快照不变",
+      noticeBody:
+        "归档只改变连锁商品资料状态，不会修改门店售价、上架、库存，也不会追溯改写既有订单与审计事实。",
+      confirmLabel: "确认归档商品",
+      fields: [
+        { label: "商品代码", value: action.code, readOnly: true },
+        { label: "商品名称", value: action.name, readOnly: true },
+        { label: "当前适用门店", value: action.scope, readOnly: true },
+        {
+          label: "归档结果",
+          value: "资料停止继续编辑；已有门店配置与历史业务事实继续保留。",
+          multiline: true,
+          full: true,
+          readOnly: true,
+        },
+      ],
+    };
+  }
+
   if (action?.kind === "machine-profile") {
     const editing = action.mode === "edit";
     return {
@@ -1393,6 +1439,11 @@ function resolveActionModal(action) {
         "机型档案统一描述座位体验规格，门店座位只引用档案；本次保存不会追溯修改历史预约。",
       confirmLabel: editing ? "保存机型档案" : "创建机型档案",
       fields: [
+        {
+          label: "机型代码",
+          value: action.code || "immersive-profile",
+          readOnly: editing,
+        },
         { label: "档案名称", value: action.name || "新机型档案" },
         {
           label: "体验规格",
@@ -1424,11 +1475,16 @@ function resolveActionModal(action) {
         "总部维护商品名称、分类与可用门店范围；售价、上架状态和库存数量仍由各门店管理。",
       confirmLabel: editing ? "保存商品资料" : "创建商品资料",
       fields: [
+        {
+          label: "商品代码",
+          value: action.code || "new-fictional-product",
+          readOnly: editing,
+        },
         { label: "商品名称", value: action.name || "新商品资料" },
         {
           label: "分类",
           value: action.category || "饮品",
-          options: ["饮品", "零食", "外设用品"],
+          options: ["饮品", "餐食", "零食", "用品"],
         },
         {
           label: "可用门店范围",
@@ -1436,13 +1492,10 @@ function resolveActionModal(action) {
           options: ["三店可用", "仅旗舰店", "旗舰店与新店"],
         },
         {
-          label: "资料状态",
-          value: action.state || "正常",
-          options: ["正常", "停用"],
-        },
-        {
           label: "资料说明",
-          value: "用于连锁商品目录展示，门店可在授权范围内配置售价与上架状态。",
+          value:
+            action.description ||
+            "用于连锁商品目录展示，门店可在授权范围内配置售价与上架状态。",
           multiline: true,
           full: true,
         },

@@ -26,7 +26,13 @@ const grantedCapabilities = {
     "store:manage-people",
     "audit:view",
   ],
-  hq: ["store:configure", "chain:compare", "chain:configure", "audit:view"],
+  hq: [
+    "store:configure",
+    "chain:compare",
+    "chain:configure",
+    "chain:maintain-catalogs",
+    "audit:view",
+  ],
 } as const satisfies Record<PublicRole, ReadonlyArray<RoleCapability>>;
 
 export function listRoleCapabilities(
@@ -53,7 +59,8 @@ export function authorizeRoleCapability(
 
   if (
     request.capability === "chain:compare" ||
-    request.capability === "chain:configure"
+    request.capability === "chain:configure" ||
+    request.capability === "chain:maintain-catalogs"
   ) {
     return true;
   }

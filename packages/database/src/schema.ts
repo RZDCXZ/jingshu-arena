@@ -148,6 +148,7 @@ export const products = pgTable(
     description: text("description").notNull(),
     category: text("category").notNull(),
     archived: boolean("archived").default(false).notNull(),
+    configVersion: integer("config_version").default(1).notNull(),
   },
   (table) => [
     unique("products_sandbox_code_unique").on(table.sandboxId, table.code),
@@ -155,7 +156,33 @@ export const products = pgTable(
       "products_category",
       sql`${table.category} IN ('drink', 'snack', 'meal', 'supply')`,
     ),
+    check("products_positive_config_version", sql`${table.configVersion} > 0`),
     pgPolicy("products_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const productStoreScopes = pgTable(
+  "product_store_scopes",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.sandboxId, table.productId, table.storeId],
+      name: "product_store_scopes_pk",
+    }),
+    pgPolicy("product_store_scopes_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),
@@ -263,11 +290,16 @@ export const machineProfiles = pgTable(
     displayName: text("display_name").notNull(),
     experienceDescription: text("experience_description").notNull(),
     archived: boolean("archived").default(false).notNull(),
+    configVersion: integer("config_version").default(1).notNull(),
   },
   (table) => [
     unique("machine_profiles_sandbox_code_unique").on(
       table.sandboxId,
       table.code,
+    ),
+    check(
+      "machine_profiles_positive_config_version",
+      sql`${table.configVersion} > 0`,
     ),
     pgPolicy("machine_profiles_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
@@ -539,6 +571,43 @@ export const storeConfigCommandRequests = pgTable(
       name: "store_config_command_requests_pk",
     }),
     pgPolicy("store_config_command_requests_isolate_by_sandbox", {
+      using: sql`${table.sandboxId} = ${sandboxSetting}`,
+      withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
+    }),
+  ],
+).enableRLS();
+
+export const headquartersCatalogCommandRequests = pgTable(
+  "headquarters_catalog_command_requests",
+  {
+    sandboxId: uuid("sandbox_id")
+      .notNull()
+      .references(() => sandboxes.id, { onDelete: "cascade" }),
+    actorPersonaId: uuid("actor_persona_id")
+      .notNull()
+      .references(() => demoPersonas.id, { onDelete: "cascade" }),
+    commandType: text("command_type").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    resultData: jsonb("result_data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sandboxId,
+        table.actorPersonaId,
+        table.idempotencyKeyHash,
+      ],
+      name: "headquarters_catalog_command_requests_pk",
+    }),
+    check(
+      "headquarters_catalog_command_requests_type",
+      sql`${table.commandType} IN ('create-product', 'update-product', 'archive-product', 'create-machine-profile', 'update-machine-profile', 'archive-machine-profile')`,
+    ),
+    pgPolicy("headquarters_catalog_commands_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,
     }),
@@ -1220,6 +1289,13 @@ export const repairs = pgTable(
     machineProfileId: uuid("machine_profile_id")
       .notNull()
       .references(() => machineProfiles.id, { onDelete: "restrict" }),
+    machineProfileSnapshot: jsonb("machine_profile_snapshot")
+      .$type<{
+        code: string;
+        displayName: string;
+        experienceDescription: string;
+      }>()
+      .notNull(),
     reservationId: uuid("reservation_id").references(() => reservations.id, {
       onDelete: "restrict",
     }),
@@ -1277,6 +1353,10 @@ export const repairs = pgTable(
     check(
       "repairs_status",
       sql`${table.status} IN ('new', 'assigned', 'processing', 'verification', 'closed')`,
+    ),
+    check(
+      "repairs_machine_profile_snapshot_shape",
+      sql`jsonb_typeof(${table.machineProfileSnapshot}) = 'object' AND coalesce(${table.machineProfileSnapshot}->>'code', '') <> '' AND coalesce(${table.machineProfileSnapshot}->>'displayName', '') <> '' AND coalesce(${table.machineProfileSnapshot}->>'experienceDescription', '') <> ''`,
     ),
     check(
       "repairs_customer_source",

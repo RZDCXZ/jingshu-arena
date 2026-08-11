@@ -78,7 +78,12 @@ describe("manager store configuration", () => {
       weekdayHalfHourCents: expect.any(Number),
       weekendHalfHourCents: expect.any(Number),
     });
-    expect(configuration.products).toHaveLength(12);
+    expect(configuration.products).toHaveLength(11);
+    expect(
+      configuration.products.some(
+        (product) => product.headquartersProduct.code === "orbit-rice-roll",
+      ),
+    ).toBe(false);
     expect(configuration.products[0]).toMatchObject({
       availableQuantity: expect.any(Number),
       headquartersProduct: {

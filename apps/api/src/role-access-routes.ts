@@ -55,11 +55,14 @@ function parseRoleAccessCheck(value: unknown): RoleAccessCheckRequest | null {
   const capability = value.capability;
   const compatible =
     (capability === "customer:manage-own-records" && kind === "persona") ||
-    ((capability === "chain:compare" || capability === "chain:configure") &&
+    ((capability === "chain:compare" ||
+      capability === "chain:configure" ||
+      capability === "chain:maintain-catalogs") &&
       kind === "sandbox") ||
     (capability !== "customer:manage-own-records" &&
       capability !== "chain:compare" &&
       capability !== "chain:configure" &&
+      capability !== "chain:maintain-catalogs" &&
       kind === "store");
   if (!compatible) return null;
 

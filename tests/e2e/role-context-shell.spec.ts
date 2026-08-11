@@ -4,6 +4,8 @@ import type { Page, Route } from "@playwright/test";
 import type {
   CustomerReservationStatus,
   HandoverCommandResponse,
+  HeadquartersCatalogCommandRequest,
+  HeadquartersCatalogsResponse,
   HeadquartersPeopleScheduleResponse,
   ManagerAuditResponse,
   ManagerHandoverExceptionsResponse,
@@ -41,6 +43,14 @@ type MutableStaffReservationSummary = Omit<
 
 type MutableStaffOrderSummary = Omit<StaffOrderSummaryResponse, "status"> & {
   status: StaffOrderSummaryResponse["status"];
+};
+
+type MutableHeadquartersCatalogs = Omit<
+  HeadquartersCatalogsResponse,
+  "machineProfiles" | "products"
+> & {
+  machineProfiles: HeadquartersCatalogsResponse["machineProfiles"];
+  products: HeadquartersCatalogsResponse["products"];
 };
 
 const roleDetails = {
@@ -83,6 +93,7 @@ const roleDetails = {
       "store:configure",
       "chain:compare",
       "chain:configure",
+      "chain:maintain-catalogs",
       "audit:view",
     ],
     label: "总部运营",
@@ -179,6 +190,69 @@ test.beforeEach(async ({ context }) => {
   let csrfToken = "csrf-context-version-1-token-value";
   let businessTime = "2026-08-09T11:30:00.000Z";
   let advancedMilliseconds = 0;
+  const headquartersCatalogs: MutableHeadquartersCatalogs = {
+    currentTime: businessTime,
+    machineProfiles: [
+      ["standard", "标准型", "1080p / 144Hz", 86, 5],
+      ["competitive", "竞技型", "2K / 180Hz", 78, 4],
+      ["flagship", "旗舰型", "2K / 240Hz", 36, 3],
+    ].map(
+      ([code, displayName, experienceDescription, seats, history], index) => ({
+        archived: false,
+        code: String(code),
+        displayName: String(displayName),
+        experienceDescription: String(experienceDescription),
+        historicalReferenceCount: Number(history),
+        machineProfileId: `00000000-0000-4000-8000-${String(750 + index).padStart(12, "0")}`,
+        seatReferenceCount: Number(seats),
+        version: 1,
+      }),
+    ),
+    products: Array.from({ length: 12 }, (_, index) => ({
+      archived: false,
+      availableStores: [
+        {
+          code: "prism-flagship",
+          displayName: "棱镜旗舰店",
+          storeId: "00000000-0000-4000-8000-000000000101",
+        },
+        ...(index % 2 === 0
+          ? [
+              {
+                code: "starbridge-standard",
+                displayName: "星桥标准店",
+                storeId: "00000000-0000-4000-8000-000000000102",
+              },
+            ]
+          : []),
+      ],
+      category: (["drink", "meal", "snack", "supply"] as const)[index % 4]!,
+      code: `fictional-product-${index + 1}`,
+      description: `虚构目录说明 ${index + 1}`,
+      displayName: `虚构商品 ${index + 1}`,
+      productId: `00000000-0000-4000-8000-${String(700 + index).padStart(12, "0")}`,
+      storeConfigurationCount: index % 2 === 0 ? 2 : 1,
+      version: 1,
+    })),
+    status: "ready",
+    stores: [
+      {
+        code: "prism-flagship",
+        displayName: "棱镜旗舰店",
+        storeId: "00000000-0000-4000-8000-000000000101",
+      },
+      {
+        code: "starbridge-standard",
+        displayName: "星桥标准店",
+        storeId: "00000000-0000-4000-8000-000000000102",
+      },
+      {
+        code: "apex-new",
+        displayName: "极点新店",
+        storeId: "00000000-0000-4000-8000-000000000103",
+      },
+    ],
+  };
   const attendanceShiftId = "00000000-0000-4000-8000-000000000971";
   let attendanceStatus: "checked-in" | "checked-out" | null = null;
   let attendanceOutcome: "late" | "on-time" | null = null;
@@ -1614,6 +1688,114 @@ test.beforeEach(async ({ context }) => {
           },
         ],
       } satisfies HeadquartersPeopleScheduleResponse,
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/hq/catalogs", async (route) => {
+    expect(currentRole).toBe("hq");
+    await route.fulfill({ json: headquartersCatalogs, status: 200 });
+  });
+  await context.route("**/api/v1/hq/catalogs/commands", async (route) => {
+    expect(currentRole).toBe("hq");
+    expect(route.request().headers()["x-csrf-token"]).toBe(csrfToken);
+    expect(route.request().headers()["idempotency-key"]).toBeTruthy();
+    const body = route
+      .request()
+      .postDataJSON() as HeadquartersCatalogCommandRequest;
+    let objectId: string;
+    let version = 1;
+    if (body.action === "create-product") {
+      objectId = "00000000-0000-4000-8000-000000000799";
+      headquartersCatalogs.products = [
+        ...headquartersCatalogs.products,
+        {
+          archived: false,
+          availableStores: headquartersCatalogs.stores.filter((store) =>
+            body.availableStoreIds.includes(store.storeId),
+          ),
+          category: body.category,
+          code: body.code,
+          description: body.description,
+          displayName: body.displayName,
+          productId: objectId,
+          storeConfigurationCount: body.availableStoreIds.length,
+          version,
+        },
+      ];
+    } else if (body.action === "update-product") {
+      objectId = body.productId;
+      headquartersCatalogs.products = headquartersCatalogs.products.map(
+        (product) =>
+          product.productId === body.productId
+            ? {
+                ...product,
+                availableStores: headquartersCatalogs.stores.filter((store) =>
+                  body.availableStoreIds.includes(store.storeId),
+                ),
+                category: body.category,
+                description: body.description,
+                displayName: body.displayName,
+                version: product.version + 1,
+              }
+            : product,
+      );
+      version = body.expectedVersion + 1;
+    } else if (body.action === "archive-product") {
+      objectId = body.productId;
+      headquartersCatalogs.products = headquartersCatalogs.products.map(
+        (product) =>
+          product.productId === body.productId
+            ? { ...product, archived: true, version: product.version + 1 }
+            : product,
+      );
+      version = body.expectedVersion + 1;
+    } else if (body.action === "create-machine-profile") {
+      objectId = "00000000-0000-4000-8000-000000000759";
+      headquartersCatalogs.machineProfiles = [
+        ...headquartersCatalogs.machineProfiles,
+        {
+          archived: false,
+          code: body.code,
+          displayName: body.displayName,
+          experienceDescription: body.experienceDescription,
+          historicalReferenceCount: 0,
+          machineProfileId: objectId,
+          seatReferenceCount: 0,
+          version,
+        },
+      ];
+    } else if (body.action === "update-machine-profile") {
+      objectId = body.machineProfileId;
+      headquartersCatalogs.machineProfiles =
+        headquartersCatalogs.machineProfiles.map((profile) =>
+          profile.machineProfileId === body.machineProfileId
+            ? {
+                ...profile,
+                displayName: body.displayName,
+                experienceDescription: body.experienceDescription,
+                version: profile.version + 1,
+              }
+            : profile,
+        );
+      version = body.expectedVersion + 1;
+    } else {
+      objectId = body.machineProfileId;
+      headquartersCatalogs.machineProfiles =
+        headquartersCatalogs.machineProfiles.map((profile) =>
+          profile.machineProfileId === body.machineProfileId
+            ? { ...profile, archived: true, version: profile.version + 1 }
+            : profile,
+        );
+      version = body.expectedVersion + 1;
+    }
+    await route.fulfill({
+      json: {
+        action: body.action,
+        objectId,
+        replayed: false,
+        status: "ready",
+        version,
+      },
       status: 200,
     });
   });
@@ -3151,6 +3333,104 @@ test("headquarters sees only the three-store people and schedule summary", async
   await expect(page.locator(".people-hq-grid").getByRole("button")).toHaveCount(
     0,
   );
+});
+
+test("headquarters maintains fictional product and machine catalogs through dedicated dialogs", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "总部运营 沈微 · 虚构人物 固定三店",
+    })
+    .click();
+  await page.getByRole("button", { name: "连锁配置" }).click();
+
+  const catalogPage = page.locator(".hq-catalog-main");
+  await expect(
+    catalogPage.getByRole("heading", { name: "连锁配置" }),
+  ).toBeVisible();
+  await expect(catalogPage.getByText("门店操作边界")).toBeVisible();
+  await expect(catalogPage.locator("tbody tr")).toHaveCount(12);
+  await expect(catalogPage).not.toContainText(
+    /可口可乐|百事|红牛|烟|酒|充值|处方/u,
+  );
+  await expect(
+    catalogPage.getByRole("button", { name: /到店|制作|维修|签到|交接/u }),
+  ).toHaveCount(0);
+
+  const createProduct = catalogPage.getByRole("button", { name: "新建商品" });
+  await createProduct.click();
+  const productDialog = page.getByRole("dialog", { name: "创建商品资料" });
+  await expect(productDialog.getByLabel("商品代码")).toBeFocused();
+  await expect(productDialog.getByLabel(/售价|上架状态|库存数量/u)).toHaveCount(
+    0,
+  );
+  await productDialog.getByLabel("商品代码").fill("starlight-crisp");
+  await productDialog.getByLabel("商品名称").fill("星光脆片");
+  await productDialog.getByLabel("资料说明").fill("轻脆咸味零食 · 独立包装");
+  await productDialog.getByLabel("分类").selectOption("snack");
+  await productDialog.getByRole("button", { name: "创建商品资料" }).click();
+  await expect(page.getByText("商品资料已创建")).toBeVisible();
+  const createdProduct = catalogPage
+    .locator("tr")
+    .filter({ hasText: "星光脆片" });
+  await expect(createdProduct).toBeVisible();
+
+  await createdProduct.getByRole("button", { name: "编辑" }).click();
+  const editProduct = page.getByRole("dialog", { name: /编辑商品/u });
+  await expect(editProduct.getByLabel("商品代码")).toBeDisabled();
+  await editProduct.getByLabel("商品名称").fill("星光脆片二号");
+  await editProduct.getByRole("button", { name: "保存商品资料" }).click();
+  await expect(
+    page.getByText("商品资料已保存，历史订单快照保持不变"),
+  ).toBeVisible();
+  const renamedProduct = catalogPage
+    .locator("tr")
+    .filter({ hasText: "星光脆片二号" });
+  await renamedProduct.getByRole("button", { name: "归档" }).click();
+  const archiveProduct = page.getByRole("dialog", { name: /归档商品/u });
+  await expect(archiveProduct).toContainText(
+    "历史订单、预约价格、报修机型或审计事实",
+  );
+  await archiveProduct.getByRole("button", { name: "确认归档" }).click();
+  await expect(renamedProduct.getByText("已归档")).toBeVisible();
+
+  await catalogPage.getByRole("tab", { name: /机型档案/u }).click();
+  await expect(catalogPage.getByText("1080p / 144Hz")).toBeVisible();
+  await expect(catalogPage.getByText("2K / 180Hz")).toBeVisible();
+  await expect(catalogPage.getByText("2K / 240Hz")).toBeVisible();
+  await catalogPage.getByRole("button", { name: "新建机型" }).click();
+  const createMachine = page.getByRole("dialog", { name: "创建机型档案" });
+  await expect(createMachine.getByLabel("机型代码")).toBeFocused();
+  await createMachine.getByLabel("机型代码").fill("panorama");
+  await createMachine.getByLabel("档案名称").fill("全景型");
+  await createMachine
+    .getByLabel("体验描述")
+    .fill("2K / 200Hz · 平衡清晰度与高刷新体验");
+  await createMachine.getByRole("button", { name: "创建机型档案" }).click();
+  await expect(page.getByText("机型档案已创建")).toBeVisible();
+  await expect(catalogPage.getByText("全景型")).toBeVisible();
+  const standard = catalogPage.locator("tr").filter({ hasText: "标准型" });
+  await standard.getByRole("button", { name: "编辑" }).click();
+  const editMachine = page.getByRole("dialog", { name: /编辑机型/u });
+  await expect(editMachine.getByLabel("机型代码")).toBeDisabled();
+  await expect(editMachine).toContainText("当前座位引用");
+  await page.keyboard.press("Escape");
+  await expect(standard.getByRole("button", { name: "编辑" })).toBeFocused();
+  await standard.getByRole("button", { name: "归档" }).click();
+  const archiveMachine = page.getByRole("dialog", { name: /归档机型/u });
+  await expect(archiveMachine).toContainText("仍被座位引用");
+  await archiveMachine.getByRole("button", { name: "确认归档" }).click();
+  await expect(standard.getByText("已归档")).toBeVisible();
+
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.body.clientWidth,
+    scrollWidth: document.body.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBe(layout.clientWidth);
 });
 
 test("manager edits only the owned store through dedicated configuration forms and sees seat dependencies", async ({

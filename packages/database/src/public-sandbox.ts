@@ -80,6 +80,7 @@ import {
   ManagerDashboardRangeError,
   ManagerStoreConfigurationConflictError,
   type ManagerStoreConfigurationConflictReason,
+  HeadquartersCatalogConflictError,
   ManagerPeopleConflictError,
   type ManagerPeopleConflictReason,
   RepairCommandConflictError,
@@ -1394,6 +1395,99 @@ export interface DatabaseHeadquartersPeopleSchedule {
   }>;
 }
 
+export type ReadHeadquartersCatalogsInput = ReadHeadquartersPeopleScheduleInput;
+
+export interface DatabaseHeadquartersCatalogs {
+  readonly currentTime: Date;
+  readonly stores: ReadonlyArray<{
+    readonly code: string;
+    readonly displayName: string;
+    readonly storeId: string;
+  }>;
+  readonly products: ReadonlyArray<{
+    readonly archived: boolean;
+    readonly availableStores: ReadonlyArray<{
+      readonly code: string;
+      readonly displayName: string;
+      readonly storeId: string;
+    }>;
+    readonly category: "drink" | "meal" | "snack" | "supply";
+    readonly code: string;
+    readonly description: string;
+    readonly displayName: string;
+    readonly productId: string;
+    readonly storeConfigurationCount: number;
+    readonly version: number;
+  }>;
+  readonly machineProfiles: ReadonlyArray<{
+    readonly archived: boolean;
+    readonly code: string;
+    readonly displayName: string;
+    readonly experienceDescription: string;
+    readonly historicalReferenceCount: number;
+    readonly machineProfileId: string;
+    readonly seatReferenceCount: number;
+    readonly version: number;
+  }>;
+}
+
+interface HeadquartersCatalogCommandBase extends ReadHeadquartersCatalogsInput {
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+}
+
+export type ExecuteHeadquartersCatalogCommandInput =
+  HeadquartersCatalogCommandBase &
+    (
+      | {
+          readonly action: "create-product";
+          readonly availableStoreIds: ReadonlyArray<string>;
+          readonly category: "drink" | "meal" | "snack" | "supply";
+          readonly code: string;
+          readonly description: string;
+          readonly displayName: string;
+        }
+      | {
+          readonly action: "update-product";
+          readonly availableStoreIds: ReadonlyArray<string>;
+          readonly category: "drink" | "meal" | "snack" | "supply";
+          readonly description: string;
+          readonly displayName: string;
+          readonly expectedVersion: number;
+          readonly productId: string;
+        }
+      | {
+          readonly action: "archive-product";
+          readonly expectedVersion: number;
+          readonly productId: string;
+        }
+      | {
+          readonly action: "create-machine-profile";
+          readonly code: string;
+          readonly displayName: string;
+          readonly experienceDescription: string;
+        }
+      | {
+          readonly action: "update-machine-profile";
+          readonly displayName: string;
+          readonly expectedVersion: number;
+          readonly experienceDescription: string;
+          readonly machineProfileId: string;
+        }
+      | {
+          readonly action: "archive-machine-profile";
+          readonly expectedVersion: number;
+          readonly machineProfileId: string;
+        }
+    );
+
+export interface DatabaseHeadquartersCatalogCommand {
+  readonly action: ExecuteHeadquartersCatalogCommandInput["action"];
+  readonly objectId: string;
+  readonly replayed: boolean;
+  readonly version: number;
+}
+
 export interface DatabaseManagerStoreConfiguration {
   readonly areas: ReadonlyArray<{
     readonly areaId: string;
@@ -1646,6 +1740,25 @@ function isStoredManagerStoreConfigurationDenial(
 
 function isSafeManagerConfigurationText(value: string) {
   return !/[<>\p{C}]/u.test(value);
+}
+
+const prohibitedCatalogContent =
+  /(?:酒|啤|烟草|香烟|卷烟|电子烟|充值|储值|处方|药品|可口可乐|百事|红牛|星巴克|英特尔|英伟达|高通|骁龙|安谋|酷睿|锐龙|华为|联想|苹果|小米|罗技|雷蛇|华硕|宏碁|戴尔|惠普|微星|技嘉|三星|索尼|任天堂|微软|飞利浦|神舟|机械革命|玩家国度|雀巢|农夫山泉|康师傅|统一|\b(?:alcohol|beer|wine|liquor|tobacco|cigarettes?|vape|recharge|top[ -]?up|prescription|medicine|coca[ -]?cola|pepsi|red[ -]?bull|starbucks|nvidia|geforce|rtx|intel|radeon|ryzen|amd|qualcomm|snapdragon|arm|mali|adreno|huawei|lenovo|apple|xiaomi|logitech|razer|asus|acer|dell|hp|msi|gigabyte|samsung|sony|nintendo|microsoft|philips|nestle)\b)/iu;
+const allowedCatalogLatinTokens = new Set(["hz", "k", "p"]);
+
+function isSafeCatalogText(value: string) {
+  const latinTokens = value.match(/\p{Script=Latin}+/gu) ?? [];
+  return (
+    isSafeManagerConfigurationText(value) &&
+    !prohibitedCatalogContent.test(value) &&
+    latinTokens.every((token) =>
+      allowedCatalogLatinTokens.has(token.toLocaleLowerCase("en-US")),
+    )
+  );
+}
+
+function isValidCatalogCode(value: string) {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value) && value.length <= 48;
 }
 
 interface StoredManagerPeopleCommand {
@@ -2219,6 +2332,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   executeManagerPeopleCommand(
     input: ExecuteManagerPeopleCommandInput,
   ): Promise<DatabaseManagerPeopleCommand>;
+  executeHeadquartersCatalogCommand(
+    input: ExecuteHeadquartersCatalogCommandInput,
+  ): Promise<DatabaseHeadquartersCatalogCommand>;
   createCustomerPendingReservation(
     input: CreateCustomerPendingReservationInput,
   ): Promise<DatabaseCustomerPendingReservation>;
@@ -2334,6 +2450,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readHeadquartersPeopleSchedule(
     input: ReadHeadquartersPeopleScheduleInput,
   ): Promise<DatabaseHeadquartersPeopleSchedule>;
+  readHeadquartersCatalogs(
+    input: ReadHeadquartersCatalogsInput,
+  ): Promise<DatabaseHeadquartersCatalogs>;
   readCustomerSeatAvailability(
     input: ReadCustomerSeatAvailabilityInput,
   ): Promise<DatabaseCustomerSeatAvailability>;
@@ -2445,6 +2564,28 @@ const productSeeds = [
     name: "轨道饭团",
   },
 ] as const;
+
+const productAvailableStoreCodes = {
+  "circuit-coffee": ["prism-flagship", "starbridge-standard"],
+  "cloud-mineral-water": ["apex-new", "prism-flagship", "starbridge-standard"],
+  "crisp-seaweed": ["apex-new", "prism-flagship", "starbridge-standard"],
+  "heatwave-noodles": ["apex-new", "prism-flagship", "starbridge-standard"],
+  "jump-energy-bar": ["apex-new", "prism-flagship"],
+  "midnight-iced-tea": ["prism-flagship", "starbridge-standard"],
+  "night-voyage-chips": ["apex-new", "prism-flagship", "starbridge-standard"],
+  "orbit-rice-roll": ["apex-new", "starbridge-standard"],
+  "peripheral-wipe": ["apex-new", "prism-flagship"],
+  "pulse-sparkling-water": [
+    "apex-new",
+    "prism-flagship",
+    "starbridge-standard",
+  ],
+  "star-popcorn": ["prism-flagship", "starbridge-standard"],
+  "wake-mint": ["apex-new", "prism-flagship", "starbridge-standard"],
+} as const satisfies Record<
+  (typeof productSeeds)[number]["code"],
+  ReadonlyArray<(typeof storeSeeds)[number]["code"]>
+>;
 
 interface SandboxRow {
   id: string;
@@ -3119,6 +3260,7 @@ interface CustomerRepairReservationRow {
   id: string;
   machine_profile_code: MachineProfileCode;
   machine_profile_display_name: string;
+  machine_profile_experience_description: string;
   machine_profile_id: string;
   operational_status: "maintenance" | "normal";
   seat_code: string;
@@ -3134,6 +3276,7 @@ interface StaffRepairSeatRow {
   area_display_name: string;
   machine_profile_code: MachineProfileCode;
   machine_profile_display_name: string;
+  machine_profile_experience_description: string;
   machine_profile_id: string;
   operational_status: "maintenance" | "normal";
   seat_code: string;
@@ -6861,6 +7004,28 @@ async function materializePublicSandbox(input: {
       seededProducts.map((product) => product.category),
     ],
   );
+  const seededProductScopes = seededProducts.flatMap((product) =>
+    productAvailableStoreCodes[product.code].map((storeCode) => {
+      const store = seededStores.find(
+        (candidate) => candidate.code === storeCode,
+      );
+      if (!store) {
+        throw new Error(
+          "The product scope references an unknown seeded store.",
+        );
+      }
+      return { productId: product.id, storeId: store.id };
+    }),
+  );
+  await input.client.query(
+    `insert into product_store_scopes (sandbox_id, product_id, store_id)
+     select * from unnest($1::uuid[], $2::uuid[], $3::uuid[])`,
+    [
+      seededProductScopes.map(() => input.sandboxId),
+      seededProductScopes.map((scope) => scope.productId),
+      seededProductScopes.map((scope) => scope.storeId),
+    ],
+  );
   const flagshipProductCodes = new Set(
     productSeeds.slice(0, 6).map((product) => product.code),
   );
@@ -8929,18 +9094,18 @@ async function managerExportRowsWithClient(
       status: string;
     }>(
       `select repair.id, seat.code as seat_code,
-              profile.display_name as machine_name, repair.status,
+              repair.machine_profile_snapshot->>'displayName' as machine_name,
+              repair.status,
               repair.priority, repair.created_business_at,
               repair.closed_business_at
          from repairs repair
          join seats seat on seat.id = repair.seat_id
-         join machine_profiles profile on profile.id = repair.machine_profile_id
         where repair.sandbox_id = $1 and repair.store_id = $2
           and repair.created_business_at >= $3 and repair.created_business_at < $4
           and ($5::text is null or repair.status = $5)
           and ($6::text is null or repair.id::text ilike '%' || $6 || '%'
             or seat.code ilike '%' || $6 || '%'
-            or profile.display_name ilike '%' || $6 || '%')
+            or repair.machine_profile_snapshot->>'displayName' ilike '%' || $6 || '%')
         order by ${input.sort.field === "status" ? "repair.status" : "repair.created_business_at"} ${direction}, repair.id ${direction}`,
       [
         input.sandboxId,
@@ -9755,11 +9920,11 @@ export function createPublicSandboxDatabase(
           `select repair.id as repair_id, repair.description, repair.priority,
                   repair.status, repair.source, repair.created_at,
                   repair.created_business_at, seat.code as seat_code,
-                  profile.code as machine_profile_code,
-                  profile.display_name as machine_profile_display_name
+                  repair.machine_profile_snapshot->>'code' as machine_profile_code,
+                  repair.machine_profile_snapshot->>'displayName'
+                    as machine_profile_display_name
              from repairs repair
              join seats seat on seat.id = repair.seat_id
-             join machine_profiles profile on profile.id = repair.machine_profile_id
             where repair.sandbox_id = $1 and repair.store_id = $2
             order by case repair.priority
                        when 'urgent' then 0 when 'high' then 1 else 2 end,
@@ -9832,6 +9997,8 @@ export function createPublicSandboxDatabase(
                   area.display_name as area_display_name,
                   profile.code as machine_profile_code,
                   profile.display_name as machine_profile_display_name,
+                  profile.experience_description
+                    as machine_profile_experience_description,
                   store.id as store_id, store.code as store_code,
                   store.display_name as store_display_name,
                   repair.id as existing_repair_id,
@@ -9929,8 +10096,10 @@ export function createPublicSandboxDatabase(
                   repair.reservation_id, repair.source, repair.description,
                   repair.priority, repair.status, repair.created_at,
                   seat.code as seat_code, seat.operational_status,
-                  profile.code as machine_profile_code,
-                  profile.display_name as machine_profile_display_name,
+                  repair.machine_profile_snapshot->>'code'
+                    as machine_profile_code,
+                  repair.machine_profile_snapshot->>'displayName'
+                    as machine_profile_display_name,
                   store.code as store_code,
                   store.display_name as store_display_name,
                   assignee.id as assigned_to_persona_id,
@@ -9946,7 +10115,6 @@ export function createPublicSandboxDatabase(
                   verifier.display_name as verified_by_display_name
              from repairs repair
              join seats seat on seat.id = repair.seat_id
-             join machine_profiles profile on profile.id = repair.machine_profile_id
              join stores store on store.id = repair.store_id
              left join demo_personas assignee
                on assignee.id = repair.assigned_to_persona_id
@@ -11758,6 +11926,8 @@ export function createPublicSandboxDatabase(
                   area.display_name as area_display_name,
                   profile.code as machine_profile_code,
                   profile.display_name as machine_profile_display_name,
+                  profile.experience_description
+                    as machine_profile_experience_description,
                   store.id as store_id, store.code as store_code,
                   store.display_name as store_display_name
              from seats seat
@@ -11780,13 +11950,14 @@ export function createPublicSandboxDatabase(
                   repair.reservation_id, repair.source, repair.description,
                   repair.priority, repair.status, repair.created_at,
                   seat.code as seat_code, seat.operational_status,
-                  profile.code as machine_profile_code,
-                  profile.display_name as machine_profile_display_name,
+                  repair.machine_profile_snapshot->>'code'
+                    as machine_profile_code,
+                  repair.machine_profile_snapshot->>'displayName'
+                    as machine_profile_display_name,
                   store.code as store_code,
                   store.display_name as store_display_name
              from repairs repair
              join seats seat on seat.id = repair.seat_id
-             join machine_profiles profile on profile.id = repair.machine_profile_id
              join stores store on store.id = repair.store_id`;
         const existing = await client.query<RepairRow>(
           `${selectRepair}
@@ -11803,17 +11974,24 @@ export function createPublicSandboxDatabase(
           await client.query(
             `insert into repairs (
                id, sandbox_id, store_id, seat_id, machine_profile_id,
+               machine_profile_snapshot,
                reservation_id, customer_persona_id, created_by_persona_id,
                source, description, priority, status, created_business_at,
                created_at
-             ) values ($1, $2, $3, $4, $5, null, null, $6, 'staff', $7,
-               'normal', 'new', $8, $9)`,
+             ) values ($1, $2, $3, $4, $5, $6::jsonb, null, null, $7,
+               'staff', $8, 'normal', 'new', $9, $10)`,
             [
               repairId,
               input.sandboxId,
               seatRow.store_id,
               seatRow.seat_id,
               seatRow.machine_profile_id,
+              JSON.stringify({
+                code: seatRow.machine_profile_code,
+                displayName: seatRow.machine_profile_display_name,
+                experienceDescription:
+                  seatRow.machine_profile_experience_description,
+              }),
               input.personaId,
               description,
               businessTime,
@@ -11941,6 +12119,8 @@ export function createPublicSandboxDatabase(
                   seat.operational_status,
                   profile.code as machine_profile_code,
                   profile.display_name as machine_profile_display_name,
+                  profile.experience_description
+                    as machine_profile_experience_description,
                   store.code as store_code,
                   store.display_name as store_display_name
              from reservations reservation
@@ -11968,13 +12148,14 @@ export function createPublicSandboxDatabase(
                   repair.reservation_id, repair.source, repair.description,
                   repair.priority, repair.status, repair.created_at,
                   seat.code as seat_code, seat.operational_status,
-                  profile.code as machine_profile_code,
-                  profile.display_name as machine_profile_display_name,
+                  repair.machine_profile_snapshot->>'code'
+                    as machine_profile_code,
+                  repair.machine_profile_snapshot->>'displayName'
+                    as machine_profile_display_name,
                   store.code as store_code,
                   store.display_name as store_display_name
              from repairs repair
              join seats seat on seat.id = repair.seat_id
-             join machine_profiles profile on profile.id = repair.machine_profile_id
              join stores store on store.id = repair.store_id`;
         const existing = await client.query<RepairRow>(
           `${selectRepair}
@@ -11991,17 +12172,24 @@ export function createPublicSandboxDatabase(
           await client.query(
             `insert into repairs (
                id, sandbox_id, store_id, seat_id, machine_profile_id,
+               machine_profile_snapshot,
                reservation_id, customer_persona_id, created_by_persona_id,
                source, description, priority, status, created_business_at,
                created_at
-             ) values ($1, $2, $3, $4, $5, $6, $7, $7, 'customer', $8,
-               'normal', 'new', $9, $10)`,
+             ) values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $8,
+               'customer', $9, 'normal', 'new', $10, $11)`,
             [
               repairId,
               input.sandboxId,
               reservationRow.store_id,
               reservationRow.seat_id,
               reservationRow.machine_profile_id,
+              JSON.stringify({
+                code: reservationRow.machine_profile_code,
+                displayName: reservationRow.machine_profile_display_name,
+                experienceDescription:
+                  reservationRow.machine_profile_experience_description,
+              }),
               reservationRow.id,
               input.personaId,
               description,
@@ -15216,6 +15404,664 @@ export function createPublicSandboxDatabase(
         client.release();
       }
     },
+    async readHeadquartersCatalogs(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertHeadquartersContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        const stores = await client.query<{
+          code: string;
+          display_name: string;
+          id: string;
+        }>(
+          `select id, code, display_name from stores
+            where sandbox_id = $1 order by code`,
+          [input.sandboxId],
+        );
+        const products = await client.query<{
+          archived: boolean;
+          category: "drink" | "meal" | "snack" | "supply";
+          code: string;
+          config_version: number;
+          description: string;
+          id: string;
+          name: string;
+          store_configuration_count: number;
+        }>(
+          `select product.id, product.code, product.name, product.description,
+                  product.category, product.archived, product.config_version,
+                  (select count(*)::integer from store_products config
+                    where config.sandbox_id = product.sandbox_id
+                      and config.product_id = product.id)
+                    as store_configuration_count
+             from products product where product.sandbox_id = $1
+            order by product.category, product.name, product.code`,
+          [input.sandboxId],
+        );
+        const scopes = await client.query<{
+          product_id: string;
+          store_code: string;
+          store_display_name: string;
+          store_id: string;
+        }>(
+          `select scope.product_id, store.id as store_id,
+                  store.code as store_code,
+                  store.display_name as store_display_name
+             from product_store_scopes scope
+             join stores store on store.id = scope.store_id
+            where scope.sandbox_id = $1
+            order by store.display_name, store.code`,
+          [input.sandboxId],
+        );
+        const machineProfiles = await client.query<{
+          archived: boolean;
+          code: string;
+          config_version: number;
+          display_name: string;
+          experience_description: string;
+          historical_reference_count: number;
+          id: string;
+          seat_reference_count: number;
+        }>(
+          `select profile.id, profile.code, profile.display_name,
+                  profile.experience_description, profile.archived,
+                  profile.config_version,
+                  (select count(*)::integer from seats seat
+                    where seat.sandbox_id = profile.sandbox_id
+                      and seat.machine_profile_id = profile.id)
+                    as seat_reference_count,
+                  ((select count(*) from reservations reservation
+                      join seats seat on seat.id = reservation.seat_id
+                     where reservation.sandbox_id = profile.sandbox_id
+                       and seat.machine_profile_id = profile.id)
+                    + (select count(*) from repairs repair
+                        where repair.sandbox_id = profile.sandbox_id
+                          and repair.machine_profile_id = profile.id))::integer
+                    as historical_reference_count
+             from machine_profiles profile where profile.sandbox_id = $1
+            order by case profile.code
+              when 'standard' then 1 when 'competitive' then 2
+              when 'flagship' then 3 else 4 end,
+              profile.display_name, profile.code`,
+          [input.sandboxId],
+        );
+        await client.query("commit");
+        return {
+          currentTime,
+          machineProfiles: machineProfiles.rows.map((profile) => ({
+            archived: profile.archived,
+            code: profile.code,
+            displayName: profile.display_name,
+            experienceDescription: profile.experience_description,
+            historicalReferenceCount: profile.historical_reference_count,
+            machineProfileId: profile.id,
+            seatReferenceCount: profile.seat_reference_count,
+            version: profile.config_version,
+          })),
+          products: products.rows.map((product) => ({
+            archived: product.archived,
+            availableStores: scopes.rows
+              .filter((scope) => scope.product_id === product.id)
+              .map((scope) => ({
+                code: scope.store_code,
+                displayName: scope.store_display_name,
+                storeId: scope.store_id,
+              })),
+            category: product.category,
+            code: product.code,
+            description: product.description,
+            displayName: product.name,
+            productId: product.id,
+            storeConfigurationCount: product.store_configuration_count,
+            version: product.config_version,
+          })),
+          stores: stores.rows.map((store) => ({
+            code: store.code,
+            displayName: store.display_name,
+            storeId: store.id,
+          })),
+        } satisfies DatabaseHeadquartersCatalogs;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async executeHeadquartersCatalogCommand(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertHeadquartersContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        const normalizedPayload = (() => {
+          switch (input.action) {
+            case "create-product":
+              return {
+                action: input.action,
+                availableStoreIds: [...new Set(input.availableStoreIds)].sort(),
+                category: input.category,
+                code: input.code.trim(),
+                description: input.description.trim(),
+                displayName: input.displayName.trim(),
+              };
+            case "update-product":
+              return {
+                action: input.action,
+                availableStoreIds: [...new Set(input.availableStoreIds)].sort(),
+                category: input.category,
+                description: input.description.trim(),
+                displayName: input.displayName.trim(),
+                expectedVersion: input.expectedVersion,
+                productId: input.productId,
+              };
+            case "archive-product":
+              return {
+                action: input.action,
+                expectedVersion: input.expectedVersion,
+                productId: input.productId,
+              };
+            case "create-machine-profile":
+              return {
+                action: input.action,
+                code: input.code.trim(),
+                displayName: input.displayName.trim(),
+                experienceDescription: input.experienceDescription.trim(),
+              };
+            case "update-machine-profile":
+              return {
+                action: input.action,
+                displayName: input.displayName.trim(),
+                expectedVersion: input.expectedVersion,
+                experienceDescription: input.experienceDescription.trim(),
+                machineProfileId: input.machineProfileId,
+              };
+            case "archive-machine-profile":
+              return {
+                action: input.action,
+                expectedVersion: input.expectedVersion,
+                machineProfileId: input.machineProfileId,
+              };
+          }
+        })();
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(JSON.stringify(normalizedPayload));
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:hq-catalog:${idempotencyKeyHash}`,
+          ],
+        );
+        const existing = await client.query<{
+          payload_hash: string;
+          result_data: DatabaseHeadquartersCatalogCommand;
+        }>(
+          `select payload_hash, result_data
+             from headquarters_catalog_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and idempotency_key_hash = $3`,
+          [input.sandboxId, input.personaId, idempotencyKeyHash],
+        );
+        const previous = existing.rows[0];
+        if (previous) {
+          if (previous.payload_hash !== payloadHash) {
+            throw new HeadquartersCatalogConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return { ...previous.result_data, replayed: true };
+        }
+
+        const persist = async (
+          result: Omit<DatabaseHeadquartersCatalogCommand, "replayed">,
+          beforeData: unknown,
+          afterData: unknown,
+        ) => {
+          const stored: DatabaseHeadquartersCatalogCommand = {
+            ...result,
+            replayed: false,
+          };
+          const objectType = result.action.includes("product")
+            ? "product"
+            : "machine_profile";
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, null, $3, 'hq', $4, $5, $6, 'allowed',
+               null, $7, $8::jsonb, $9::jsonb, $10, $11)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.personaId,
+              `headquarters-catalog.${result.action}`,
+              objectType,
+              result.objectId,
+              input.requestId,
+              beforeData === null ? null : JSON.stringify(beforeData),
+              JSON.stringify(afterData),
+              currentTime,
+              wallTime,
+            ],
+          );
+          await client.query(
+            `insert into headquarters_catalog_command_requests (
+               sandbox_id, actor_persona_id, command_type,
+               idempotency_key_hash, payload_hash, result_data, created_at
+             ) values ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+            [
+              input.sandboxId,
+              input.personaId,
+              input.action,
+              idempotencyKeyHash,
+              payloadHash,
+              JSON.stringify(stored),
+              wallTime,
+            ],
+          );
+          await client.query("commit");
+          return stored;
+        };
+
+        const productInputValid = (product: {
+          availableStoreIds: ReadonlyArray<string>;
+          category: string;
+          description: string;
+          displayName: string;
+        }) =>
+          product.displayName.trim().length >= 1 &&
+          product.displayName.trim().length <= 60 &&
+          product.description.trim().length >= 1 &&
+          product.description.trim().length <= 240 &&
+          ["drink", "meal", "snack", "supply"].includes(product.category) &&
+          product.availableStoreIds.length >= 1 &&
+          product.availableStoreIds.length <= 3 &&
+          new Set(product.availableStoreIds).size ===
+            product.availableStoreIds.length &&
+          isSafeCatalogText(`${product.displayName}${product.description}`);
+        const machineProfileInputValid = (profile: {
+          displayName: string;
+          experienceDescription: string;
+        }) =>
+          profile.displayName.trim().length >= 1 &&
+          profile.displayName.trim().length <= 60 &&
+          profile.experienceDescription.trim().length >= 1 &&
+          profile.experienceDescription.trim().length <= 240 &&
+          isSafeCatalogText(
+            `${profile.displayName}${profile.experienceDescription}`,
+          );
+        const assertProductStores = async (storeIds: ReadonlyArray<string>) => {
+          const stores = await client.query<{ id: string }>(
+            `select id from stores where sandbox_id = $1 and id = any($2::uuid[])`,
+            [input.sandboxId, storeIds],
+          );
+          if (stores.rows.length !== storeIds.length) {
+            throw new HeadquartersCatalogConflictError("product-store-scope");
+          }
+        };
+        const createMissingStoreConfigurations = async (product: {
+          code: string;
+          displayName: string;
+          productId: string;
+          storeIds: ReadonlyArray<string>;
+        }) => {
+          const existingConfigurations = await client.query<{
+            store_id: string;
+          }>(
+            `select store_id from store_products
+              where sandbox_id = $1 and product_id = $2`,
+            [input.sandboxId, product.productId],
+          );
+          const configured = new Set(
+            existingConfigurations.rows.map(
+              (configuration) => configuration.store_id,
+            ),
+          );
+          for (const storeId of product.storeIds) {
+            if (configured.has(storeId)) continue;
+            const inventoryItemId = randomUUID();
+            await client.query(
+              `insert into inventory_items (
+                 id, sandbox_id, store_id, product_id, kind, code, display_name,
+                 on_hand_quantity, reserved_quantity, low_stock_threshold
+               ) values ($1, $2, $3, $4, 'product', $5, $6, 0, 0, 0)`,
+              [
+                inventoryItemId,
+                input.sandboxId,
+                storeId,
+                product.productId,
+                product.code,
+                product.displayName,
+              ],
+            );
+            await client.query(
+              `insert into store_products (
+                 id, sandbox_id, store_id, product_id, inventory_item_id,
+                 listed, unit_price_cents, archived, config_version
+               ) values ($1, $2, $3, $4, $5, false, 0, false, 1)`,
+              [
+                randomUUID(),
+                input.sandboxId,
+                storeId,
+                product.productId,
+                inventoryItemId,
+              ],
+            );
+          }
+        };
+
+        if (input.action === "create-product") {
+          if (
+            !productInputValid(input) ||
+            !isValidCatalogCode(input.code.trim())
+          ) {
+            throw new HeadquartersCatalogConflictError("invalid-product");
+          }
+          await assertProductStores(input.availableStoreIds);
+          const duplicate = await client.query<{ id: string }>(
+            `select id from products where sandbox_id = $1 and code = $2`,
+            [input.sandboxId, input.code.trim()],
+          );
+          if (duplicate.rows[0]) {
+            throw new HeadquartersCatalogConflictError("code-conflict");
+          }
+          const productId = randomUUID();
+          await client.query(
+            `insert into products (
+               id, sandbox_id, code, name, description, category,
+               archived, config_version
+             ) values ($1, $2, $3, $4, $5, $6, false, 1)`,
+            [
+              productId,
+              input.sandboxId,
+              input.code.trim(),
+              input.displayName.trim(),
+              input.description.trim(),
+              input.category,
+            ],
+          );
+          await client.query(
+            `insert into product_store_scopes (sandbox_id, product_id, store_id)
+             select $1, $2, unnest($3::uuid[])`,
+            [input.sandboxId, productId, input.availableStoreIds],
+          );
+          await createMissingStoreConfigurations({
+            code: input.code.trim(),
+            displayName: input.displayName.trim(),
+            productId,
+            storeIds: input.availableStoreIds,
+          });
+          return await persist(
+            { action: input.action, objectId: productId, version: 1 },
+            null,
+            normalizedPayload,
+          );
+        }
+
+        if (input.action === "update-product") {
+          if (!productInputValid(input)) {
+            throw new HeadquartersCatalogConflictError("invalid-product");
+          }
+          await assertProductStores(input.availableStoreIds);
+          const before = await client.query<{
+            archived: boolean;
+            category: string;
+            code: string;
+            config_version: number;
+            description: string;
+            name: string;
+          }>(
+            `select code, name, description, category, archived, config_version
+               from products where sandbox_id = $1 and id = $2 for update`,
+            [input.sandboxId, input.productId],
+          );
+          const beforeRow = before.rows[0];
+          if (!beforeRow)
+            throw new HeadquartersCatalogConflictError("not-found");
+          if (beforeRow.archived)
+            throw new HeadquartersCatalogConflictError("archived");
+          if (beforeRow.config_version !== input.expectedVersion) {
+            throw new HeadquartersCatalogConflictError("version-conflict");
+          }
+          const updated = await client.query<{ config_version: number }>(
+            `update products set name = $3, description = $4, category = $5,
+                    config_version = config_version + 1
+              where sandbox_id = $1 and id = $2 returning config_version`,
+            [
+              input.sandboxId,
+              input.productId,
+              input.displayName.trim(),
+              input.description.trim(),
+              input.category,
+            ],
+          );
+          await client.query(
+            `update inventory_items set display_name = $3
+              where sandbox_id = $1 and product_id = $2`,
+            [input.sandboxId, input.productId, input.displayName.trim()],
+          );
+          await client.query(
+            `delete from product_store_scopes
+              where sandbox_id = $1 and product_id = $2`,
+            [input.sandboxId, input.productId],
+          );
+          await client.query(
+            `insert into product_store_scopes (sandbox_id, product_id, store_id)
+             select $1, $2, unnest($3::uuid[])`,
+            [input.sandboxId, input.productId, input.availableStoreIds],
+          );
+          await createMissingStoreConfigurations({
+            code: beforeRow.code,
+            displayName: input.displayName.trim(),
+            productId: input.productId,
+            storeIds: input.availableStoreIds,
+          });
+          return await persist(
+            {
+              action: input.action,
+              objectId: input.productId,
+              version: updated.rows[0]!.config_version,
+            },
+            beforeRow,
+            normalizedPayload,
+          );
+        }
+
+        if (input.action === "archive-product") {
+          const before = await client.query<{
+            archived: boolean;
+            category: string;
+            code: string;
+            config_version: number;
+            description: string;
+            name: string;
+          }>(
+            `select code, name, description, category, archived, config_version
+               from products where sandbox_id = $1 and id = $2 for update`,
+            [input.sandboxId, input.productId],
+          );
+          const beforeRow = before.rows[0];
+          if (!beforeRow)
+            throw new HeadquartersCatalogConflictError("not-found");
+          if (beforeRow.archived)
+            throw new HeadquartersCatalogConflictError("archived");
+          if (beforeRow.config_version !== input.expectedVersion) {
+            throw new HeadquartersCatalogConflictError("version-conflict");
+          }
+          const archived = await client.query<{ config_version: number }>(
+            `update products set archived = true,
+                    config_version = config_version + 1
+              where sandbox_id = $1 and id = $2 returning config_version`,
+            [input.sandboxId, input.productId],
+          );
+          return await persist(
+            {
+              action: input.action,
+              objectId: input.productId,
+              version: archived.rows[0]!.config_version,
+            },
+            beforeRow,
+            { archived: true },
+          );
+        }
+
+        if (input.action === "create-machine-profile") {
+          if (
+            !machineProfileInputValid(input) ||
+            !isValidCatalogCode(input.code.trim())
+          ) {
+            throw new HeadquartersCatalogConflictError(
+              "invalid-machine-profile",
+            );
+          }
+          const duplicate = await client.query<{ id: string }>(
+            `select id from machine_profiles where sandbox_id = $1 and code = $2`,
+            [input.sandboxId, input.code.trim()],
+          );
+          if (duplicate.rows[0]) {
+            throw new HeadquartersCatalogConflictError("code-conflict");
+          }
+          const machineProfileId = randomUUID();
+          await client.query(
+            `insert into machine_profiles (
+               id, sandbox_id, code, display_name, experience_description,
+               archived, config_version
+             ) values ($1, $2, $3, $4, $5, false, 1)`,
+            [
+              machineProfileId,
+              input.sandboxId,
+              input.code.trim(),
+              input.displayName.trim(),
+              input.experienceDescription.trim(),
+            ],
+          );
+          return await persist(
+            { action: input.action, objectId: machineProfileId, version: 1 },
+            null,
+            normalizedPayload,
+          );
+        }
+
+        if (input.action === "update-machine-profile") {
+          if (!machineProfileInputValid(input)) {
+            throw new HeadquartersCatalogConflictError(
+              "invalid-machine-profile",
+            );
+          }
+          const before = await client.query<{
+            archived: boolean;
+            code: string;
+            config_version: number;
+            display_name: string;
+            experience_description: string;
+          }>(
+            `select code, display_name, experience_description, archived,
+                    config_version
+               from machine_profiles
+              where sandbox_id = $1 and id = $2 for update`,
+            [input.sandboxId, input.machineProfileId],
+          );
+          const beforeRow = before.rows[0];
+          if (!beforeRow) {
+            throw new HeadquartersCatalogConflictError("not-found");
+          }
+          if (beforeRow.archived) {
+            throw new HeadquartersCatalogConflictError("archived");
+          }
+          if (beforeRow.config_version !== input.expectedVersion) {
+            throw new HeadquartersCatalogConflictError("version-conflict");
+          }
+          const updated = await client.query<{ config_version: number }>(
+            `update machine_profiles
+                set display_name = $3, experience_description = $4,
+                    config_version = config_version + 1
+              where sandbox_id = $1 and id = $2 returning config_version`,
+            [
+              input.sandboxId,
+              input.machineProfileId,
+              input.displayName.trim(),
+              input.experienceDescription.trim(),
+            ],
+          );
+          return await persist(
+            {
+              action: input.action,
+              objectId: input.machineProfileId,
+              version: updated.rows[0]!.config_version,
+            },
+            beforeRow,
+            normalizedPayload,
+          );
+        }
+
+        if (input.action === "archive-machine-profile") {
+          const before = await client.query<{
+            archived: boolean;
+            code: string;
+            config_version: number;
+            display_name: string;
+            experience_description: string;
+          }>(
+            `select code, display_name, experience_description, archived,
+                    config_version
+               from machine_profiles
+              where sandbox_id = $1 and id = $2 for update`,
+            [input.sandboxId, input.machineProfileId],
+          );
+          const beforeRow = before.rows[0];
+          if (!beforeRow) {
+            throw new HeadquartersCatalogConflictError("not-found");
+          }
+          if (beforeRow.archived) {
+            throw new HeadquartersCatalogConflictError("archived");
+          }
+          if (beforeRow.config_version !== input.expectedVersion) {
+            throw new HeadquartersCatalogConflictError("version-conflict");
+          }
+          const archived = await client.query<{ config_version: number }>(
+            `update machine_profiles
+                set archived = true, config_version = config_version + 1
+              where sandbox_id = $1 and id = $2 returning config_version`,
+            [input.sandboxId, input.machineProfileId],
+          );
+          return await persist(
+            {
+              action: input.action,
+              objectId: input.machineProfileId,
+              version: archived.rows[0]!.config_version,
+            },
+            beforeRow,
+            { archived: true },
+          );
+        }
+
+        throw new HeadquartersCatalogConflictError("invalid-machine-profile");
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async executeManagerPeopleCommand(input) {
       const client = await pool.connect();
       const wallTime = wallClock.now();
@@ -16072,6 +16918,10 @@ export function createPublicSandboxDatabase(
                     where reservation.inventory_item_id = item.id) as business_referenced
              from store_products config
              join products product on product.id = config.product_id
+             join product_store_scopes scope
+               on scope.sandbox_id = config.sandbox_id
+              and scope.product_id = config.product_id
+              and scope.store_id = config.store_id
              join inventory_items item on item.id = config.inventory_item_id
             where config.sandbox_id = $1 and config.store_id = $2
             order by product.category, product.name, product.code`,
@@ -17519,6 +18369,10 @@ export function createPublicSandboxDatabase(
                     config.inventory_item_id, config.listed,
                     config.unit_price_cents, item.low_stock_threshold
                from store_products config
+               join product_store_scopes scope
+                 on scope.sandbox_id = config.sandbox_id
+                and scope.product_id = config.product_id
+                and scope.store_id = config.store_id
                join inventory_items item on item.id = config.inventory_item_id
               where config.sandbox_id = $1 and config.store_id = $2
                 and config.id = $3
@@ -18827,6 +19681,10 @@ export function createPublicSandboxDatabase(
                     as available_quantity
              from store_products config
              join products product on product.id = config.product_id
+             join product_store_scopes scope
+               on scope.sandbox_id = config.sandbox_id
+              and scope.product_id = config.product_id
+              and scope.store_id = config.store_id
              join inventory_items item on item.id = config.inventory_item_id
             where config.sandbox_id = $1 and config.store_id = $2
               and config.listed = true and config.archived = false
@@ -18977,6 +19835,10 @@ export function createPublicSandboxDatabase(
                     as available_quantity
              from store_products config
              join products product on product.id = config.product_id
+             join product_store_scopes scope
+               on scope.sandbox_id = config.sandbox_id
+              and scope.product_id = config.product_id
+              and scope.store_id = config.store_id
              join inventory_items item on item.id = config.inventory_item_id
             where config.sandbox_id = $1 and config.store_id = $2
               and config.listed = true and config.archived = false

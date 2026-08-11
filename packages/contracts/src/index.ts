@@ -1682,6 +1682,7 @@ export const ROLE_CAPABILITIES = [
   "store:manage-people",
   "chain:compare",
   "chain:configure",
+  "chain:maintain-catalogs",
   "audit:view",
 ] as const;
 
@@ -2268,4 +2269,91 @@ export interface HeadquartersPeopleScheduleResponse {
     readonly staffCount: number;
     readonly store: { readonly code: string; readonly displayName: string };
   }>;
+}
+
+export type HeadquartersProductCategory = "drink" | "meal" | "snack" | "supply";
+
+export interface HeadquartersCatalogsResponse {
+  readonly status: "ready";
+  readonly currentTime: string;
+  readonly stores: ReadonlyArray<{
+    readonly code: string;
+    readonly displayName: string;
+    readonly storeId: string;
+  }>;
+  readonly products: ReadonlyArray<{
+    readonly archived: boolean;
+    readonly availableStores: ReadonlyArray<{
+      readonly code: string;
+      readonly displayName: string;
+      readonly storeId: string;
+    }>;
+    readonly category: HeadquartersProductCategory;
+    readonly code: string;
+    readonly description: string;
+    readonly displayName: string;
+    readonly productId: string;
+    readonly storeConfigurationCount: number;
+    readonly version: number;
+  }>;
+  readonly machineProfiles: ReadonlyArray<{
+    readonly archived: boolean;
+    readonly code: string;
+    readonly displayName: string;
+    readonly experienceDescription: string;
+    readonly historicalReferenceCount: number;
+    readonly machineProfileId: string;
+    readonly seatReferenceCount: number;
+    readonly version: number;
+  }>;
+}
+
+export type HeadquartersCatalogCommandRequest =
+  | {
+      readonly action: "create-product";
+      readonly availableStoreIds: ReadonlyArray<string>;
+      readonly category: HeadquartersProductCategory;
+      readonly code: string;
+      readonly description: string;
+      readonly displayName: string;
+    }
+  | {
+      readonly action: "update-product";
+      readonly availableStoreIds: ReadonlyArray<string>;
+      readonly category: HeadquartersProductCategory;
+      readonly description: string;
+      readonly displayName: string;
+      readonly expectedVersion: number;
+      readonly productId: string;
+    }
+  | {
+      readonly action: "archive-product";
+      readonly expectedVersion: number;
+      readonly productId: string;
+    }
+  | {
+      readonly action: "create-machine-profile";
+      readonly code: string;
+      readonly displayName: string;
+      readonly experienceDescription: string;
+    }
+  | {
+      readonly action: "update-machine-profile";
+      readonly displayName: string;
+      readonly expectedVersion: number;
+      readonly experienceDescription: string;
+      readonly machineProfileId: string;
+    }
+  | {
+      readonly action: "archive-machine-profile";
+      readonly expectedVersion: number;
+      readonly machineProfileId: string;
+    };
+
+export interface HeadquartersCatalogCommandResponse {
+  readonly action: HeadquartersCatalogCommandRequest["action"];
+  readonly objectId: string;
+  readonly replayed: boolean;
+  readonly status: "ready";
+  readonly version: number;
 }

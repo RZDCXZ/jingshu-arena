@@ -38,6 +38,7 @@ import {
 } from "./manager-people-schedule";
 import { ManagerDashboard } from "./manager-dashboard";
 import { ManagerAuditExport } from "./manager-audit-export";
+import { HeadquartersCatalogs } from "./headquarters-catalogs";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -660,6 +661,12 @@ export function RoleContextShell({
             />
           ) : context.role.id === "manager" && activePage === "store-audit" ? (
             <ManagerAuditExport
+              csrfToken={context.csrfToken}
+              onToast={setToast}
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+            />
+          ) : context.role.id === "hq" && activePage === "chain-config" ? (
+            <HeadquartersCatalogs
               csrfToken={context.csrfToken}
               onToast={setToast}
               refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}

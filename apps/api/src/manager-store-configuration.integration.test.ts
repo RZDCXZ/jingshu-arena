@@ -93,7 +93,12 @@ describe("manager store configuration API", () => {
     expect(payload.areas).toHaveLength(4);
     expect(payload.seats).toHaveLength(96);
     expect(payload.pricePlans.length).toBeGreaterThan(0);
-    expect(payload.products).toHaveLength(12);
+    expect(payload.products).toHaveLength(11);
+    expect(
+      payload.products.some(
+        (product) => product.headquartersProduct.code === "orbit-rice-roll",
+      ),
+    ).toBe(false);
   });
 
   it("previews price overlap with the server-authoritative domain rule", async () => {

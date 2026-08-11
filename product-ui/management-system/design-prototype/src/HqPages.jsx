@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import {
   ArrowRight,
+  Archive,
   Buildings,
   CalendarBlank,
   ChartBar,
@@ -424,11 +425,13 @@ export function StoreComparePage() {
 
 export function ChainConfigPage({ onAction, readonly }) {
   const [tab, setTab] = useState("products");
-  const productRows = productCatalog.map(([name, category, scope, state]) => ({
+  const productRows = productCatalog.map(([name, category, scope, state, code, description]) => ({
     name,
     category,
     scope,
     state,
+    code,
+    description,
   }));
   const machineRows = machineProfiles.map(
     ([name, spec, description, seats]) => ({
@@ -447,7 +450,7 @@ export function ChainConfigPage({ onAction, readonly }) {
             <span className="eyebrow">竞枢连锁 · 总部资料</span>
             <h1>连锁配置</h1>
             <p>
-              总部维护连锁级商品资料与机型档案；门店售价、上架范围与库存数量仍按门店管理。
+              总部维护连锁级商品资料、适用门店与机型档案；门店售价、上架状态与库存数量仍按门店管理。
             </p>
           </div>
           <Button
@@ -481,6 +484,9 @@ export function ChainConfigPage({ onAction, readonly }) {
             ["machines", "机型档案", 3],
           ]}
         />
+        <InlineNotice title="总部目录专用边界" tone="info">
+          本页不提供门店售价、上架、库存、到店、制作、维修、签到或交接操作。
+        </InlineNotice>
         {tab === "products" ? (
           <Surface className="table-surface section-gap">
             <DataTable
@@ -508,21 +514,37 @@ export function ChainConfigPage({ onAction, readonly }) {
                   key: "action",
                   label: "操作",
                   render: (row) => (
-                    <Button
-                      tone="ghost"
-                      icon={PencilSimple}
-                      disabled={readonly}
-                      onClick={() =>
-                        onAction({
-                          kind: "catalog-product",
-                          mode: "edit",
-                          label: `编辑 ${row.name}`,
-                          ...row,
-                        })
-                      }
-                    >
-                      编辑
-                    </Button>
+                    <div className="action-cluster">
+                      <Button
+                        tone="ghost"
+                        icon={PencilSimple}
+                        disabled={readonly}
+                        onClick={() =>
+                          onAction({
+                            kind: "catalog-product",
+                            mode: "edit",
+                            label: `编辑 ${row.name}`,
+                            ...row,
+                          })
+                        }
+                      >
+                        编辑
+                      </Button>
+                      <Button
+                        tone="ghost"
+                        icon={Archive}
+                        disabled={readonly}
+                        onClick={() =>
+                          onAction({
+                            kind: "catalog-product-archive",
+                            label: `归档 ${row.name}`,
+                            ...row,
+                          })
+                        }
+                      >
+                        归档
+                      </Button>
+                    </div>
                   ),
                 },
               ]}
@@ -556,21 +578,37 @@ export function ChainConfigPage({ onAction, readonly }) {
                   key: "action",
                   label: "操作",
                   render: (row) => (
-                    <Button
-                      tone="ghost"
-                      icon={PencilSimple}
-                      disabled={readonly}
-                      onClick={() =>
-                        onAction({
-                          kind: "machine-profile",
-                          mode: "edit",
-                          label: `编辑 ${row.name}`,
-                          ...row,
-                        })
-                      }
-                    >
-                      编辑
-                    </Button>
+                    <div className="action-cluster">
+                      <Button
+                        tone="ghost"
+                        icon={PencilSimple}
+                        disabled={readonly}
+                        onClick={() =>
+                          onAction({
+                            kind: "machine-profile",
+                            mode: "edit",
+                            label: `编辑 ${row.name}`,
+                            ...row,
+                          })
+                        }
+                      >
+                        编辑
+                      </Button>
+                      <Button
+                        tone="ghost"
+                        icon={Archive}
+                        disabled={readonly}
+                        onClick={() =>
+                          onAction({
+                            kind: "machine-profile-archive",
+                            label: `归档 ${row.name}`,
+                            ...row,
+                          })
+                        }
+                      >
+                        归档
+                      </Button>
+                    </div>
                   ),
                 },
               ]}

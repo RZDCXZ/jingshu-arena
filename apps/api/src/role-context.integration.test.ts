@@ -198,6 +198,7 @@ describe("server-issued role context", () => {
           "store:configure",
           "chain:compare",
           "chain:configure",
+          "chain:maintain-catalogs",
           "audit:view",
         ],
       },
@@ -943,7 +944,11 @@ describe("server-issued role context", () => {
         ).toBe(403);
       }
     }
-    for (const capability of ["chain:compare", "chain:configure"] as const) {
+    for (const capability of [
+      "chain:compare",
+      "chain:configure",
+      "chain:maintain-catalogs",
+    ] as const) {
       expect(
         (
           await accessCheck(hq, capability, {
