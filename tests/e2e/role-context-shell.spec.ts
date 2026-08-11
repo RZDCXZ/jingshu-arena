@@ -3867,6 +3867,28 @@ test("headquarters compares all three stores, opens read-only evidence, and expo
     }),
   ).toHaveCount(0);
 
+  const rollingWindowRefresh = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname.endsWith("/api/v1/hq/dashboard") &&
+      !url.searchParams.has("from") &&
+      !url.searchParams.has("to")
+    );
+  });
+  const rollingWindowRange = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname.endsWith("/api/v1/hq/dashboard") &&
+      url.searchParams.has("from") &&
+      url.searchParams.has("to")
+    );
+  });
+  await page.getByRole("button", { name: "最近 7 日" }).click();
+  await Promise.all([rollingWindowRefresh, rollingWindowRange]);
+  await expect(page.getByRole("button", { name: "最近 7 日" })).toHaveClass(
+    /is-active/u,
+  );
+
   const anomalyTrigger = pulse.getByRole("button", {
     name: "查看 棱镜旗舰店 经营异常",
   });

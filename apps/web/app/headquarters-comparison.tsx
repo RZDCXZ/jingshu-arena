@@ -684,7 +684,7 @@ export function HeadquartersComparison({
           <button
             className={preset === "last7" ? "is-active" : ""}
             disabled={loading}
-            onClick={() => void load("last7")}
+            onClick={() => void load("last7", undefined, true)}
             type="button"
           >
             最近 7 日
@@ -692,7 +692,7 @@ export function HeadquartersComparison({
           <button
             className={preset === "last14" ? "is-active" : ""}
             disabled={loading}
-            onClick={() => void load("last14")}
+            onClick={() => void load("last14", undefined, true)}
             type="button"
           >
             最近 14 日
