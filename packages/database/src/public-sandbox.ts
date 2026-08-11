@@ -17476,9 +17476,7 @@ export function createPublicSandboxDatabase(
           (input.action === "update-store-product" ||
             input.action === "archive-store-product")
         ) {
-          throw new ManagerStoreConfigurationConflictError(
-            "invalid-store-product",
-          );
+          throw new ManagerStoreConfigurationConflictError("capability-denied");
         }
         await processFrontlineReservationDeadlines(client, {
           currentTime,

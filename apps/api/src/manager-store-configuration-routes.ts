@@ -40,7 +40,7 @@ function failure(error: unknown, requestId: string) {
     const reason = error.reason as ManagerStoreConfigurationConflictReason;
     const mapping: Record<
       ManagerStoreConfigurationConflictReason,
-      { code: string; message: string; status: 404 | 409 | 422 }
+      { code: string; message: string; status: 403 | 404 | 409 | 422 }
     > = {
       "area-has-active-seats": {
         code: "STORE_AREA_ACTIVE_SEATS",
@@ -61,6 +61,12 @@ function failure(error: unknown, requestId: string) {
         code: "STORE_CONFIGURATION_NOT_FOUND",
         message: "没有找到当前门店可维护的配置对象。",
         status: 404,
+      },
+      "capability-denied": {
+        code: "STORE_CONFIGURATION_CAPABILITY_DENIED",
+        message:
+          "总部只能维护商品适用门店，不能代替门店调整上架、售价或库存阈值。",
+        status: 403,
       },
       "cross-store": {
         code: "STORE_CONFIGURATION_NOT_FOUND",

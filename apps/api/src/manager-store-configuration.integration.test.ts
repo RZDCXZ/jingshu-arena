@@ -158,6 +158,34 @@ describe("manager store configuration API", () => {
       error: { code: "STORE_CONFIGURATION_COMMAND_INVALID" },
     });
 
+    const storeProduct = before.products[0]!;
+    const storeProductWrite = await app.request(
+      "/api/v1/hq/store-configuration/commands",
+      {
+        body: JSON.stringify({
+          action: "update-store-product",
+          expectedVersion: storeProduct.version,
+          listed: storeProduct.listed,
+          lowStockThreshold: storeProduct.lowStockThreshold + 1,
+          storeId: before.store.storeId,
+          storeProductId: storeProduct.storeProductId,
+          unitPriceCents: storeProduct.unitPriceCents,
+        }),
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: headquarters.cookie,
+          "Idempotency-Key": crypto.randomUUID(),
+          Origin: publicOrigin,
+          "X-CSRF-Token": headquarters.context.csrfToken,
+        },
+        method: "POST",
+      },
+    );
+    expect(storeProductWrite.status).toBe(403);
+    await expect(storeProductWrite.json()).resolves.toMatchObject({
+      error: { code: "STORE_CONFIGURATION_CAPABILITY_DENIED" },
+    });
+
     const manager = await createRoleSession("manager");
     const managerUsingHeadquartersRoute = await app.request(
       `/api/v1/hq/store-configuration?storeId=${before.store.storeId}`,

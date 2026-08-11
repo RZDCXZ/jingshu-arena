@@ -128,7 +128,7 @@ describe("manager store configuration", () => {
         storeProductId: product.storeProductId,
         unitPriceCents: product.unitPriceCents,
       }),
-    ).rejects.toMatchObject({ reason: "invalid-store-product" });
+    ).rejects.toMatchObject({ reason: "capability-denied" });
     const unchanged = await database.readManagerStoreConfiguration({
       ...context,
       storeId: prismStore.storeId,
@@ -144,7 +144,7 @@ describe("manager store configuration", () => {
       [context.sandboxId, productRequestId],
     );
     expect(productDenial.rows).toEqual([
-      { reason: "invalid-store-product", role: "hq" },
+      { reason: "capability-denied", role: "hq" },
     ]);
 
     const requestId = randomUUID();

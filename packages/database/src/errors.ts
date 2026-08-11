@@ -276,6 +276,7 @@ export class ManagerInventoryConflictError extends Error {
 }
 
 export type ManagerStoreConfigurationConflictReason =
+  | "capability-denied"
   | "cross-store"
   | "duplicate-area-code"
   | "duplicate-seat-code"
