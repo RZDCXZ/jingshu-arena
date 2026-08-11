@@ -6,10 +6,11 @@ import type {
   FrontlineReservationAction,
   ManagerAuditFilters,
   ManagerAuditResult,
+  ManagerAuditSortField,
   ManagerDashboardDrilldownKind,
   ManagerExportDataType,
+  ManagerExportRequest,
   ManagerExportSortDirection,
-  ManagerExportSortField,
   PublicRole,
   RepairImageContentType,
   StaffOrderAction,
@@ -1087,7 +1088,7 @@ export interface ReadManagerAuditsInput extends ReadStaffReservationWorkbenchInp
   readonly fromBusinessDay?: string;
   readonly sort: {
     readonly direction: ManagerExportSortDirection;
-    readonly field: ManagerExportSortField;
+    readonly field: ManagerAuditSortField;
   };
   readonly storeId: string;
   readonly toBusinessDay?: string;
@@ -1147,21 +1148,10 @@ export interface DatabaseManagerAudits {
   readonly totalCount: number;
 }
 
-export interface ManagerExportInput extends ReadStaffReservationWorkbenchInput {
-  readonly dataType: ManagerExportDataType;
-  readonly filters: ManagerAuditFilters & {
-    readonly search?: string;
-    readonly status?: string;
+export type ManagerExportInput = ReadStaffReservationWorkbenchInput &
+  ManagerExportRequest & {
+    readonly requestId?: string;
   };
-  readonly fromBusinessDay: string;
-  readonly requestId?: string;
-  readonly sort: {
-    readonly direction: ManagerExportSortDirection;
-    readonly field: ManagerExportSortField;
-  };
-  readonly storeId: string;
-  readonly toBusinessDay: string;
-}
 
 export type ManagerExportCellKind = "datetime" | "json" | "money" | "text";
 
@@ -8616,16 +8606,14 @@ interface ManagerAuditRow {
 }
 
 function auditOrderBy(sort: ReadManagerAuditsInput["sort"]) {
-  const expressions: Record<ManagerExportSortField, string> = {
+  const expressions: Record<ManagerAuditSortField, string> = {
     action: "audit.action",
-    amountCents: "audit.business_occurred_at",
     businessOccurredAt: "audit.business_occurred_at",
     objectType: "audit.object_type",
     persona: "coalesce(persona.display_name, '系统')",
     recordedAt: "audit.recorded_at",
     result: "audit.result",
     role: "audit.role",
-    status: "audit.business_occurred_at",
   };
   return `${expressions[sort.field]} ${sort.direction}, audit.id ${sort.direction}`;
 }
@@ -8770,8 +8758,6 @@ async function managerExportRowsWithClient(
   range: { readonly endsAt: Date; readonly startsAt: Date },
 ): Promise<ReadonlyArray<ReadonlyArray<Date | number | string | null>>> {
   const direction = input.sort.direction;
-  const search = input.filters.search?.trim() || null;
-  const status = input.filters.status?.trim() || null;
   if (input.dataType === "audits") {
     const events = await managerAuditRowsWithClient(
       client,
@@ -8798,6 +8784,8 @@ async function managerExportRowsWithClient(
       event.after ? JSON.stringify(event.after) : null,
     ]);
   }
+  const search = input.filters.search?.trim() || null;
+  const status = input.filters.status?.trim() || null;
   if (input.dataType === "reservations") {
     const result = await client.query<{
       amount_cents: number;

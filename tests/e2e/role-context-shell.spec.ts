@@ -1509,8 +1509,13 @@ test.beforeEach(async ({ context }) => {
           ? 1
           : 4
         : 12;
+    const columns =
+      body.dataType === "audits"
+        ? ["业务发生时间", "服务器记录时间", "动作"]
+        : ["经营日", "记录", "状态"];
     await route.fulfill({
       json: {
+        columns,
         dataType: body.dataType,
         estimatedRowCount: rowCount,
         range: {
@@ -1523,6 +1528,11 @@ test.beforeEach(async ({ context }) => {
           ).toISOString(),
           toBusinessDay: body.toBusinessDay,
         },
+        rows: Array.from({ length: rowCount }, (_, index) => [
+          "2026-08-09",
+          `当前筛选记录 ${index + 1}`,
+          body.dataType === "audits" ? "repair.verify" : "ready",
+        ]),
         status: "ready",
         store: {
           code: "prism-flagship",
@@ -1545,7 +1555,7 @@ test.beforeEach(async ({ context }) => {
         : 12;
     await route.fulfill({
       body:
-        "\uFEFF业务发生时间,服务端记录时间,动作\r\n" +
+        "\uFEFF业务发生时间,服务器记录时间,动作\r\n" +
         "2026-08-09 19:28:00 +08:00,2026-08-09 19:28:01 +08:00,export.csv\r\n",
       headers: {
         "Content-Disposition":
@@ -2875,6 +2885,19 @@ test("manager audit keeps dual-time evidence and retries the same scoped CSV exp
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("button", { name: "关闭导出" })).toBeFocused();
   await expect(dialog.getByLabel("导出门店")).toHaveValue("棱镜旗舰店 · 固定");
+  await expect(dialog.getByText(/可导出 1 行 · 审计记录/u)).toBeVisible();
+  await expect(
+    dialog.getByRole("region", { name: "审计记录当前筛选预览" }),
+  ).toBeVisible();
+  await dialog.getByLabel("导出数据类型").selectOption("repairs");
+  await expect(
+    dialog.getByRole("region", { name: "报修记录当前筛选预览" }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByLabel("导出排序字段").locator('option[value="amountCents"]'),
+  ).toHaveCount(0);
+  await expect(dialog.getByLabel("导出状态筛选")).toContainText("待验证");
+  await dialog.getByLabel("导出数据类型").selectOption("audits");
   await expect(dialog.getByText(/可导出 1 行 · 审计记录/u)).toBeVisible();
   expect(previewBodies.at(-1)?.filters).toEqual({ result: "denied" });
 

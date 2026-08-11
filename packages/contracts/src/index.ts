@@ -1947,20 +1947,27 @@ export type ManagerExportDataType = (typeof MANAGER_EXPORT_DATA_TYPES)[number];
 export const MANAGER_AUDIT_RESULTS = ["allowed", "denied"] as const;
 export type ManagerAuditResult = (typeof MANAGER_AUDIT_RESULTS)[number];
 
-export const MANAGER_EXPORT_SORT_FIELDS = [
-  "businessOccurredAt",
-  "recordedAt",
-  "persona",
-  "role",
-  "action",
-  "objectType",
-  "result",
-  "amountCents",
-  "status",
-] as const;
+export const MANAGER_EXPORT_SORT_FIELDS_BY_TYPE = {
+  audits: [
+    "businessOccurredAt",
+    "recordedAt",
+    "persona",
+    "role",
+    "action",
+    "objectType",
+    "result",
+  ],
+  inventoryMovements: ["businessOccurredAt", "status"],
+  orders: ["businessOccurredAt", "status", "amountCents"],
+  repairs: ["businessOccurredAt", "status"],
+  reservations: ["businessOccurredAt", "status", "amountCents"],
+  shifts: ["businessOccurredAt", "status"],
+} as const satisfies Record<ManagerExportDataType, ReadonlyArray<string>>;
 
+export type ManagerAuditSortField =
+  (typeof MANAGER_EXPORT_SORT_FIELDS_BY_TYPE)["audits"][number];
 export type ManagerExportSortField =
-  (typeof MANAGER_EXPORT_SORT_FIELDS)[number];
+  (typeof MANAGER_EXPORT_SORT_FIELDS_BY_TYPE)[ManagerExportDataType][number];
 export type ManagerExportSortDirection = "asc" | "desc";
 
 export interface ManagerAuditFilters {
@@ -2021,7 +2028,7 @@ export interface ManagerAuditResponse {
   };
   readonly sort: {
     readonly direction: ManagerExportSortDirection;
-    readonly field: ManagerExportSortField;
+    readonly field: ManagerAuditSortField;
   };
   readonly store: {
     readonly code: string;
@@ -2032,22 +2039,52 @@ export interface ManagerAuditResponse {
   readonly totalCount: number;
 }
 
-export interface ManagerExportRequest {
-  readonly dataType: ManagerExportDataType;
-  readonly filters: ManagerAuditFilters & {
-    readonly search?: string;
-    readonly status?: string;
-  };
+interface ManagerExportRequestBase {
   readonly fromBusinessDay: string;
-  readonly sort: {
-    readonly direction: ManagerExportSortDirection;
-    readonly field: ManagerExportSortField;
-  };
   readonly storeId: string;
   readonly toBusinessDay: string;
 }
 
+export const MANAGER_EXPORT_STATUS_VALUES = {
+  inventoryMovements: INVENTORY_MOVEMENT_KINDS,
+  orders: CUSTOMER_ORDER_STATUSES,
+  repairs: REPAIR_STATUSES,
+  reservations: CUSTOMER_RESERVATION_STATUSES,
+  shifts: ["scheduled", "cancelled"],
+} as const;
+
+export type ManagerBusinessExportDataType = Exclude<
+  ManagerExportDataType,
+  "audits"
+>;
+
+type ManagerBusinessExportRequest = {
+  [DataType in ManagerBusinessExportDataType]: ManagerExportRequestBase & {
+    readonly dataType: DataType;
+    readonly filters: {
+      readonly search?: string;
+      readonly status?: (typeof MANAGER_EXPORT_STATUS_VALUES)[DataType][number];
+    };
+    readonly sort: {
+      readonly direction: ManagerExportSortDirection;
+      readonly field: (typeof MANAGER_EXPORT_SORT_FIELDS_BY_TYPE)[DataType][number];
+    };
+  };
+}[ManagerBusinessExportDataType];
+
+export type ManagerExportRequest =
+  | (ManagerExportRequestBase & {
+      readonly dataType: "audits";
+      readonly filters: ManagerAuditFilters;
+      readonly sort: {
+        readonly direction: ManagerExportSortDirection;
+        readonly field: ManagerAuditSortField;
+      };
+    })
+  | ManagerBusinessExportRequest;
+
 export interface ManagerExportPreviewResponse {
+  readonly columns: ReadonlyArray<string>;
   readonly dataType: ManagerExportDataType;
   readonly estimatedRowCount: number;
   readonly range: {
@@ -2056,6 +2093,7 @@ export interface ManagerExportPreviewResponse {
     readonly startsAt: string;
     readonly toBusinessDay: string;
   };
+  readonly rows: ReadonlyArray<ReadonlyArray<string>>;
   readonly status: "ready";
   readonly store: {
     readonly code: string;

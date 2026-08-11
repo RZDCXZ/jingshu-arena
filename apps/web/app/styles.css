@@ -14403,8 +14403,9 @@ strong {
 }
 
 .manager-export-dialog {
-  width: min(510px, 100%);
-  overflow: hidden;
+  width: min(720px, 100%);
+  max-height: calc(100vh - 36px);
+  overflow: auto;
   border: 1px solid #365664;
   border-radius: 8px;
   background: #091821;
@@ -14565,6 +14566,68 @@ strong {
 .manager-export-state.is-error > svg,
 .manager-export-state.is-error small {
   color: #ffad9f;
+}
+
+.manager-export-preview {
+  margin: 0 12px 12px;
+  overflow: hidden;
+  border: 1px solid #2d4a58;
+  border-radius: 5px;
+  background: #071720;
+}
+
+.manager-export-preview > header {
+  min-height: 33px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  border-bottom: 1px solid #203b48;
+}
+
+.manager-export-preview > header strong {
+  color: #c9d6da;
+  font-size: 8px;
+}
+
+.manager-export-preview > header small {
+  color: #7f96a0;
+  font-size: 7px;
+}
+
+.manager-export-preview > div {
+  max-height: 156px;
+  overflow: auto;
+}
+
+.manager-export-preview table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 7px;
+  white-space: nowrap;
+}
+
+.manager-export-preview th,
+.manager-export-preview td {
+  max-width: 190px;
+  overflow: hidden;
+  padding: 6px 8px;
+  border-right: 1px solid #193540;
+  border-bottom: 1px solid #193540;
+  color: #a9bcc3;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.manager-export-preview th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: #0d222c;
+  color: #7fd7e9;
+  font-weight: 800;
 }
 
 .manager-export-dialog > footer {

@@ -6,16 +6,18 @@ import { getCookie } from "hono/cookie";
 import {
   MANAGER_AUDIT_RESULTS,
   MANAGER_EXPORT_DATA_TYPES,
-  MANAGER_EXPORT_SORT_FIELDS,
+  MANAGER_EXPORT_SORT_FIELDS_BY_TYPE,
+  MANAGER_EXPORT_STATUS_VALUES,
   PUBLIC_ROLES,
+  type ManagerAuditSortField,
   type ManagerAuditFilters,
   type ManagerAuditResponse,
   type ManagerAuditResult,
+  type ManagerBusinessExportDataType,
   type ManagerExportDataType,
   type ManagerExportPreviewResponse,
   type ManagerExportRequest,
   type ManagerExportSortDirection,
-  type ManagerExportSortField,
   type PublicRole,
 } from "@jingshu/contracts";
 import type {
@@ -40,16 +42,17 @@ const businessDayPattern = /^\d{4}-\d{2}-\d{2}$/u;
 const auditResults = new Set<ManagerAuditResult>(MANAGER_AUDIT_RESULTS);
 const dataTypes = new Set<ManagerExportDataType>(MANAGER_EXPORT_DATA_TYPES);
 const publicRoles = new Set<PublicRole>(PUBLIC_ROLES);
-const sortFields = new Set<ManagerExportSortField>(MANAGER_EXPORT_SORT_FIELDS);
-const filterKeys = new Set([
+const auditSortFields = new Set<ManagerAuditSortField>(
+  MANAGER_EXPORT_SORT_FIELDS_BY_TYPE.audits,
+);
+const auditFilterKeys = new Set([
   "action",
   "objectType",
   "personaId",
   "result",
   "role",
-  "search",
-  "status",
 ]);
+const businessFilterKeys = new Set(["search", "status"]);
 
 function requestHeaders(context: Context) {
   const requestId = randomUUID();
@@ -152,14 +155,12 @@ function validOptionalText(value: unknown) {
   );
 }
 
-function parseFilters(value: unknown): ManagerExportRequest["filters"] | null {
+function parseAuditFilters(value: unknown): ManagerAuditFilters | null {
   if (!isPlainRecord(value)) return null;
-  if (Object.keys(value).some((key) => !filterKeys.has(key))) return null;
+  if (Object.keys(value).some((key) => !auditFilterKeys.has(key))) return null;
   if (
     !validOptionalText(value.action) ||
     !validOptionalText(value.objectType) ||
-    !validOptionalText(value.search) ||
-    !validOptionalText(value.status) ||
     (value.personaId !== undefined &&
       (typeof value.personaId !== "string" ||
         !UUID_V4_PATTERN.test(value.personaId))) ||
@@ -169,7 +170,29 @@ function parseFilters(value: unknown): ManagerExportRequest["filters"] | null {
   ) {
     return null;
   }
-  return value as ManagerExportRequest["filters"];
+  return value as ManagerAuditFilters;
+}
+
+function parseBusinessFilters(
+  value: unknown,
+  dataType: ManagerBusinessExportDataType,
+) {
+  if (!isPlainRecord(value)) return null;
+  if (Object.keys(value).some((key) => !businessFilterKeys.has(key))) {
+    return null;
+  }
+  if (!validOptionalText(value.search) || !validOptionalText(value.status)) {
+    return null;
+  }
+  if (
+    value.status !== undefined &&
+    !(MANAGER_EXPORT_STATUS_VALUES[dataType] as ReadonlyArray<string>).includes(
+      value.status as string,
+    )
+  ) {
+    return null;
+  }
+  return value as { readonly search?: string; readonly status?: string };
 }
 
 function parseExportBody(value: unknown): ManagerExportRequest | null {
@@ -178,7 +201,6 @@ function parseExportBody(value: unknown): ManagerExportRequest | null {
   if (
     keys.join(",") !==
       "dataType,filters,fromBusinessDay,sort,storeId,toBusinessDay" ||
-    !dataTypes.has(value.dataType as ManagerExportDataType) ||
     typeof value.storeId !== "string" ||
     !UUID_V4_PATTERN.test(value.storeId) ||
     typeof value.fromBusinessDay !== "string" ||
@@ -187,14 +209,25 @@ function parseExportBody(value: unknown): ManagerExportRequest | null {
     !businessDayPattern.test(value.toBusinessDay) ||
     !isPlainRecord(value.sort) ||
     Object.keys(value.sort).sort().join(",") !== "direction,field" ||
-    (value.sort.direction !== "asc" && value.sort.direction !== "desc") ||
-    !sortFields.has(value.sort.field as ManagerExportSortField)
+    (value.sort.direction !== "asc" && value.sort.direction !== "desc")
   ) {
     return null;
   }
-  const filters = parseFilters(value.filters);
+  if (!dataTypes.has(value.dataType as ManagerExportDataType)) return null;
+  const dataType = value.dataType as ManagerExportDataType;
+  if (
+    !(
+      MANAGER_EXPORT_SORT_FIELDS_BY_TYPE[dataType] as ReadonlyArray<string>
+    ).includes(value.sort.field as string)
+  ) {
+    return null;
+  }
+  const filters =
+    dataType === "audits"
+      ? parseAuditFilters(value.filters)
+      : parseBusinessFilters(value.filters, dataType);
   return filters
-    ? ({ ...value, filters } as unknown as ManagerExportRequest)
+    ? ({ ...value, dataType, filters } as unknown as ManagerExportRequest)
     : null;
 }
 
@@ -217,7 +250,7 @@ function parseAuditQuery(context: Context) {
   ).split(":");
   if (
     extra !== undefined ||
-    !sortFields.has(sortField as ManagerExportSortField) ||
+    !auditSortFields.has(sortField as ManagerAuditSortField) ||
     (sortDirection !== "asc" && sortDirection !== "desc") ||
     (query.from !== undefined && !businessDayPattern.test(query.from)) ||
     (query.to !== undefined && !businessDayPattern.test(query.to)) ||
@@ -244,7 +277,7 @@ function parseAuditQuery(context: Context) {
     ...(query.from ? { fromBusinessDay: query.from } : {}),
     sort: {
       direction: sortDirection as ManagerExportSortDirection,
-      field: sortField as ManagerExportSortField,
+      field: sortField as ManagerAuditSortField,
     },
     storeId: query.storeId,
     ...(query.to ? { toBusinessDay: query.to } : {}),
@@ -368,6 +401,7 @@ function previewResponse(
   result: DatabaseManagerExport,
 ): ManagerExportPreviewResponse {
   return {
+    columns: result.columns.map((column) => column.header),
     dataType: result.dataType,
     estimatedRowCount: result.rows.length,
     range: {
@@ -375,6 +409,7 @@ function previewResponse(
       endsAt: result.range.endsAt.toISOString(),
       startsAt: result.range.startsAt.toISOString(),
     },
+    rows: formattedExportRows(result),
     status: "ready",
     store: result.store,
   };
@@ -415,24 +450,28 @@ function csvCell(value: string) {
   return /[",\r\n]/u.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
 }
 
+function formattedExportRows(result: DatabaseManagerExport) {
+  return result.rows.map((row) =>
+    row.map((cell, index) => {
+      if (cell === null) return "";
+      const kind = result.columns[index]?.kind ?? "text";
+      const value =
+        kind === "datetime" && cell instanceof Date
+          ? formatDateTime(cell)
+          : kind === "money" && typeof cell === "number"
+            ? (cell / 100).toFixed(2)
+            : String(cell);
+      return safeSpreadsheetText(value);
+    }),
+  );
+}
+
 function csvResponse(result: DatabaseManagerExport) {
   const header = result.columns
     .map((column) => csvCell(column.header))
     .join(",");
-  const rows = result.rows.map((row) =>
-    row
-      .map((cell, index) => {
-        if (cell === null) return "";
-        const kind = result.columns[index]?.kind ?? "text";
-        const value =
-          kind === "datetime" && cell instanceof Date
-            ? formatDateTime(cell)
-            : kind === "money" && typeof cell === "number"
-              ? (cell / 100).toFixed(2)
-              : String(cell);
-        return csvCell(safeSpreadsheetText(value));
-      })
-      .join(","),
+  const rows = formattedExportRows(result).map((row) =>
+    row.map(csvCell).join(","),
   );
   return `\uFEFF${[header, ...rows].join("\r\n")}\r\n`;
 }

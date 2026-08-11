@@ -14,8 +14,13 @@ import {
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
+import {
+  MANAGER_EXPORT_SORT_FIELDS_BY_TYPE,
+  MANAGER_EXPORT_STATUS_VALUES,
+} from "@jingshu/contracts";
 import type {
   ApiErrorResponse,
+  ManagerAuditSortField,
   ManagerAuditEventResponse,
   ManagerAuditResponse,
   ManagerExportDataType,
@@ -77,15 +82,56 @@ const exportTypes = Object.entries(exportLabels) as ReadonlyArray<
   readonly [ManagerExportDataType, string]
 >;
 
-const sortLabels: ReadonlyArray<readonly [ManagerExportSortField, string]> = [
+const sortLabels: ReadonlyArray<readonly [ManagerAuditSortField, string]> = [
   ["businessOccurredAt", "业务时间"],
-  ["recordedAt", "服务端记录时间"],
+  ["recordedAt", "服务器记录时间"],
   ["persona", "人物"],
   ["role", "角色"],
   ["action", "动作"],
   ["objectType", "对象类型"],
   ["result", "结果"],
 ];
+
+const exportSortLabels: Record<ManagerExportSortField, string> = {
+  action: "动作",
+  amountCents: "金额",
+  businessOccurredAt: "业务时间",
+  objectType: "对象类型",
+  persona: "人物",
+  recordedAt: "服务器记录时间",
+  result: "结果",
+  role: "角色",
+  status: "状态",
+};
+
+const exportStatusLabels: Record<string, string> = {
+  active: "有效",
+  arrived: "已到店",
+  assigned: "已分派",
+  cancelled: "已取消",
+  closed: "已关闭",
+  compensation: "补偿",
+  completed: "已完成",
+  confirmed: "已确认",
+  expired: "已过期",
+  "in-use": "使用中",
+  new: "新建",
+  "pending-confirmation": "待确认",
+  "pending-simulated-payment": "待模拟支付",
+  preparing: "制作中",
+  processing: "处理中",
+  "ready-for-pickup": "待取",
+  receipt: "入库",
+  released: "已释放",
+  sale: "销售",
+  scheduled: "已排班",
+  "simulated-paid": "已模拟支付",
+  "spare-return": "备件退回",
+  "spare-usage": "备件领用",
+  stocktake: "盘点",
+  verification: "待验证",
+  waste: "损耗",
+};
 
 const shanghaiDateTime = new Intl.DateTimeFormat("zh-CN", {
   day: "2-digit",
@@ -181,7 +227,7 @@ function AuditInspector({
           <dd>{formatDateTime(event.businessOccurredAt)}</dd>
         </div>
         <div>
-          <dt>服务端记录时间</dt>
+          <dt>服务器记录时间</dt>
           <dd>{formatDateTime(event.recordedAt)}</dd>
         </div>
         <div>
@@ -273,34 +319,37 @@ function ExportDialog({
   const auditFilterCount = Object.values(filters).filter(Boolean).length;
 
   const request = useMemo<ManagerExportRequest>(
-    () => ({
-      dataType,
-      filters:
-        dataType === "audits"
-          ? {
-              ...(filters.action ? { action: filters.action } : {}),
-              ...(filters.objectType ? { objectType: filters.objectType } : {}),
-              ...(filters.personaId ? { personaId: filters.personaId } : {}),
-              ...(filters.result
-                ? { result: filters.result as "allowed" | "denied" }
-                : {}),
-              ...(filters.role ? { role: filters.role as PublicRole } : {}),
-            }
-          : {
-              ...(exportSearch.trim() ? { search: exportSearch.trim() } : {}),
-              ...(exportStatus.trim() ? { status: exportStatus.trim() } : {}),
-            },
-      fromBusinessDay: exportFrom,
-      sort:
-        dataType === "audits"
-          ? { direction: sortDirection, field: sortField }
-          : {
-              direction: exportSortDirection,
-              field: exportSortField,
-            },
-      storeId: auditData.store.storeId,
-      toBusinessDay: exportTo,
-    }),
+    () =>
+      ({
+        dataType,
+        filters:
+          dataType === "audits"
+            ? {
+                ...(filters.action ? { action: filters.action } : {}),
+                ...(filters.objectType
+                  ? { objectType: filters.objectType }
+                  : {}),
+                ...(filters.personaId ? { personaId: filters.personaId } : {}),
+                ...(filters.result
+                  ? { result: filters.result as "allowed" | "denied" }
+                  : {}),
+                ...(filters.role ? { role: filters.role as PublicRole } : {}),
+              }
+            : {
+                ...(exportSearch.trim() ? { search: exportSearch.trim() } : {}),
+                ...(exportStatus.trim() ? { status: exportStatus.trim() } : {}),
+              },
+        fromBusinessDay: exportFrom,
+        sort:
+          dataType === "audits"
+            ? { direction: sortDirection, field: sortField }
+            : {
+                direction: exportSortDirection,
+                field: exportSortField,
+              },
+        storeId: auditData.store.storeId,
+        toBusinessDay: exportTo,
+      }) as ManagerExportRequest,
     [
       auditData.store.storeId,
       dataType,
@@ -321,6 +370,7 @@ function ExportDialog({
       setPhase("loading");
       setMessage("");
       setFailedExport(false);
+      setPreview(null);
       try {
         const response = await fetch("/api/v1/manager/exports/preview", {
           body: JSON.stringify(request),
@@ -481,9 +531,12 @@ function ExportDialog({
             <select
               aria-label="导出数据类型"
               disabled={phase === "exporting"}
-              onChange={(event) =>
-                setDataType(event.target.value as ManagerExportDataType)
-              }
+              onChange={(event) => {
+                setDataType(event.target.value as ManagerExportDataType);
+                setExportSearch("");
+                setExportStatus("");
+                setExportSortField("businessOccurredAt");
+              }}
               value={dataType}
             >
               {exportTypes.map(([value, label]) => (
@@ -567,14 +620,19 @@ function ExportDialog({
               </label>
               <label>
                 状态
-                <input
+                <select
                   aria-label="导出状态筛选"
                   disabled={phase === "exporting"}
-                  maxLength={200}
                   onChange={(event) => setExportStatus(event.target.value)}
-                  placeholder="留空表示全部状态"
                   value={exportStatus}
-                />
+                >
+                  <option value="">全部状态</option>
+                  {MANAGER_EXPORT_STATUS_VALUES[dataType].map((status) => (
+                    <option key={status} value={status}>
+                      {exportStatusLabels[status] ?? status}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 排序字段
@@ -588,9 +646,11 @@ function ExportDialog({
                   }
                   value={exportSortField}
                 >
-                  <option value="businessOccurredAt">业务时间</option>
-                  <option value="status">状态</option>
-                  <option value="amountCents">金额</option>
+                  {MANAGER_EXPORT_SORT_FIELDS_BY_TYPE[dataType].map((field) => (
+                    <option key={field} value={field}>
+                      {exportSortLabels[field]}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label>
@@ -663,6 +723,47 @@ function ExportDialog({
             </>
           )}
         </section>
+        {phase === "ready" && preview ? (
+          <section
+            aria-label={`${exportLabels[dataType]}当前筛选预览`}
+            className="manager-export-preview"
+          >
+            <header>
+              <strong>当前所见筛选结果</strong>
+              <small>{preview.estimatedRowCount} 行 · 将按此顺序导出</small>
+            </header>
+            <div>
+              <table>
+                <thead>
+                  <tr>
+                    {preview.columns.map((column) => (
+                      <th key={column}>{column}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.rows.length > 0 ? (
+                    preview.rows.map((row, rowIndex) => (
+                      <tr key={rowIndex}>
+                        {row.map((cell, cellIndex) => (
+                          <td key={preview.columns[cellIndex] ?? cellIndex}>
+                            {cell || "—"}
+                          </td>
+                        ))}
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={Math.max(1, preview.columns.length)}>
+                        当前筛选没有可导出记录
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ) : null}
         <footer>
           <button
             className="manager-export-secondary"
@@ -802,7 +903,7 @@ export function ManagerAuditExport({
           <span>WEB-M10 · STORE EVIDENCE</span>
           <h1>审计与导出</h1>
           <p>
-            当前店长仅可读取和导出所属门店；业务时间与服务端记录时间并列保留。
+            当前店长仅可读取和导出所属门店；业务时间与服务器记录时间并列保留。
           </p>
         </div>
         <button

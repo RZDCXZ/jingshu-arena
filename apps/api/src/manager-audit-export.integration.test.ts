@@ -94,12 +94,14 @@ interface AuditResponse {
 }
 
 interface ExportPreviewResponse {
+  readonly columns: ReadonlyArray<string>;
   readonly dataType: string;
   readonly estimatedRowCount: number;
   readonly range: {
     readonly fromBusinessDay: string;
     readonly toBusinessDay: string;
   };
+  readonly rows: ReadonlyArray<ReadonlyArray<string>>;
   readonly status: "ready";
   readonly store: { readonly storeId: string };
 }
@@ -262,7 +264,14 @@ describe("manager audit and CSV export API", () => {
       status: "ready",
       store: { storeId: manager.storeId },
     });
+    expect(preview.columns.slice(0, 4)).toEqual([
+      "经营日",
+      "业务发生时间",
+      "服务器记录时间",
+      "演示人物",
+    ]);
     expect(preview.estimatedRowCount).toBeGreaterThan(0);
+    expect(preview.rows).toHaveLength(preview.estimatedRowCount);
 
     const download = () =>
       app.request("/api/v1/manager/exports", {
@@ -310,15 +319,25 @@ describe("manager audit and CSV export API", () => {
     } as const;
 
     for (const [dataType, expectedHeader] of Object.entries(expectedHeaders)) {
+      const request = {
+        dataType,
+        filters: {},
+        fromBusinessDay: "2026-07-28",
+        sort: { direction: "asc", field: "businessOccurredAt" },
+        storeId: manager.storeId,
+        toBusinessDay: "2026-08-10",
+      };
+      const previewResponse = await app.request(
+        "/api/v1/manager/exports/preview",
+        {
+          body: JSON.stringify(request),
+          headers: commandHeaders(manager),
+          method: "POST",
+        },
+      );
+      const preview = (await previewResponse.json()) as ExportPreviewResponse;
       const response = await app.request("/api/v1/manager/exports", {
-        body: JSON.stringify({
-          dataType,
-          filters: {},
-          fromBusinessDay: "2026-07-28",
-          sort: { direction: "asc", field: "businessOccurredAt" },
-          storeId: manager.storeId,
-          toBusinessDay: "2026-08-10",
-        }),
+        body: JSON.stringify(request),
         headers: commandHeaders(manager),
         method: "POST",
       });
@@ -328,12 +347,43 @@ describe("manager audit and CSV export API", () => {
       expect([...bytes.slice(0, 3)], dataType).toEqual([0xef, 0xbb, 0xbf]);
       expect(csvLines(csv)[0], dataType).toBe(expectedHeader);
       expect(csvLines(csv).length, dataType).toBeGreaterThan(1);
+      expect(previewResponse.status, dataType).toBe(200);
+      expect(preview.columns.join(","), dataType).toBe(expectedHeader);
+      expect(preview.rows, dataType).toHaveLength(preview.estimatedRowCount);
+      expect(preview.estimatedRowCount, dataType).toBe(
+        Number(response.headers.get("X-Export-Row-Count")),
+      );
       expect(csv, dataType).toMatch(
         /2026-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00/u,
       );
       if (dataType === "orders" || dataType === "reservations") {
         expect(csv, dataType).toMatch(/,\d+\.\d{2}(?:\r\n|,)/u);
       }
+    }
+  });
+
+  it("rejects sort fields that do not belong to the selected dataset", async () => {
+    const manager = await managerFixture();
+    for (const [dataType, field] of [
+      ["repairs", "amountCents"],
+      ["audits", "status"],
+    ] as const) {
+      const response = await app.request("/api/v1/manager/exports/preview", {
+        body: JSON.stringify({
+          dataType,
+          filters: {},
+          fromBusinessDay: "2026-08-10",
+          sort: { direction: "asc", field },
+          storeId: manager.storeId,
+          toBusinessDay: "2026-08-10",
+        }),
+        headers: commandHeaders(manager),
+        method: "POST",
+      });
+      expect(response.status, `${dataType}:${field}`).toBe(422);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "MANAGER_EXPORT_FILTER_INVALID" },
+      } satisfies Partial<ApiErrorResponse>);
     }
   });
 
