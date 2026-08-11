@@ -42,6 +42,7 @@ import {
 import { ManagerDashboard } from "./manager-dashboard";
 import { ManagerAuditExport } from "./manager-audit-export";
 import { HeadquartersCatalogs } from "./headquarters-catalogs";
+import { HeadquartersComparison } from "./headquarters-comparison";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -667,6 +668,22 @@ export function RoleContextShell({
               csrfToken={context.csrfToken}
               onToast={setToast}
               refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+            />
+          ) : context.role.id === "hq" &&
+            (activePage === "chain-dashboard" ||
+              activePage === "store-compare") ? (
+            <HeadquartersComparison
+              onNavigateAudit={() => setActivePage("hq-audit")}
+              onNavigateCompare={() => setActivePage("store-compare")}
+              page={activePage === "chain-dashboard" ? "chain" : "compare"}
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+            />
+          ) : context.role.id === "hq" && activePage === "hq-audit" ? (
+            <ManagerAuditExport
+              csrfToken={context.csrfToken}
+              onToast={setToast}
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              scope="headquarters"
             />
           ) : context.role.id === "hq" && activePage === "chain-config" ? (
             <HeadquartersCatalogs

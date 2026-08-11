@@ -1,6 +1,6 @@
 # Product Design QA
 
-当前 Product Design image-to-code 与 design-qa 报告由管理系统正式设计参考维护，最新覆盖 ticket 22 单店经营看板与经营日下钻：
+当前 Product Design image-to-code 与 design-qa 报告由管理系统正式设计参考维护，最新覆盖 ticket 26 总部三店比较、全沙箱审计与导出：
 
 - [管理端与顾客 H5 设计 QA](product-ui/management-system/design-prototype/design-qa.md)
 

@@ -20,6 +20,9 @@ import {
 } from "@jingshu/contracts";
 import type {
   ApiErrorResponse,
+  HeadquartersAuditResponse,
+  HeadquartersExportPreviewResponse,
+  HeadquartersExportRequest,
   ManagerAuditSortField,
   ManagerAuditEventResponse,
   ManagerAuditResponse,
@@ -35,7 +38,12 @@ interface ManagerAuditExportProps {
   readonly csrfToken: string;
   readonly onToast: (message: string) => void;
   readonly refreshKey: string;
+  readonly scope?: "headquarters" | "manager";
 }
+
+type AuditData = HeadquartersAuditResponse | ManagerAuditResponse;
+type ExportPreview =
+  HeadquartersExportPreviewResponse | ManagerExportPreviewResponse;
 
 interface AuditFilterState {
   readonly action: string;
@@ -167,6 +175,8 @@ function auditUrl(
   toBusinessDay: string,
   sortField: ManagerExportSortField,
   sortDirection: ManagerExportSortDirection,
+  scope: "headquarters" | "manager",
+  storeId: string,
 ) {
   const query = new URLSearchParams();
   if (fromBusinessDay && toBusinessDay) {
@@ -178,8 +188,9 @@ function auditUrl(
   if (filters.personaId) query.set("personaId", filters.personaId);
   if (filters.result) query.set("result", filters.result);
   if (filters.role) query.set("role", filters.role);
+  if (scope === "headquarters" && storeId) query.set("storeId", storeId);
   query.set("sort", sortField + ":" + sortDirection);
-  return "/api/v1/manager/audits?" + query.toString();
+  return `/api/v1/${scope === "headquarters" ? "hq" : "manager"}/audits?${query.toString()}`;
 }
 
 function safeJson(value: Record<string, unknown> | null) {
@@ -269,7 +280,7 @@ function AuditInspector({
 }
 
 interface ExportDialogProps {
-  readonly auditData: ManagerAuditResponse;
+  readonly auditData: AuditData;
   readonly csrfToken: string;
   readonly filters: AuditFilterState;
   readonly fromBusinessDay: string;
@@ -278,6 +289,7 @@ interface ExportDialogProps {
   readonly returnFocusRef: RefObject<HTMLButtonElement | null>;
   readonly sortDirection: ManagerExportSortDirection;
   readonly sortField: ManagerExportSortField;
+  readonly scope: "headquarters" | "manager";
   readonly toBusinessDay: string;
 }
 
@@ -291,6 +303,7 @@ function ExportDialog({
   returnFocusRef,
   sortDirection,
   sortField,
+  scope,
   toBusinessDay,
 }: ExportDialogProps) {
   const [dataType, setDataType] = useState<ManagerExportDataType>("audits");
@@ -305,9 +318,7 @@ function ExportDialog({
   const [phase, setPhase] = useState<ExportPhase>("loading");
   const [failedExport, setFailedExport] = useState(false);
   const [message, setMessage] = useState("");
-  const [preview, setPreview] = useState<ManagerExportPreviewResponse | null>(
-    null,
-  );
+  const [preview, setPreview] = useState<ExportPreview | null>(null);
   const [downloaded, setDownloaded] = useState({
     filename: "",
     rowCount: 0,
@@ -318,52 +329,71 @@ function ExportDialog({
   phaseRef.current = phase;
   const auditFilterCount = Object.values(filters).filter(Boolean).length;
 
-  const request = useMemo<ManagerExportRequest>(
-    () =>
-      ({
-        dataType,
-        filters:
-          dataType === "audits"
-            ? {
-                ...(filters.action ? { action: filters.action } : {}),
-                ...(filters.objectType
-                  ? { objectType: filters.objectType }
-                  : {}),
-                ...(filters.personaId ? { personaId: filters.personaId } : {}),
-                ...(filters.result
-                  ? { result: filters.result as "allowed" | "denied" }
-                  : {}),
-                ...(filters.role ? { role: filters.role as PublicRole } : {}),
-              }
-            : {
-                ...(exportSearch.trim() ? { search: exportSearch.trim() } : {}),
-                ...(exportStatus.trim() ? { status: exportStatus.trim() } : {}),
-              },
-        fromBusinessDay: exportFrom,
-        sort:
-          dataType === "audits"
-            ? { direction: sortDirection, field: sortField }
-            : {
-                direction: exportSortDirection,
-                field: exportSortField,
-              },
-        storeId: auditData.store.storeId,
-        toBusinessDay: exportTo,
-      }) as ManagerExportRequest,
-    [
-      auditData.store.storeId,
+  const request = useMemo<
+    HeadquartersExportRequest | ManagerExportRequest
+  >(() => {
+    const common = {
       dataType,
-      exportFrom,
-      exportSearch,
-      exportSortDirection,
-      exportSortField,
-      exportStatus,
-      exportTo,
-      filters,
-      sortDirection,
-      sortField,
-    ],
-  );
+      filters:
+        dataType === "audits"
+          ? {
+              ...(filters.action ? { action: filters.action } : {}),
+              ...(filters.objectType ? { objectType: filters.objectType } : {}),
+              ...(filters.personaId ? { personaId: filters.personaId } : {}),
+              ...(filters.result
+                ? { result: filters.result as "allowed" | "denied" }
+                : {}),
+              ...(filters.role ? { role: filters.role as PublicRole } : {}),
+            }
+          : {
+              ...(exportSearch.trim() ? { search: exportSearch.trim() } : {}),
+              ...(exportStatus.trim() ? { status: exportStatus.trim() } : {}),
+            },
+      fromBusinessDay: exportFrom,
+      sort:
+        dataType === "audits"
+          ? { direction: sortDirection, field: sortField }
+          : {
+              direction: exportSortDirection,
+              field: exportSortField,
+            },
+      toBusinessDay: exportTo,
+    };
+    return scope === "headquarters" && "stores" in auditData
+      ? ({
+          ...common,
+          storeIds: auditData.selectedStoreIds,
+        } as HeadquartersExportRequest)
+      : ({
+          ...common,
+          storeId: "store" in auditData ? auditData.store.storeId : "",
+        } as ManagerExportRequest);
+  }, [
+    auditData,
+    dataType,
+    exportFrom,
+    exportSearch,
+    exportSortDirection,
+    exportSortField,
+    exportStatus,
+    exportTo,
+    filters,
+    sortDirection,
+    sortField,
+    scope,
+  ]);
+
+  const selectedStores =
+    "stores" in auditData
+      ? auditData.stores.filter((store) =>
+          auditData.selectedStoreIds.includes(store.storeId),
+        )
+      : [auditData.store];
+  const scopeLabel =
+    selectedStores.length === 3
+      ? "全部三店"
+      : selectedStores.map((store) => store.displayName).join("、");
+  const scopeCode = selectedStores.map((store) => store.code).join(" + ");
 
   const previewExport = useCallback(
     async (signal?: AbortSignal) => {
@@ -372,17 +402,22 @@ function ExportDialog({
       setFailedExport(false);
       setPreview(null);
       try {
-        const response = await fetch("/api/v1/manager/exports/preview", {
-          body: JSON.stringify(request),
-          headers: {
-            "Content-Type": "application/json",
-            "X-CSRF-Token": csrfToken,
+        const response = await fetch(
+          scope === "headquarters"
+            ? "/api/v1/hq/exports/preview"
+            : "/api/v1/manager/exports/preview",
+          {
+            body: JSON.stringify(request),
+            headers: {
+              "Content-Type": "application/json",
+              "X-CSRF-Token": csrfToken,
+            },
+            method: "POST",
+            ...(signal ? { signal } : {}),
           },
-          method: "POST",
-          ...(signal ? { signal } : {}),
-        });
+        );
         const payload = (await response.json().catch(() => null)) as
-          ManagerExportPreviewResponse | ApiErrorResponse | null;
+          ApiErrorResponse | ExportPreview | null;
         if (!response.ok || !payload || !("estimatedRowCount" in payload)) {
           throw new ManagerAuditExportUiError(
             failureMessage(payload, "导出范围暂时无法核对，请保持筛选并重试。"),
@@ -398,7 +433,7 @@ function ExportDialog({
         setPhase("error");
       }
     },
-    [csrfToken, request],
+    [csrfToken, request, scope],
   );
 
   useEffect(() => {
@@ -446,14 +481,19 @@ function ExportDialog({
     setPhase("exporting");
     setMessage("");
     try {
-      const response = await fetch("/api/v1/manager/exports", {
-        body: JSON.stringify(request),
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
+      const response = await fetch(
+        scope === "headquarters"
+          ? "/api/v1/hq/exports"
+          : "/api/v1/manager/exports",
+        {
+          body: JSON.stringify(request),
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": csrfToken,
+          },
+          method: "POST",
         },
-        method: "POST",
-      });
+      );
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
         throw new ManagerAuditExportUiError(
@@ -491,7 +531,16 @@ function ExportDialog({
       );
       setPhase("error");
     }
-  }, [csrfToken, dataType, exportFrom, exportTo, onToast, preview, request]);
+  }, [
+    csrfToken,
+    dataType,
+    exportFrom,
+    exportTo,
+    onToast,
+    preview,
+    request,
+    scope,
+  ]);
 
   return (
     <div className="manager-export-backdrop" role="presentation">
@@ -507,8 +556,14 @@ function ExportDialog({
             <FileCsv weight="duotone" />
           </span>
           <div>
-            <small>STORE-SCOPED CSV</small>
-            <h2 id="manager-export-title">导出当前门店数据</h2>
+            <small>
+              {scope === "headquarters"
+                ? "CHAIN-SCOPED CSV"
+                : "STORE-SCOPED CSV"}
+            </small>
+            <h2 id="manager-export-title">
+              {scope === "headquarters" ? "导出三店数据" : "导出当前门店数据"}
+            </h2>
           </div>
           <button
             aria-label="关闭导出"
@@ -522,7 +577,7 @@ function ExportDialog({
           </button>
         </header>
         <p className="manager-export-intro">
-          文件固定为 UTF-8 CSV。范围锁定“{auditData.store.displayName}
+          文件固定为 UTF-8 CSV。范围锁定“{scopeLabel}
           ”，审计导出沿用页面筛选与排序。
         </p>
         <div className="manager-export-fields">
@@ -547,11 +602,14 @@ function ExportDialog({
             </select>
           </label>
           <label>
-            当前门店
+            {scope === "headquarters" ? "门店范围" : "当前门店"}
             <input
               aria-label="导出门店"
               disabled
-              value={auditData.store.displayName + " · 固定"}
+              value={
+                scopeLabel +
+                (scope === "headquarters" ? " · 固定范围" : " · 固定")
+              }
             />
           </label>
           <label>
@@ -717,7 +775,7 @@ function ExportDialog({
                   {exportLabels[dataType]}
                 </strong>
                 <small>
-                  {exportFrom} 至 {exportTo} · {auditData.store.code}
+                  {exportFrom} 至 {exportTo} · {scopeCode}
                 </small>
               </span>
             </>
@@ -814,8 +872,9 @@ export function ManagerAuditExport({
   csrfToken,
   onToast,
   refreshKey,
+  scope = "manager",
 }: ManagerAuditExportProps) {
-  const [data, setData] = useState<ManagerAuditResponse | null>(null);
+  const [data, setData] = useState<AuditData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filters, setFilters] = useState<AuditFilterState>(initialFilters);
@@ -825,6 +884,7 @@ export function ManagerAuditExport({
     useState<ManagerExportSortField>("businessOccurredAt");
   const [sortDirection, setSortDirection] =
     useState<ManagerExportSortDirection>("desc");
+  const [storeId, setStoreId] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const exportTriggerRef = useRef<HTMLButtonElement>(null);
@@ -841,11 +901,13 @@ export function ManagerAuditExport({
             toBusinessDay,
             sortField,
             sortDirection,
+            scope,
+            storeId,
           ),
           { cache: "no-store", ...(signal ? { signal } : {}) },
         );
         const payload = (await response.json().catch(() => null)) as
-          ManagerAuditResponse | ApiErrorResponse | null;
+          ApiErrorResponse | AuditData | null;
         if (!response.ok || !payload || !("events" in payload)) {
           throw new ManagerAuditExportUiError(
             failureMessage(
@@ -872,7 +934,15 @@ export function ManagerAuditExport({
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [filters, fromBusinessDay, sortDirection, sortField, toBusinessDay],
+    [
+      filters,
+      fromBusinessDay,
+      scope,
+      sortDirection,
+      sortField,
+      storeId,
+      toBusinessDay,
+    ],
   );
 
   useEffect(() => {
@@ -900,10 +970,16 @@ export function ManagerAuditExport({
     <main className="manager-audit-main">
       <header className="manager-audit-title-row">
         <div>
-          <span>WEB-M10 · STORE EVIDENCE</span>
+          <span>
+            {scope === "headquarters"
+              ? "WEB-H07 · CHAIN EVIDENCE"
+              : "WEB-M10 · STORE EVIDENCE"}
+          </span>
           <h1>审计与导出</h1>
           <p>
-            当前店长仅可读取和导出所属门店；业务时间与服务器记录时间并列保留。
+            {scope === "headquarters"
+              ? "总部只读筛选当前沙箱固定三店；业务时间与服务器记录时间并列保留。"
+              : "当前店长仅可读取和导出所属门店；业务时间与服务器记录时间并列保留。"}
           </p>
         </div>
         <button
@@ -978,10 +1054,26 @@ export function ManagerAuditExport({
             门店
             <select
               aria-label="审计门店范围"
-              disabled
-              value={data?.store.storeId ?? ""}
+              disabled={!data || scope === "manager"}
+              onChange={(event) => setStoreId(event.target.value)}
+              value={
+                scope === "headquarters"
+                  ? storeId
+                  : data && "store" in data
+                    ? data.store.storeId
+                    : ""
+              }
             >
-              {data ? (
+              {data && "stores" in data ? (
+                <>
+                  <option value="">全部三店</option>
+                  {data.stores.map((store) => (
+                    <option key={store.storeId} value={store.storeId}>
+                      {store.displayName}
+                    </option>
+                  ))}
+                </>
+              ) : data && "store" in data ? (
                 <option value={data.store.storeId}>
                   {data.store.displayName} · 固定
                 </option>
@@ -1128,16 +1220,28 @@ export function ManagerAuditExport({
               时间线
             </span>
             <small>
-              {data?.store.displayName ?? "当前门店"} · {displayFrom || "—"} 至{" "}
-              {displayTo || "—"}
+              {scope === "headquarters"
+                ? storeId && data && "stores" in data
+                  ? (data.stores.find((store) => store.storeId === storeId)
+                      ?.displayName ?? "固定门店")
+                  : "全部三店"
+                : data && "store" in data
+                  ? data.store.displayName
+                  : "当前门店"}{" "}
+              · {displayFrom || "—"} 至 {displayTo || "—"}
             </small>
           </header>
           <div className="manager-audit-table-scroll">
-            <table aria-label="本店审计记录">
+            <table
+              aria-label={
+                scope === "headquarters" ? "三店审计记录" : "本店审计记录"
+              }
+            >
               <thead>
                 <tr>
                   <th>双时间</th>
                   <th>人物 / 角色</th>
+                  {scope === "headquarters" ? <th>门店</th> : null}
                   <th>动作</th>
                   <th>对象</th>
                   <th>结果</th>
@@ -1147,7 +1251,7 @@ export function ManagerAuditExport({
                 {loading && !data ? (
                   Array.from({ length: 8 }, (_, index) => (
                     <tr className="manager-audit-skeleton" key={index}>
-                      <td colSpan={5}>
+                      <td colSpan={scope === "headquarters" ? 6 : 5}>
                         <span />
                       </td>
                     </tr>
@@ -1186,6 +1290,12 @@ export function ManagerAuditExport({
                         <strong>{event.actor.displayName}</strong>
                         <small>{roleLabels[event.role]}</small>
                       </td>
+                      {scope === "headquarters" ? (
+                        <td>
+                          <strong>{event.store.displayName}</strong>
+                          <small>{event.store.code}</small>
+                        </td>
+                      ) : null}
                       <td>
                         <code>{event.action}</code>
                       </td>
@@ -1204,7 +1314,7 @@ export function ManagerAuditExport({
                   ))
                 ) : (
                   <tr className="manager-audit-empty-row">
-                    <td colSpan={5}>
+                    <td colSpan={scope === "headquarters" ? 6 : 5}>
                       <IdentificationCard />
                       <strong>当前筛选没有审计记录</strong>
                       <small>
@@ -1245,6 +1355,7 @@ export function ManagerAuditExport({
           returnFocusRef={exportTriggerRef}
           sortDirection={sortDirection}
           sortField={sortField}
+          scope={scope}
           toBusinessDay={displayTo}
         />
       ) : null}

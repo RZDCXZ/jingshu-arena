@@ -481,12 +481,120 @@ export function calculateManagerDashboardMetrics(
     inRange(item.businessOccurredAt),
   );
 
-  return {
-    days: input.businessDays.map((day) => ({
+  const dailyMetrics = input.businessDays.map((day) => {
+    const dayStartsAt = day.startsAt;
+    const dayEndsAt = new Date(day.startsAt.getTime() + DAY_MS);
+    const effectiveDayEndsAt = new Date(
+      Math.min(dayEndsAt.getTime(), input.currentTime.getTime()),
+    );
+    const inDay = (value: Date) =>
+      value.getTime() >= dayStartsAt.getTime() &&
+      value.getTime() < dayEndsAt.getTime();
+    const eligibleDayOrders = input.orders.filter(
+      (order) =>
+        order.paidCents !== null &&
+        order.terminalAt !== null &&
+        inDay(order.terminalAt) &&
+        (order.status === "cancelled" || order.status === "completed"),
+    );
+    const completedDayOrders = eligibleDayOrders.filter(
+      (order) => order.status === "completed",
+    );
+    const openDayRepairs = input.repairs.filter(
+      (repair) =>
+        repair.createdAt.getTime() < effectiveDayEndsAt.getTime() &&
+        (repair.closedAt === null ||
+          repair.closedAt.getTime() >= effectiveDayEndsAt.getTime()),
+    );
+    const dayResolutionMinutes = input.repairs
+      .flatMap((repair) =>
+        repair.closedAt && inDay(repair.closedAt)
+          ? [
+              Math.round(
+                (repair.closedAt.getTime() - repair.createdAt.getTime()) /
+                  60_000,
+              ),
+            ]
+          : [],
+      )
+      .sort((left, right) => left - right);
+    const dayMedianIndex = Math.floor(dayResolutionMinutes.length / 2);
+    const dayAttendance = input.attendance.filter((item) =>
+      inDay(item.businessOccurredAt),
+    );
+    const seatsForDay = seatMetricsByDay.get(day.key)!;
+    return {
+      attendance: {
+        absent: dayAttendance.filter((item) => item.outcome === "absent")
+          .length,
+        late: dayAttendance.filter((item) => item.outcome === "late").length,
+        onTime: dayAttendance.filter((item) => item.outcome === "on-time")
+          .length,
+      },
+      handoverExceptionCount: input.handoverExceptions.filter((item) =>
+        inDay(item.businessOccurredAt),
+      ).length,
+      inventory: {
+        lowStockCount:
+          day.key === businessDayKey(input.currentTime)
+            ? input.inventory.lowStockCount
+            : 0,
+      },
       key: day.key,
+      orders: {
+        backlogCount: input.orders.filter(
+          (order) =>
+            order.createdAt.getTime() < effectiveDayEndsAt.getTime() &&
+            (order.status === "preparing" ||
+              order.status === "ready-for-pickup" ||
+              order.status === "simulated-paid"),
+        ).length,
+        completedCount: completedDayOrders.length,
+        completionRateBasisPoints: basisPoints(
+          completedDayOrders.length,
+          eligibleDayOrders.length,
+        ),
+        eligibleTerminalCount: eligibleDayOrders.length,
+        wasteCents: eligibleDayOrders.reduce(
+          (total, order) => total + order.wasteCents,
+          0,
+        ),
+        wasteQuantity: eligibleDayOrders.reduce(
+          (total, order) => total + order.wasteQuantity,
+          0,
+        ),
+      },
+      repairs: {
+        maintenanceMinutes: seatsForDay.maintenanceMinutes,
+        medianResolutionMinutes:
+          dayResolutionMinutes.length === 0
+            ? null
+            : dayResolutionMinutes.length % 2 === 1
+              ? (dayResolutionMinutes[dayMedianIndex] ?? 0)
+              : Math.round(
+                  ((dayResolutionMinutes[dayMedianIndex - 1] ?? 0) +
+                    (dayResolutionMinutes[dayMedianIndex] ?? 0)) /
+                    2,
+                ),
+        openByPriority: {
+          high: openDayRepairs.filter((repair) => repair.priority === "high")
+            .length,
+          normal: openDayRepairs.filter(
+            (repair) => repair.priority === "normal",
+          ).length,
+          urgent: openDayRepairs.filter(
+            (repair) => repair.priority === "urgent",
+          ).length,
+        },
+        openCount: openDayRepairs.length,
+      },
       revenue: revenueByDay.get(day.key)!,
-      seats: seatMetricsByDay.get(day.key)!,
-    })),
+      seats: seatsForDay,
+    };
+  });
+
+  return {
+    days: dailyMetrics,
     summary: {
       attendance: {
         absent: attendance.filter((item) => item.outcome === "absent").length,

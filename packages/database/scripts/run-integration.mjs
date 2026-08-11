@@ -120,6 +120,7 @@ async function main() {
         "apps/api/src/manager-store-configuration.integration.test.ts",
         "apps/api/src/manager-people-schedule.integration.test.ts",
         "apps/api/src/manager-dashboard.integration.test.ts",
+        "apps/api/src/headquarters-comparison.integration.test.ts",
         "apps/api/src/manager-audit-export.integration.test.ts",
         "apps/api/src/repair-intake.integration.test.ts",
         "apps/api/src/role-context.integration.test.ts",

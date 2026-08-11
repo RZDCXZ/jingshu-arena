@@ -27,6 +27,425 @@
   --radius-lg: 12px;
 }
 
+/* Ticket 26 · headquarters comparison, read-only drilldown and chain audit */
+.hq-comparison-main {
+  position: relative;
+  min-width: 0;
+  min-height: 100%;
+  padding: 20px;
+  overflow-x: hidden;
+  background: var(--bg);
+}
+
+.hq-comparison-main button,
+.hq-comparison-main select {
+  font: inherit;
+}
+
+.hq-comparison-title {
+  align-items: flex-start;
+}
+
+.hq-chain-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 12px 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.hq-chain-summary article {
+  min-width: 0;
+  min-height: 82px;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  padding: 13px 15px;
+  border-right: 1px solid var(--line);
+}
+
+.hq-chain-summary article:last-child {
+  border-right: 0;
+}
+
+.hq-chain-summary small,
+.hq-chain-summary span {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.hq-chain-summary strong {
+  overflow-wrap: anywhere;
+  color: var(--cyan);
+  font-size: clamp(18px, 2vw, 24px);
+  font-variant-numeric: tabular-nums;
+}
+
+.hq-chain-summary article.is-warning strong {
+  color: var(--amber);
+}
+
+.hq-chain-summary article.is-danger strong {
+  color: var(--red);
+}
+
+.hq-store-pulse {
+  margin-bottom: 12px;
+}
+
+.hq-store-table-wrap,
+.hq-accessible-table > div {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.hq-store-table-wrap table,
+.hq-accessible-table table {
+  width: 100%;
+  min-width: 880px;
+  border-collapse: collapse;
+  font-size: 9px;
+}
+
+.hq-store-table-wrap th,
+.hq-store-table-wrap td,
+.hq-accessible-table th,
+.hq-accessible-table td {
+  height: 45px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+.hq-store-table-wrap th,
+.hq-accessible-table thead th {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.hq-store-table-wrap tbody tr:last-child td,
+.hq-accessible-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.hq-store-table-wrap tbody tr:hover,
+.hq-accessible-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.hq-store-table-wrap td:first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hq-store-table-wrap td:first-child span,
+.hq-accessible-table thead th small {
+  display: grid;
+  gap: 2px;
+}
+
+.hq-store-table-wrap td:first-child small,
+.hq-accessible-table thead th small {
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.hq-store-marker {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  color: var(--lime);
+  box-shadow: 0 0 0 2px rgb(184 243 74 / 10%);
+}
+
+.hq-store-marker.is-2 {
+  color: var(--cyan);
+  box-shadow: 0 0 0 2px rgb(89 216 255 / 10%);
+}
+
+.hq-store-marker.is-3 {
+  color: #b9a7ff;
+  box-shadow: 0 0 0 2px rgb(185 167 255 / 10%);
+}
+
+.hq-store-table-wrap .hq-store-marker,
+.hq-metric-summary .hq-store-marker {
+  width: 5px;
+  height: 24px;
+  border: 0;
+  border-radius: 2px;
+  background: currentcolor;
+  box-shadow: none;
+}
+
+.hq-exception-pill {
+  display: inline-flex;
+  padding: 4px 7px;
+  border-radius: var(--radius-sm);
+  background: #17252d;
+  color: var(--muted);
+}
+
+.hq-exception-pill.is-warning {
+  background: #392a13;
+  color: var(--amber);
+}
+
+.hq-store-table-wrap td:last-child button,
+.hq-audit-entry {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--cyan);
+}
+
+.hq-store-table-wrap td:last-child svg,
+.hq-audit-entry svg {
+  width: 13px;
+  height: 13px;
+}
+
+.hq-compare-filter {
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: 190px 190px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 9px;
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.hq-compare-filter > label {
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.hq-compare-filter select {
+  width: 100%;
+  min-height: 37px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: #07131d;
+  color: var(--text);
+  font-size: 9px;
+}
+
+.hq-compare-filter select:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px rgb(89 216 255 / 13%);
+}
+
+.hq-compare-filter > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 25px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #315166;
+  border-radius: var(--radius-sm);
+  background: #0b2130;
+  color: var(--cyan);
+}
+
+.hq-compare-filter > div > svg {
+  width: 18px;
+  height: 18px;
+}
+
+.hq-compare-filter > div span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.hq-compare-filter > div strong {
+  font-size: 10px;
+}
+
+.hq-compare-filter > div small {
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.hq-comparison-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr);
+  gap: 12px;
+}
+
+.hq-comparison-chart {
+  height: 250px;
+}
+
+.hq-chart-summary {
+  min-height: 34px;
+  padding: 8px 13px 0;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.hq-metric-summary > div {
+  display: grid;
+  gap: 5px;
+}
+
+.hq-metric-summary > div > button {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-bottom-color: var(--line);
+  color: var(--text);
+  text-align: left;
+}
+
+.hq-metric-summary > div > button:hover,
+.hq-metric-summary > div > button:focus-visible {
+  border-color: #315166;
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+}
+
+.hq-metric-summary > div > button > span {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 3px 7px;
+}
+
+.hq-metric-summary > div > button strong,
+.hq-metric-summary > div > button small {
+  grid-column: 2;
+}
+
+.hq-metric-summary > div > button small {
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.hq-metric-summary > div > button b {
+  color: var(--cyan);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.hq-metric-summary > div > button > svg {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.hq-metric-summary > p {
+  display: flex;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 9px;
+  border: 1px solid #315166;
+  border-radius: var(--radius-sm);
+  background: #0b2130;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.hq-metric-summary > p svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--cyan);
+}
+
+.hq-audit-entry {
+  width: 100%;
+  min-height: 37px;
+  margin-top: 9px;
+  border-color: #315166;
+  background: #0b2130;
+}
+
+.hq-accessible-table {
+  margin-top: 12px;
+}
+
+.hq-accessible-table table {
+  min-width: 620px;
+}
+
+.hq-accessible-table tbody th {
+  color: var(--cyan);
+  font-weight: 650;
+}
+
+.hq-drilldown > footer {
+  grid-template-columns: 1fr;
+}
+
+@media (max-width: 1180px) {
+  .hq-comparison-grid {
+    grid-template-columns: minmax(0, 1.25fr) minmax(250px, 0.75fr);
+  }
+
+  .hq-chain-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hq-chain-summary article:nth-child(2) {
+    border-right: 0;
+  }
+
+  .hq-chain-summary article:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 900px) {
+  .hq-comparison-main {
+    padding: 14px;
+  }
+
+  .hq-compare-filter,
+  .hq-comparison-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hq-compare-filter > div {
+    min-height: 58px;
+  }
+
+  .hq-comparison-chart {
+    height: 230px;
+  }
+}
+
 /* Ticket 21 — WEB-M07/M08/M09 manager people, schedule and attendance */
 .people-main {
   min-width: 0;

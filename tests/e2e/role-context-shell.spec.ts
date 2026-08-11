@@ -4,8 +4,12 @@ import type { Page, Route } from "@playwright/test";
 import type {
   CustomerReservationStatus,
   HandoverCommandResponse,
+  HeadquartersAuditResponse,
   HeadquartersCatalogCommandRequest,
   HeadquartersCatalogsResponse,
+  HeadquartersComparisonResponse,
+  HeadquartersExportPreviewResponse,
+  HeadquartersExportRequest,
   HeadquartersPeopleScheduleResponse,
   ManagerAuditResponse,
   ManagerHandoverExceptionsResponse,
@@ -777,7 +781,28 @@ test.beforeEach(async ({ context }) => {
     "2026-08-09",
   ] as const;
   const dashboardDay = (key: string, index: number) => ({
+    attendance: {
+      absent: index % 4 === 0 ? 1 : 0,
+      late: index % 3,
+      onTime: 11,
+    },
+    handoverExceptionCount: index % 3 === 0 ? 1 : 0,
+    inventory: { lowStockCount: 1 + (index % 3) },
     key,
+    orders: {
+      backlogCount: 2 + (index % 3),
+      completedCount: 24 + index,
+      completionRateBasisPoints: 8_900 + index * 30,
+      eligibleTerminalCount: 27 + index,
+      wasteCents: 1_200 + index * 100,
+      wasteQuantity: index % 3,
+    },
+    repairs: {
+      maintenanceMinutes: 2_880 + index * 20,
+      medianResolutionMinutes: 42 + index,
+      openByPriority: { high: index % 2, normal: 1, urgent: 0 },
+      openCount: 1 + (index % 2),
+    },
     revenue: {
       orderCents: 2_600 + index * 100,
       reservationCents: 11_000 + index * 400,
@@ -1047,6 +1072,109 @@ test.beforeEach(async ({ context }) => {
       },
       totalCount: filtered.length,
     } satisfies ManagerAuditResponse;
+  }
+
+  function headquartersDashboardPayload(
+    requestUrl: string,
+  ): HeadquartersComparisonResponse {
+    const url = new URL(requestUrl);
+    const selectedStoreId = url.searchParams.get("storeId");
+    const manager = managerDashboardPayload(requestUrl);
+    const selectedStores = headquartersCatalogs.stores.filter(
+      (store) => !selectedStoreId || store.storeId === selectedStoreId,
+    );
+    return {
+      availableBusinessDays: manager.availableBusinessDays,
+      currentTime: manager.currentTime,
+      range: manager.range,
+      status: "ready",
+      stores: selectedStores.map((store, index) => ({
+        days: manager.days.map((day) => ({
+          ...day,
+          revenue: {
+            ...day.revenue,
+            orderCents: day.revenue.orderCents + index * 500,
+            reservationCents: day.revenue.reservationCents + index * 1_500,
+            totalCents: day.revenue.totalCents + index * 2_000,
+          },
+        })),
+        drilldown: manager.drilldown,
+        recentEvidence: manager.recentEvidence,
+        store,
+        summary: {
+          ...manager.summary,
+          attendance: {
+            ...manager.summary.attendance,
+            late: manager.summary.attendance.late + index,
+          },
+          inventory: {
+            lowStockCount: manager.summary.inventory.lowStockCount + index,
+          },
+          orders: {
+            ...manager.summary.orders,
+            completionRateBasisPoints:
+              manager.summary.orders.completionRateBasisPoints - index * 180,
+          },
+          repairs: {
+            ...manager.summary.repairs,
+            openCount: manager.summary.repairs.openCount + index,
+          },
+          revenue: {
+            ...manager.summary.revenue,
+            orderCents: manager.summary.revenue.orderCents + index * 500,
+            reservationCents:
+              manager.summary.revenue.reservationCents + index * 1_500,
+            totalCents: manager.summary.revenue.totalCents + index * 2_000,
+          },
+          seats: {
+            ...manager.summary.seats,
+            operationalUtilizationBasisPoints:
+              manager.summary.seats.operationalUtilizationBasisPoints -
+              index * 350,
+          },
+        },
+        trend: manager.trend.map((day) => ({
+          ...day,
+          revenue: {
+            ...day.revenue,
+            orderCents: day.revenue.orderCents + index * 500,
+            reservationCents: day.revenue.reservationCents + index * 1_500,
+            totalCents: day.revenue.totalCents + index * 2_000,
+          },
+        })),
+      })),
+    };
+  }
+
+  function headquartersAuditPayload(
+    requestUrl: string,
+  ): HeadquartersAuditResponse {
+    const url = new URL(requestUrl);
+    const manager = managerAuditPayload(requestUrl);
+    const selectedStoreId = url.searchParams.get("storeId");
+    const selectedStores = headquartersCatalogs.stores.filter(
+      (store) => !selectedStoreId || store.storeId === selectedStoreId,
+    );
+    const events = selectedStores.flatMap((store, storeIndex) =>
+      manager.events.map((event, eventIndex) => ({
+        ...event,
+        eventId: `00000000-0000-4000-8000-${String(300 + storeIndex * 10 + eventIndex).padStart(12, "0")}`,
+        requestId: `00000000-0000-4000-8000-${String(400 + storeIndex * 10 + eventIndex).padStart(12, "0")}`,
+        store,
+      })),
+    );
+    return {
+      availableBusinessDays: manager.availableBusinessDays,
+      currentTime: manager.currentTime,
+      events,
+      filterOptions: manager.filterOptions,
+      range: manager.range,
+      selectedStoreIds: selectedStores.map((store) => store.storeId),
+      sort: manager.sort,
+      status: "ready",
+      stores: headquartersCatalogs.stores,
+      totalCount: events.length,
+    };
   }
 
   function staffOrderDetail(
@@ -1686,6 +1814,72 @@ test.beforeEach(async ({ context }) => {
           '.csv"',
         "Content-Type": "text/csv; charset=utf-8",
         "X-Export-Row-Count": String(rowCount),
+      },
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/hq/dashboard**", async (route) => {
+    expect(currentRole).toBe("hq");
+    await route.fulfill({
+      json: headquartersDashboardPayload(route.request().url()),
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/hq/audits**", async (route) => {
+    expect(currentRole).toBe("hq");
+    await route.fulfill({
+      json: headquartersAuditPayload(route.request().url()),
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/hq/exports/preview", async (route) => {
+    expect(currentRole).toBe("hq");
+    expect(route.request().headers()["x-csrf-token"]).toBe(csrfToken);
+    const body = route.request().postDataJSON() as HeadquartersExportRequest;
+    const selectedStores = headquartersCatalogs.stores.filter((store) =>
+      body.storeIds.includes(store.storeId),
+    );
+    await route.fulfill({
+      json: {
+        columns: ["门店代码", "门店", "经营日", "动作"],
+        dataType: body.dataType,
+        estimatedRowCount: selectedStores.length * 4,
+        range: {
+          endsAt: new Date(
+            body.toBusinessDay + "T06:00:00.000+08:00",
+          ).toISOString(),
+          fromBusinessDay: body.fromBusinessDay,
+          startsAt: new Date(
+            body.fromBusinessDay + "T06:00:00.000+08:00",
+          ).toISOString(),
+          toBusinessDay: body.toBusinessDay,
+        },
+        rows: selectedStores.flatMap((store) =>
+          Array.from({ length: 4 }, (_, index) => [
+            store.code,
+            store.displayName,
+            body.toBusinessDay,
+            `当前筛选记录 ${index + 1}`,
+          ]),
+        ),
+        status: "ready",
+        stores: selectedStores,
+      } satisfies HeadquartersExportPreviewResponse,
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/hq/exports", async (route) => {
+    expect(currentRole).toBe("hq");
+    expect(route.request().headers()["x-csrf-token"]).toBe(csrfToken);
+    const body = route.request().postDataJSON() as HeadquartersExportRequest;
+    await route.fulfill({
+      body:
+        "\uFEFF门店代码,门店,经营日,动作\r\n" +
+        "prism-flagship,棱镜旗舰店,2026-08-09,export.csv\r\n",
+      headers: {
+        "Content-Disposition": `attachment; filename="jingshu-hq-${body.dataType}.csv"`,
+        "Content-Type": "text/csv; charset=utf-8",
+        "X-Export-Row-Count": String(body.storeIds.length * 4),
       },
       status: 200,
     });
@@ -3634,6 +3828,67 @@ test("headquarters sees only the three-store people and schedule summary", async
   await expect(page.getByText("未来班次明细")).toBeVisible();
   await expect(page.getByText(/切换到对应门店的店长角色/u)).toBeVisible();
   await expect(page.locator(".people-main").getByRole("button")).toHaveCount(0);
+});
+
+test("headquarters compares all three stores, opens read-only evidence, and exports the current scope", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "总部运营 沈微 · 虚构人物 固定三店",
+    })
+    .click();
+
+  await expect(page.getByRole("heading", { name: "连锁看板" })).toBeVisible();
+  const pulse = page.getByRole("table", { name: "三店核心经营指标" });
+  await expect(pulse.getByText("棱镜旗舰店")).toBeVisible();
+  await expect(pulse.getByText("星桥标准店")).toBeVisible();
+  await expect(pulse.getByText("极点新店")).toBeVisible();
+  await expect(page.getByText(/不生成综合分、最佳门店、冠军色/u)).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: /办理到店|开始使用|开始制作|分派报修|签到|提交交接/u,
+    }),
+  ).toHaveCount(0);
+
+  await page.getByRole("button", { name: "门店比较" }).click();
+  await expect(page.getByRole("heading", { name: "门店比较" })).toBeVisible();
+  const metric = page.getByRole("combobox", { name: "比较指标" });
+  await expect(metric.locator("option")).toHaveCount(8);
+  await metric.selectOption("repairs");
+  await page
+    .getByRole("combobox", { name: "比较门店" })
+    .selectOption({ label: "星桥标准店" });
+  await expect(page.getByText(/星桥标准店 2 项/u)).toBeVisible();
+  await page.locator(".hq-metric-summary").getByRole("button").click();
+  const drilldown = page.getByRole("dialog", { name: "未关闭报修构成" });
+  await expect(drilldown.getByText("总部只读下钻")).toBeVisible();
+  await expect(drilldown.getByRole("button")).toHaveCount(1);
+  await drilldown.getByRole("button", { name: "关闭总部只读下钻" }).click();
+
+  await page.getByRole("button", { name: "审计与导出" }).click();
+  await expect(page.getByRole("heading", { name: "审计与导出" })).toBeVisible();
+  const auditTable = page.getByRole("table", { name: "三店审计记录" });
+  await expect(auditTable.getByText("棱镜旗舰店").first()).toBeVisible();
+  await expect(auditTable.getByText("星桥标准店").first()).toBeVisible();
+  await expect(auditTable.getByText("极点新店").first()).toBeVisible();
+  await page.getByRole("button", { name: "导出 CSV" }).click();
+  const exportDialog = page.getByRole("dialog", { name: "导出三店数据" });
+  await expect(exportDialog.getByLabel("导出门店")).toHaveValue(
+    "全部三店 · 固定范围",
+  );
+  await expect(exportDialog.getByText("可导出 12 行")).toBeVisible();
+  await exportDialog.getByRole("button", { name: "生成并下载 CSV" }).click();
+  await expect(exportDialog.getByText("导出完成 · 12 行")).toBeVisible();
+
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.body.clientWidth,
+    scrollWidth: document.body.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBe(layout.clientWidth);
 });
 
 test("headquarters maintains fictional product and machine catalogs through dedicated dialogs", async ({

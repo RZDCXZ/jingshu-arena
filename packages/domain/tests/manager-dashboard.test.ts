@@ -193,5 +193,16 @@ describe("manager dashboard rules", () => {
       { orderCents: 0, reservationCents: 1_000, totalCents: 1_000 },
       { orderCents: 1_300, reservationCents: 0, totalCents: 1_300 },
     ]);
+    expect(result.days[1]).toMatchObject({
+      attendance: { absent: 1, late: 0, onTime: 0 },
+      handoverExceptionCount: 1,
+      inventory: { lowStockCount: 3 },
+      orders: {
+        completedCount: 1,
+        completionRateBasisPoints: 5_000,
+        eligibleTerminalCount: 2,
+      },
+      repairs: { openCount: 1 },
+    });
   });
 });

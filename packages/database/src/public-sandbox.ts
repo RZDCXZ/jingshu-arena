@@ -1080,15 +1080,18 @@ export type ReadManagerPeopleScheduleInput =
     readonly role: "manager";
   };
 
-export interface ReadManagerDashboardInput extends ReadStaffReservationWorkbenchInput {
+export interface ReadManagerDashboardInput extends ReadRoleContextInput {
   readonly drilldown?: ManagerDashboardDrilldownKind;
   readonly fromBusinessDay?: string;
+  readonly role: FrontlineRole | "hq";
+  readonly storeId?: string;
   readonly toBusinessDay?: string;
 }
 
-export interface ReadManagerAuditsInput extends ReadStaffReservationWorkbenchInput {
+export interface ReadManagerAuditsInput extends ReadRoleContextInput {
   readonly filters: ManagerAuditFilters;
   readonly fromBusinessDay?: string;
+  readonly role: FrontlineRole | "hq";
   readonly sort: {
     readonly direction: ManagerExportSortDirection;
     readonly field: ManagerAuditSortField;
@@ -1151,9 +1154,10 @@ export interface DatabaseManagerAudits {
   readonly totalCount: number;
 }
 
-export type ManagerExportInput = ReadStaffReservationWorkbenchInput &
+export type ManagerExportInput = ReadRoleContextInput &
   ManagerExportRequest & {
     readonly requestId?: string;
+    readonly role: FrontlineRole | "hq";
   };
 
 export type ManagerExportCellKind = "datetime" | "json" | "money" | "text";
@@ -8791,22 +8795,42 @@ interface ManagerScopedStore {
 
 async function managerStoreWithClient(
   client: PoolClient,
-  input: ReadStaffReservationWorkbenchInput & { readonly storeId: string },
+  input: ReadRoleContextInput & {
+    readonly role: FrontlineRole | "hq";
+    readonly storeId: string;
+  },
   wallTime: Date,
 ) {
-  const context = await assertFrontlineContext(client, input, wallTime);
-  if (input.role !== "manager") throw new RoleContextStaleError();
-  if (input.storeId !== context.actorStoreId) {
-    throw new ManagerAuditExportError("store-not-found");
+  let sandbox: SandboxRow;
+  let targetStoreId: string;
+  if (input.role === "hq") {
+    sandbox = await assertHeadquartersContext(
+      client,
+      { ...input, role: "hq" },
+      wallTime,
+    );
+    targetStoreId = input.storeId;
+  } else {
+    const context = await assertFrontlineContext(
+      client,
+      { ...input, role: input.role },
+      wallTime,
+    );
+    if (input.role !== "manager") throw new RoleContextStaleError();
+    if (input.storeId !== context.actorStoreId) {
+      throw new ManagerAuditExportError("store-not-found");
+    }
+    sandbox = context.sandbox;
+    targetStoreId = context.actorStoreId;
   }
   const store = await client.query<ManagerScopedStore>(
     `select id, code, display_name from stores
-      where sandbox_id = $1 and id = $2`,
-    [input.sandboxId, context.actorStoreId],
+      where sandbox_id = $1 and id = $2 and code = any($3::text[])`,
+    [input.sandboxId, targetStoreId, HEADQUARTERS_FIXED_STORE_CODES],
   );
   const storeRow = store.rows[0];
-  if (!storeRow) throw new RoleContextUnavailableError();
-  return { context, store: storeRow };
+  if (!storeRow) throw new ManagerAuditExportError("store-not-found");
+  return { context: { sandbox }, store: storeRow };
 }
 
 interface ManagerAuditRow {
@@ -9282,13 +9306,14 @@ export function createPublicSandboxDatabase(
              id, sandbox_id, store_id, persona_id, role, action, object_type,
              object_id, result, reason, request_id, before_data, after_data,
              business_occurred_at, recorded_at
-           ) values ($1, $2, $3, $4, 'manager', 'export.csv', 'export', null,
-             'allowed', null, $5, null, $6::jsonb, $7, $8)`,
+           ) values ($1, $2, $3, $4, $5, 'export.csv', 'export', null,
+             'allowed', null, $6, null, $7::jsonb, $8, $9)`,
           [
             randomUUID(),
             input.sandboxId,
             store.id,
             input.personaId,
+            input.role,
             input.requestId,
             JSON.stringify({
               dataType: input.dataType,
@@ -14447,9 +14472,27 @@ export function createPublicSandboxDatabase(
         await client.query("select set_config('app.sandbox_id', $1, true)", [
           input.sandboxId,
         ]);
-        const context = await assertFrontlineContext(client, input, wallTime);
-        if (input.role !== "manager") throw new RoleContextStaleError();
-        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        let sandbox: SandboxRow;
+        let targetStoreId: string;
+        if (input.role === "hq") {
+          sandbox = await assertHeadquartersContext(
+            client,
+            { ...input, role: "hq" },
+            wallTime,
+          );
+          if (!input.storeId) throw new RoleContextStaleError();
+          targetStoreId = input.storeId;
+        } else {
+          const context = await assertFrontlineContext(
+            client,
+            { ...input, role: input.role },
+            wallTime,
+          );
+          if (input.role !== "manager") throw new RoleContextStaleError();
+          sandbox = context.sandbox;
+          targetStoreId = context.actorStoreId;
+        }
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
         await processFrontlineReservationDeadlines(client, {
           currentTime,
           recordedAt: wallTime,
@@ -14477,8 +14520,9 @@ export function createPublicSandboxDatabase(
         }>(
           `select id, code, display_name, opens_at, closes_at,
                   closes_next_day, is_open_24_hours
-             from stores where sandbox_id = $1 and id = $2`,
-          [input.sandboxId, context.actorStoreId],
+             from stores where sandbox_id = $1 and id = $2
+              and code = any($3::text[])`,
+          [input.sandboxId, targetStoreId, HEADQUARTERS_FIXED_STORE_CODES],
         );
         const storeRow = store.rows[0];
         if (!storeRow) throw new RoleContextUnavailableError();
@@ -14514,7 +14558,7 @@ export function createPublicSandboxDatabase(
             at: day.startsAt,
             baseline: baselineHours,
             sandboxId: input.sandboxId,
-            storeId: context.actorStoreId,
+            storeId: targetStoreId,
           });
           businessWindows.push(dashboardBusinessWindow(day, hours));
         }
@@ -14527,7 +14571,7 @@ export function createPublicSandboxDatabase(
           `select count(*)::integer as count from seats
             where sandbox_id = $1 and store_id = $2
               and lifecycle_status = 'active'`,
-          [input.sandboxId, context.actorStoreId],
+          [input.sandboxId, targetStoreId],
         );
         const reservations = await client.query<{
           completed_business_at: Date | null;
@@ -14561,7 +14605,7 @@ export function createPublicSandboxDatabase(
                on customer.id = reservation.customer_persona_id
             where reservation.sandbox_id = $1 and reservation.store_id = $2
             order by reservation.starts_at, reservation.id`,
-          [input.sandboxId, context.actorStoreId],
+          [input.sandboxId, targetStoreId],
         );
         const orders = await client.query<{
           cancelled_business_at: Date | null;
@@ -14599,7 +14643,7 @@ export function createPublicSandboxDatabase(
                on customer.id = orders.customer_persona_id
             where orders.sandbox_id = $1 and orders.store_id = $2
             order by orders.created_business_at, orders.id`,
-          [input.sandboxId, context.actorStoreId],
+          [input.sandboxId, targetStoreId],
         );
         const repairs = await client.query<{
           closed_business_at: Date | null;
@@ -14619,7 +14663,7 @@ export function createPublicSandboxDatabase(
              join seats seat on seat.id = repair.seat_id
             where repair.sandbox_id = $1 and repair.store_id = $2
             order by repair.created_business_at, repair.id`,
-          [input.sandboxId, context.actorStoreId],
+          [input.sandboxId, targetStoreId],
         );
         const attendance = await client.query<{
           business_occurred_at: Date;
@@ -14656,7 +14700,7 @@ export function createPublicSandboxDatabase(
              ) latest_late on true
             where attendance.sandbox_id = $1 and attendance.store_id = $2
             order by business_occurred_at, attendance.id`,
-          [input.sandboxId, context.actorStoreId],
+          [input.sandboxId, targetStoreId],
         );
         const handoverExceptions = await client.query<{
           business_occurred_at: Date;
@@ -14671,7 +14715,7 @@ export function createPublicSandboxDatabase(
              join employees employee on employee.id = shift.employee_id
             where exception.sandbox_id = $1 and exception.store_id = $2
             order by exception.business_occurred_at, exception.id`,
-          [input.sandboxId, context.actorStoreId],
+          [input.sandboxId, targetStoreId],
         );
         const inventory = await client.query<{
           available_quantity: number;
@@ -14686,7 +14730,7 @@ export function createPublicSandboxDatabase(
             where sandbox_id = $1 and store_id = $2
               and on_hand_quantity - reserved_quantity <= low_stock_threshold
             order by display_name, id`,
-          [input.sandboxId, context.actorStoreId],
+          [input.sandboxId, targetStoreId],
         );
 
         const reservationFacts = reservations.rows

@@ -1857,7 +1857,16 @@ export interface ManagerDashboardSeatResponse {
 }
 
 export interface ManagerDashboardDayResponse {
+  readonly attendance: {
+    readonly absent: number;
+    readonly late: number;
+    readonly onTime: number;
+  };
+  readonly handoverExceptionCount: number;
+  readonly inventory: { readonly lowStockCount: number };
   readonly key: string;
+  readonly orders: ManagerDashboardResponse["summary"]["orders"];
+  readonly repairs: ManagerDashboardResponse["summary"]["repairs"];
   readonly revenue: ManagerDashboardRevenueResponse;
   readonly seats: ManagerDashboardSeatResponse;
 }
@@ -1941,6 +1950,25 @@ export interface ManagerDashboardResponse {
     readonly seats: ManagerDashboardSeatResponse;
   };
   readonly trend: ReadonlyArray<ManagerDashboardDayResponse>;
+}
+
+export type HeadquartersComparisonStoreResponse = Omit<
+  ManagerDashboardResponse,
+  "availableBusinessDays" | "currentTime" | "range" | "status" | "store"
+> & {
+  readonly store: {
+    readonly code: HeadquartersFixedStoreCode;
+    readonly displayName: string;
+    readonly storeId: string;
+  };
+};
+
+export interface HeadquartersComparisonResponse {
+  readonly status: "ready";
+  readonly availableBusinessDays: ManagerDashboardResponse["availableBusinessDays"];
+  readonly currentTime: string;
+  readonly range: ManagerDashboardResponse["range"];
+  readonly stores: ReadonlyArray<HeadquartersComparisonStoreResponse>;
 }
 
 export const MANAGER_EXPORT_DATA_TYPES = [
@@ -2110,6 +2138,35 @@ export interface ManagerExportPreviewResponse {
     readonly displayName: string;
     readonly storeId: string;
   };
+}
+
+export interface HeadquartersScopedStoreResponse {
+  readonly code: HeadquartersFixedStoreCode;
+  readonly displayName: string;
+  readonly storeId: string;
+}
+
+export type HeadquartersAuditResponse = Omit<ManagerAuditResponse, "store"> & {
+  readonly selectedStoreIds: ReadonlyArray<string>;
+  readonly stores: ReadonlyArray<HeadquartersScopedStoreResponse>;
+};
+
+type HeadquartersExportRequestFor<Request extends ManagerExportRequest> =
+  Request extends ManagerExportRequest
+    ? Omit<Request, "storeId"> & { readonly storeIds: ReadonlyArray<string> }
+    : never;
+
+export type HeadquartersExportRequest =
+  HeadquartersExportRequestFor<ManagerExportRequest>;
+
+export interface HeadquartersExportPreviewResponse {
+  readonly columns: ReadonlyArray<string>;
+  readonly dataType: ManagerExportDataType;
+  readonly estimatedRowCount: number;
+  readonly range: ManagerExportPreviewResponse["range"];
+  readonly rows: ReadonlyArray<ReadonlyArray<string>>;
+  readonly status: "ready";
+  readonly stores: ReadonlyArray<HeadquartersScopedStoreResponse>;
 }
 
 export type ManagerPeopleFrontlineRole = "manager" | "staff";

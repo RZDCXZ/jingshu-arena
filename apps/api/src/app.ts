@@ -21,6 +21,8 @@ import { registerManagerDashboardRoutes } from "./manager-dashboard-routes.js";
 import { registerManagerAuditExportRoutes } from "./manager-audit-export-routes.js";
 import { registerRepairIntakeRoutes } from "./repair-intake-routes.js";
 import { registerHeadquartersCatalogRoutes } from "./headquarters-catalog-routes.js";
+import { registerHeadquartersComparisonRoutes } from "./headquarters-comparison-routes.js";
+import { registerHeadquartersAuditExportRoutes } from "./headquarters-audit-export-routes.js";
 import type { RepairImageStorage } from "./repair-image-storage.js";
 
 interface AppOptions {
@@ -78,6 +80,8 @@ export function createApp(options: AppOptions = {}) {
   registerManagerPeopleScheduleRoutes(app, services);
   registerManagerDashboardRoutes(app, services);
   registerManagerAuditExportRoutes(app, services);
+  registerHeadquartersComparisonRoutes(app, services);
+  registerHeadquartersAuditExportRoutes(app, services);
   registerHeadquartersCatalogRoutes(app, services);
   registerRepairIntakeRoutes(app, services);
   registerPublicSandboxRoutes(app, services);
