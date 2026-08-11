@@ -21,6 +21,7 @@ import {
   decideStaffOrderFulfillment,
   deriveExperienceCouponStatus,
   deriveSeatAvailability,
+  evaluateStaffCoverage,
   evaluateReservationCoupon,
   isSafePlainTextReason,
   HANDOVER_EXCEPTION_GRACE_MS,
@@ -45,9 +46,11 @@ import {
   type ReservationStatus,
   resolveCustomerReservationWindow,
   type SeatAvailability,
+  type StaffCoverageWarning,
   sandboxBusinessTimeAt,
   SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS,
   SANDBOX_BUSINESS_TIME_ZONE,
+  validateShiftSchedule,
 } from "@jingshu/domain";
 
 import {
@@ -63,6 +66,8 @@ import {
   type ManagerInventoryConflictReason,
   ManagerStoreConfigurationConflictError,
   type ManagerStoreConfigurationConflictReason,
+  ManagerPeopleConflictError,
+  type ManagerPeopleConflictReason,
   RepairCommandConflictError,
   type RepairCommandConflictReason,
   RepairIntakeConflictError,
@@ -1053,6 +1058,176 @@ export type ReadManagerStoreConfigurationInput =
     readonly role: "manager";
   };
 
+export type ReadManagerPeopleScheduleInput =
+  ReadStaffReservationWorkbenchInput & {
+    readonly role: "manager";
+  };
+
+export interface DatabaseManagerPeopleSchedule {
+  readonly attendance: ReadonlyArray<{
+    readonly attendanceRecordId: string;
+    readonly corrections: ReadonlyArray<{
+      readonly businessOccurredAt: Date;
+      readonly correctedBusinessAt: Date;
+      readonly correctedBy: string;
+      readonly correctionId: string;
+      readonly correctionKind: "absence" | "check-out" | "late";
+      readonly reason: string;
+      readonly recordedAt: Date;
+    }>;
+    readonly employee: {
+      readonly displayName: string;
+      readonly employeeCode: string;
+      readonly employeeId: string;
+    };
+    readonly original: {
+      readonly absenceBusinessAt: Date | null;
+      readonly checkInBusinessAt: Date | null;
+      readonly checkInOutcome: "late" | "on-time" | null;
+      readonly checkOutBusinessAt: Date | null;
+      readonly status: AttendanceStatus;
+    };
+    readonly shiftId: string;
+    readonly window: { readonly endsAt: Date; readonly startsAt: Date };
+  }>;
+  readonly coverageWarnings: ReadonlyArray<StaffCoverageWarning>;
+  readonly currentTime: Date;
+  readonly employees: ReadonlyArray<{
+    readonly active: boolean;
+    readonly dependencies: {
+      readonly currentOrFutureShifts: number;
+      readonly futureShifts: number;
+      readonly openRepairAssignments: number;
+    };
+    readonly displayName: string;
+    readonly employeeCode: string;
+    readonly employeeId: string;
+    readonly protected: boolean;
+    readonly role: FrontlineRole;
+    readonly store: {
+      readonly code: string;
+      readonly displayName: string;
+      readonly fixed: true;
+    };
+    readonly version: number;
+  }>;
+  readonly shifts: ReadonlyArray<{
+    readonly attendanceRecordId: string | null;
+    readonly canManage: boolean;
+    readonly employee: {
+      readonly displayName: string;
+      readonly employeeCode: string;
+      readonly employeeId: string;
+      readonly role: FrontlineRole;
+    };
+    readonly endsAt: Date;
+    readonly shiftId: string;
+    readonly startsAt: Date;
+    readonly status: "cancelled" | "scheduled";
+  }>;
+  readonly store: {
+    readonly code: string;
+    readonly displayName: string;
+    readonly fixed: true;
+    readonly storeId: string;
+  };
+}
+
+export interface PreviewManagerShiftCoverageInput extends ReadManagerPeopleScheduleInput {
+  readonly employeeId: string;
+  readonly endsAt: Date;
+  readonly requestId: string;
+  readonly startsAt: Date;
+  readonly storeId: string;
+  readonly shiftId?: string;
+}
+
+export interface DatabaseManagerShiftPreview {
+  readonly validation:
+    | { readonly status: "valid" }
+    | {
+        readonly reason: "duration" | "half-hour-alignment" | "overlap";
+        readonly status: "invalid";
+      };
+  readonly warnings: ReadonlyArray<StaffCoverageWarning>;
+}
+
+interface ManagerPeopleCommandBase extends ReadManagerPeopleScheduleInput {
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+  readonly storeId: string;
+}
+
+export type ExecuteManagerPeopleCommandInput = ManagerPeopleCommandBase &
+  (
+    | {
+        readonly action: "create-employee";
+        readonly displayName: string;
+        readonly employeeCode: string;
+        readonly employeeRole: FrontlineRole;
+      }
+    | {
+        readonly action: "update-employee";
+        readonly displayName: string;
+        readonly employeeCode: string;
+        readonly employeeId: string;
+        readonly expectedVersion: number;
+      }
+    | {
+        readonly action: "deactivate-employee";
+        readonly employeeId: string;
+        readonly expectedVersion: number;
+      }
+    | {
+        readonly action: "create-shift";
+        readonly employeeId: string;
+        readonly endsAt: Date;
+        readonly startsAt: Date;
+      }
+    | {
+        readonly action: "update-shift";
+        readonly endsAt: Date;
+        readonly shiftId: string;
+        readonly startsAt: Date;
+      }
+    | {
+        readonly action: "cancel-shift";
+        readonly shiftId: string;
+      }
+    | {
+        readonly action: "correct-attendance";
+        readonly attendanceRecordId: string;
+        readonly correctedBusinessAt: Date;
+        readonly correctionKind: "absence" | "check-out" | "late";
+        readonly reason: string;
+      }
+  );
+
+export interface DatabaseManagerPeopleCommand {
+  readonly action: ExecuteManagerPeopleCommandInput["action"];
+  readonly coverageWarnings: ReadonlyArray<StaffCoverageWarning>;
+  readonly objectId: string;
+  readonly replayed: boolean;
+}
+
+export interface ReadHeadquartersPeopleScheduleInput extends ReadRoleContextInput {
+  readonly role: "hq";
+}
+
+export interface DatabaseHeadquartersPeopleSchedule {
+  readonly currentTime: Date;
+  readonly stores: ReadonlyArray<{
+    readonly activeEmployeeCount: number;
+    readonly attendanceAnomalyCount: number;
+    readonly coverageWarnings: number;
+    readonly employeeCount: number;
+    readonly futureShiftCount: number;
+    readonly managerCount: number;
+    readonly staffCount: number;
+    readonly store: { readonly code: string; readonly displayName: string };
+  }>;
+}
+
 export interface DatabaseManagerStoreConfiguration {
   readonly areas: ReadonlyArray<{
     readonly areaId: string;
@@ -1305,6 +1480,49 @@ function isStoredManagerStoreConfigurationDenial(
 
 function isSafeManagerConfigurationText(value: string) {
   return !/[<>\p{C}]/u.test(value);
+}
+
+interface StoredManagerPeopleCommand {
+  readonly action: ExecuteManagerPeopleCommandInput["action"];
+  readonly coverageWarnings: ReadonlyArray<{
+    readonly actualStaff: number;
+    readonly endsAt: string;
+    readonly minimumStaff: number;
+    readonly startsAt: string;
+  }>;
+  readonly objectId: string;
+}
+
+function managerPeopleCommandFromStored(
+  stored: StoredManagerPeopleCommand,
+  replayed: boolean,
+): DatabaseManagerPeopleCommand {
+  return {
+    ...stored,
+    coverageWarnings: stored.coverageWarnings.map((warning) => ({
+      ...warning,
+      endsAt: new Date(warning.endsAt),
+      startsAt: new Date(warning.startsAt),
+    })),
+    replayed,
+  };
+}
+
+function normalizeEmployeeFields(input: {
+  readonly displayName: string;
+  readonly employeeCode: string;
+}) {
+  const displayName = input.displayName.trim();
+  const employeeCode = input.employeeCode.trim().toUpperCase();
+  if (
+    displayName.length < 2 ||
+    displayName.length > 40 ||
+    /[<>\p{C}]/u.test(displayName) ||
+    !/^[A-Z0-9-]{3,32}$/u.test(employeeCode)
+  ) {
+    throw new ManagerPeopleConflictError("invalid-employee");
+  }
+  return { displayName, employeeCode };
 }
 
 interface ManagerInventoryCommandBase extends ReadStoreInventoryInput {
@@ -1826,6 +2044,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   executeManagerStoreConfigurationCommand(
     input: ExecuteManagerStoreConfigurationCommandInput,
   ): Promise<DatabaseManagerStoreConfigurationCommand>;
+  executeManagerPeopleCommand(
+    input: ExecuteManagerPeopleCommandInput,
+  ): Promise<DatabaseManagerPeopleCommand>;
   createCustomerPendingReservation(
     input: CreateCustomerPendingReservationInput,
   ): Promise<DatabaseCustomerPendingReservation>;
@@ -1920,6 +2141,15 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readManagerStoreConfiguration(
     input: ReadManagerStoreConfigurationInput,
   ): Promise<DatabaseManagerStoreConfiguration>;
+  readManagerPeopleSchedule(
+    input: ReadManagerPeopleScheduleInput,
+  ): Promise<DatabaseManagerPeopleSchedule>;
+  previewManagerShiftCoverage(
+    input: PreviewManagerShiftCoverageInput,
+  ): Promise<DatabaseManagerShiftPreview>;
+  readHeadquartersPeopleSchedule(
+    input: ReadHeadquartersPeopleScheduleInput,
+  ): Promise<DatabaseHeadquartersPeopleSchedule>;
   readCustomerSeatAvailability(
     input: ReadCustomerSeatAvailabilityInput,
   ): Promise<DatabaseCustomerSeatAvailability>;
@@ -1956,6 +2186,7 @@ export interface PublicSandboxDatabaseOptions {
 
 const storeSeeds = publicSandboxSeed.stores;
 const personaSeeds = publicSandboxSeed.personas;
+const employeeSeeds = publicSandboxSeed.employees;
 const productSeeds = [
   {
     category: "drink",
@@ -4399,6 +4630,120 @@ async function assertFrontlineContext(
   return { actorStoreId, sandbox: sandboxRow };
 }
 
+async function assertHeadquartersContext(
+  client: PoolClient,
+  input: ReadHeadquartersPeopleScheduleInput,
+  wallTime: Date,
+): Promise<SandboxRow> {
+  const sandbox = await client.query<SandboxRow>(
+    `select ${SANDBOX_ROW_COLUMNS} from sandboxes where id = $1`,
+    [input.sandboxId],
+  );
+  const sandboxRow = sandbox.rows[0];
+  if (
+    !sandboxRow ||
+    sandboxRow.invalidated_at !== null ||
+    sandboxRow.expires_at.getTime() <= wallTime.getTime()
+  ) {
+    throw new RoleContextUnavailableError();
+  }
+  if (
+    input.role !== "hq" ||
+    sandboxRow.role_context_role !== "hq" ||
+    sandboxRow.role_context_version !== input.contextVersion
+  ) {
+    throw new RoleContextStaleError();
+  }
+  const persona = await client.query<{ id: string }>(
+    `select id from demo_personas
+      where sandbox_id = $1 and id = $2 and role = 'hq' and protected = true`,
+    [input.sandboxId, input.personaId],
+  );
+  if (!persona.rows[0]) throw new RoleContextUnavailableError();
+  return sandboxRow;
+}
+
+async function managerShiftPreviewWithClient(
+  client: PoolClient,
+  input: PreviewManagerShiftCoverageInput,
+): Promise<DatabaseManagerShiftPreview> {
+  const employee = await client.query<{
+    active: boolean;
+    role: FrontlineRole;
+    store_id: string;
+  }>(
+    `select store_id, role, active from employees
+      where sandbox_id = $1 and id = $2`,
+    [input.sandboxId, input.employeeId],
+  );
+  const employeeRow = employee.rows[0];
+  if (!employeeRow || employeeRow.store_id !== input.storeId) {
+    throw new ManagerPeopleConflictError("employee-not-found");
+  }
+  if (!employeeRow.active) {
+    throw new ManagerPeopleConflictError("inactive-employee");
+  }
+  const existing = await client.query<{ ends_at: Date; starts_at: Date }>(
+    `select starts_at, ends_at from shifts
+      where sandbox_id = $1 and employee_id = $2 and status = 'scheduled'
+        and ($3::uuid is null or id <> $3)
+        and starts_at < $4 and ends_at > $5
+      order by starts_at, id`,
+    [
+      input.sandboxId,
+      input.employeeId,
+      input.shiftId ?? null,
+      input.endsAt,
+      input.startsAt,
+    ],
+  );
+  const validation = validateShiftSchedule({
+    endsAt: input.endsAt,
+    existingWindows: existing.rows.map((shift) => ({
+      endsAt: shift.ends_at,
+      startsAt: shift.starts_at,
+    })),
+    startsAt: input.startsAt,
+  });
+  if (validation.status === "invalid") {
+    return { validation, warnings: [] };
+  }
+  const coverage = await client.query<{ ends_at: Date; starts_at: Date }>(
+    `select shift.starts_at, shift.ends_at
+       from shifts shift
+       join employees employee on employee.id = shift.employee_id
+      where shift.sandbox_id = $1 and shift.store_id = $2
+        and shift.status = 'scheduled' and employee.active = true
+        and employee.role = 'staff'
+        and ($3::uuid is null or shift.id <> $3)
+        and shift.starts_at < $4 and shift.ends_at > $5
+      order by shift.starts_at, shift.id`,
+    [
+      input.sandboxId,
+      input.storeId,
+      input.shiftId ?? null,
+      input.endsAt,
+      input.startsAt,
+    ],
+  );
+  return {
+    validation,
+    warnings: evaluateStaffCoverage({
+      minimumStaff: 3,
+      range: { endsAt: input.endsAt, startsAt: input.startsAt },
+      shifts: [
+        ...coverage.rows.map((shift) => ({
+          endsAt: shift.ends_at,
+          startsAt: shift.starts_at,
+        })),
+        ...(employeeRow.role === "staff"
+          ? [{ endsAt: input.endsAt, startsAt: input.startsAt }]
+          : []),
+      ],
+    }),
+  };
+}
+
 async function assertEmployeeContext(
   client: PoolClient,
   input: ReadOwnShiftAttendanceInput,
@@ -5854,7 +6199,8 @@ async function readSandboxResult(
   );
   const personas = await client.query<PersonaRow>(
     `select id, display_name, protected, role, scope, store_id
-       from demo_personas where sandbox_id = $1 and role = any($2::text[])`,
+       from demo_personas
+      where sandbox_id = $1 and role = any($2::text[]) and protected = true`,
     [sandboxId, [creationRole, currentRole]],
   );
 
@@ -5983,6 +6329,18 @@ async function materializePublicSandbox(input: {
       ? (storeIds.get(persona.storeCode) ?? null)
       : null,
   }));
+  const seededBackgroundPersonas = employeeSeeds
+    .filter((employee) => !employee.protected)
+    .map((employee) => ({
+      displayName: employee.displayName,
+      employeeCode: employee.employeeCode,
+      id: randomUUID(),
+      protected: false,
+      role: employee.role,
+      scope: `${employee.storeCode} · 背景员工`,
+      storeId: storeIds.get(employee.storeCode) ?? null,
+    }));
+  const allSeededPersonas = [...seededPersonas, ...seededBackgroundPersonas];
   await input.client.query(
     `insert into demo_personas (
        id, sandbox_id, store_id, role, display_name, scope, protected
@@ -5992,33 +6350,38 @@ async function materializePublicSandbox(input: {
        $5::text[], $6::text[], $7::boolean[]
      )`,
     [
-      seededPersonas.map((persona) => persona.id),
-      seededPersonas.map(() => input.sandboxId),
-      seededPersonas.map((persona) => persona.storeId),
-      seededPersonas.map((persona) => persona.role),
-      seededPersonas.map((persona) => persona.displayName),
-      seededPersonas.map((persona) => persona.scope),
-      seededPersonas.map((persona) => persona.protected),
+      allSeededPersonas.map((persona) => persona.id),
+      allSeededPersonas.map(() => input.sandboxId),
+      allSeededPersonas.map((persona) => persona.storeId),
+      allSeededPersonas.map((persona) => persona.role),
+      allSeededPersonas.map((persona) => persona.displayName),
+      allSeededPersonas.map((persona) => persona.scope),
+      allSeededPersonas.map((persona) => persona.protected),
     ],
   );
 
-  const seededEmployees = seededPersonas.flatMap((persona) =>
-    persona.employeeCode &&
-    persona.storeId &&
-    (persona.role === "staff" || persona.role === "manager")
-      ? [
-          {
-            displayName: persona.displayName,
-            employeeCode: persona.employeeCode,
-            id: randomUUID(),
-            personaId: persona.id,
-            protected: persona.protected,
-            role: persona.role,
-            storeId: persona.storeId,
-          },
-        ]
-      : [],
-  );
+  const seededEmployees = employeeSeeds.map((employee) => {
+    const persona = employee.protected
+      ? seededPersonas.find(
+          (candidate) =>
+            candidate.displayName === employee.displayName &&
+            candidate.role === employee.role &&
+            candidate.storeId === storeIds.get(employee.storeCode),
+        )
+      : seededBackgroundPersonas.find(
+          (candidate) => candidate.employeeCode === employee.employeeCode,
+        );
+    const storeId = storeIds.get(employee.storeCode);
+    if (!persona || !storeId) {
+      throw new Error("The deterministic employee persona is incomplete.");
+    }
+    return {
+      ...employee,
+      id: randomUUID(),
+      personaId: persona.id,
+      storeId,
+    };
+  });
   await input.client.query(
     `insert into employees (
        id, sandbox_id, store_id, persona_id, employee_code,
@@ -6045,7 +6408,7 @@ async function materializePublicSandbox(input: {
       halfHourMilliseconds,
   );
   const seededShifts = seededEmployees.flatMap((employee) =>
-    [0, 24, 48].map((offsetHours) => {
+    (employee.protected ? [0, 24, 48] : [24, 48, 72]).map((offsetHours) => {
       const startsAt = new Date(
         currentShiftStartsAt.getTime() + offsetHours * 60 * 60 * 1_000,
       );
@@ -7848,11 +8211,13 @@ export function createPublicSandboxDatabase(
           persona_id: string;
           role: FrontlineRole;
         }>(
-          `select id as persona_id, display_name, role
-             from demo_personas
-            where sandbox_id = $1 and store_id = $2 and protected = true
-              and role in ('staff', 'manager')
-            order by case role when 'staff' then 0 else 1 end, display_name, id`,
+          `select persona.id as persona_id, employee.display_name, employee.role
+             from employees employee
+             join demo_personas persona on persona.id = employee.persona_id
+            where employee.sandbox_id = $1 and employee.store_id = $2
+              and employee.active = true and employee.role in ('staff', 'manager')
+            order by case employee.role when 'staff' then 0 else 1 end,
+                     employee.employee_code, employee.id`,
           [input.sandboxId, context.actorStoreId],
         );
         const rows = await client.query<StaffRepairIntakeRow>(
@@ -8446,9 +8811,12 @@ export function createPublicSandboxDatabase(
             display_name: string;
             role: FrontlineRole;
           }>(
-            `select display_name, role from demo_personas
-            where sandbox_id = $1 and id = $2 and store_id = $3
-              and protected = true and role in ('staff', 'manager')`,
+            `select employee.display_name, employee.role
+               from employees employee
+               join demo_personas persona on persona.id = employee.persona_id
+              where employee.sandbox_id = $1 and persona.id = $2
+                and employee.store_id = $3 and employee.active = true
+                and employee.role in ('staff', 'manager')`,
             [input.sandboxId, input.assigneePersonaId, context.actorStoreId],
           );
           const assignee = assignees.rows[0];
@@ -12125,6 +12493,1093 @@ export function createPublicSandboxDatabase(
             spareCount: items.filter((item) => item.kind === "spare").length,
           },
         };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readManagerPeopleSchedule(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        if (input.role !== "manager") throw new RoleContextStaleError();
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await processDueAttendanceAbsences(client, {
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        const store = await client.query<{
+          code: string;
+          display_name: string;
+          id: string;
+        }>(
+          `select id, code, display_name from stores
+            where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const storeRow = store.rows[0];
+        if (!storeRow) throw new RoleContextUnavailableError();
+        const employees = await client.query<{
+          active: boolean;
+          config_version: number;
+          current_or_future_shifts: number;
+          display_name: string;
+          employee_code: string;
+          future_shifts: number;
+          id: string;
+          open_repair_assignments: number;
+          protected: boolean;
+          role: FrontlineRole;
+        }>(
+          `select employee.id, employee.employee_code, employee.display_name,
+                  employee.role, employee.active, employee.protected,
+                  employee.config_version,
+                  (select count(*)::integer from shifts shift
+                    where shift.sandbox_id = employee.sandbox_id
+                      and shift.employee_id = employee.id
+                      and shift.status = 'scheduled' and shift.ends_at > $3)
+                    as current_or_future_shifts,
+                  (select count(*)::integer from shifts shift
+                    where shift.sandbox_id = employee.sandbox_id
+                      and shift.employee_id = employee.id
+                      and shift.status = 'scheduled' and shift.starts_at > $3)
+                    as future_shifts,
+                  (select count(*)::integer from repairs repair
+                    where repair.sandbox_id = employee.sandbox_id
+                      and repair.assigned_to_persona_id = employee.persona_id
+                      and repair.status <> 'closed') as open_repair_assignments
+             from employees employee
+            where employee.sandbox_id = $1 and employee.store_id = $2
+            order by employee.protected desc, employee.role desc,
+                     employee.employee_code, employee.id`,
+          [input.sandboxId, context.actorStoreId, currentTime],
+        );
+        const shifts = await client.query<{
+          attendance_record_id: string | null;
+          display_name: string;
+          employee_code: string;
+          employee_id: string;
+          ends_at: Date;
+          role: FrontlineRole;
+          shift_id: string;
+          starts_at: Date;
+          status: "cancelled" | "scheduled";
+        }>(
+          `select shift.id as shift_id, shift.starts_at, shift.ends_at,
+                  shift.status, employee.id as employee_id,
+                  employee.employee_code, employee.display_name, employee.role,
+                  attendance.id as attendance_record_id
+             from shifts shift
+             join employees employee on employee.id = shift.employee_id
+             left join attendance_records attendance
+               on attendance.sandbox_id = shift.sandbox_id
+              and attendance.shift_id = shift.id
+            where shift.sandbox_id = $1 and shift.store_id = $2
+              and shift.ends_at > $3::timestamptz - interval '14 days'
+              and shift.starts_at < $3::timestamptz + interval '8 days'
+            order by shift.starts_at, employee.employee_code, shift.id`,
+          [input.sandboxId, context.actorStoreId, currentTime],
+        );
+        const attendance = await client.query<{
+          absence_business_at: Date | null;
+          attendance_record_id: string;
+          attendance_status: AttendanceStatus;
+          check_in_business_at: Date | null;
+          check_in_outcome: "late" | "on-time" | null;
+          check_out_business_at: Date | null;
+          display_name: string;
+          employee_code: string;
+          employee_id: string;
+          ends_at: Date;
+          shift_id: string;
+          starts_at: Date;
+        }>(
+          `select attendance.id as attendance_record_id,
+                  attendance.status as attendance_status,
+                  attendance.check_in_outcome,
+                  attendance.check_in_business_at,
+                  attendance.check_out_business_at,
+                  attendance.absence_business_at,
+                  shift.id as shift_id, shift.starts_at, shift.ends_at,
+                  employee.id as employee_id, employee.employee_code,
+                  employee.display_name
+             from attendance_records attendance
+             join shifts shift on shift.id = attendance.shift_id
+             join employees employee on employee.id = attendance.employee_id
+            where attendance.sandbox_id = $1 and attendance.store_id = $2
+            order by shift.starts_at desc, attendance.id`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const correctionRows = await client.query<{
+          attendance_record_id: string;
+          business_occurred_at: Date;
+          corrected_business_at: Date;
+          corrected_by: string;
+          correction_id: string;
+          correction_kind: "absence" | "check-out" | "late";
+          reason: string;
+          recorded_at: Date;
+        }>(
+          `select correction.id as correction_id,
+                  correction.attendance_record_id,
+                  correction.correction_kind, correction.corrected_business_at,
+                  correction.reason, correction.business_occurred_at,
+                  correction.recorded_at,
+                  actor.display_name as corrected_by
+             from attendance_corrections correction
+             join demo_personas actor
+               on actor.id = correction.corrected_by_persona_id
+            where correction.sandbox_id = $1 and correction.store_id = $2
+            order by correction.business_occurred_at, correction.recorded_at,
+                     correction.id`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const correctionsByRecord = new Map<
+          string,
+          DatabaseManagerPeopleSchedule["attendance"][number]["corrections"]
+        >();
+        for (const correction of correctionRows.rows) {
+          const current = correctionsByRecord.get(
+            correction.attendance_record_id,
+          );
+          const item = {
+            businessOccurredAt: correction.business_occurred_at,
+            correctedBusinessAt: correction.corrected_business_at,
+            correctedBy: correction.corrected_by,
+            correctionId: correction.correction_id,
+            correctionKind: correction.correction_kind,
+            reason: correction.reason,
+            recordedAt: correction.recorded_at,
+          };
+          correctionsByRecord.set(correction.attendance_record_id, [
+            ...(current ?? []),
+            item,
+          ]);
+        }
+        const coverageStartsAt = new Date(
+          Math.floor(currentTime.getTime() / HALF_HOUR_MS) * HALF_HOUR_MS,
+        );
+        const coverageEndsAt = new Date(
+          coverageStartsAt.getTime() + 48 * 60 * 60 * 1_000,
+        );
+        const coverageShifts = await client.query<{
+          ends_at: Date;
+          starts_at: Date;
+        }>(
+          `select shift.starts_at, shift.ends_at
+             from shifts shift
+             join employees employee on employee.id = shift.employee_id
+            where shift.sandbox_id = $1 and shift.store_id = $2
+              and shift.status = 'scheduled' and employee.active = true
+              and employee.role = 'staff' and shift.starts_at < $3
+              and shift.ends_at > $4
+            order by shift.starts_at, shift.id`,
+          [
+            input.sandboxId,
+            context.actorStoreId,
+            coverageEndsAt,
+            coverageStartsAt,
+          ],
+        );
+        const result: DatabaseManagerPeopleSchedule = {
+          attendance: attendance.rows.map((record) => ({
+            attendanceRecordId: record.attendance_record_id,
+            corrections:
+              correctionsByRecord.get(record.attendance_record_id) ?? [],
+            employee: {
+              displayName: record.display_name,
+              employeeCode: record.employee_code,
+              employeeId: record.employee_id,
+            },
+            original: {
+              absenceBusinessAt: record.absence_business_at,
+              checkInBusinessAt: record.check_in_business_at,
+              checkInOutcome: record.check_in_outcome,
+              checkOutBusinessAt: record.check_out_business_at,
+              status: record.attendance_status,
+            },
+            shiftId: record.shift_id,
+            window: {
+              endsAt: record.ends_at,
+              startsAt: record.starts_at,
+            },
+          })),
+          coverageWarnings: evaluateStaffCoverage({
+            minimumStaff: 3,
+            range: { endsAt: coverageEndsAt, startsAt: coverageStartsAt },
+            shifts: coverageShifts.rows.map((shift) => ({
+              endsAt: shift.ends_at,
+              startsAt: shift.starts_at,
+            })),
+          }),
+          currentTime,
+          employees: employees.rows.map((employee) => ({
+            active: employee.active,
+            dependencies: {
+              currentOrFutureShifts: employee.current_or_future_shifts,
+              futureShifts: employee.future_shifts,
+              openRepairAssignments: employee.open_repair_assignments,
+            },
+            displayName: employee.display_name,
+            employeeCode: employee.employee_code,
+            employeeId: employee.id,
+            protected: employee.protected,
+            role: employee.role,
+            store: {
+              code: storeRow.code,
+              displayName: storeRow.display_name,
+              fixed: true,
+            },
+            version: employee.config_version,
+          })),
+          shifts: shifts.rows.map((shift) => ({
+            attendanceRecordId: shift.attendance_record_id,
+            canManage:
+              shift.status === "scheduled" &&
+              shift.starts_at.getTime() > currentTime.getTime() &&
+              shift.attendance_record_id === null,
+            employee: {
+              displayName: shift.display_name,
+              employeeCode: shift.employee_code,
+              employeeId: shift.employee_id,
+              role: shift.role,
+            },
+            endsAt: shift.ends_at,
+            shiftId: shift.shift_id,
+            startsAt: shift.starts_at,
+            status: shift.status,
+          })),
+          store: {
+            code: storeRow.code,
+            displayName: storeRow.display_name,
+            fixed: true,
+            storeId: storeRow.id,
+          },
+        };
+        await client.query("commit");
+        return result;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async previewManagerShiftCoverage(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        if (input.role !== "manager") throw new RoleContextStaleError();
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        try {
+          if (input.storeId !== context.actorStoreId) {
+            throw new ManagerPeopleConflictError("cross-store");
+          }
+          const preview = await managerShiftPreviewWithClient(client, input);
+          await client.query("commit");
+          return preview;
+        } catch (error) {
+          if (error instanceof ManagerPeopleConflictError) {
+            await client.query(
+              `insert into audit_events (
+                 id, sandbox_id, store_id, persona_id, role, action,
+                 object_type, object_id, result, reason, request_id,
+                 before_data, after_data, business_occurred_at, recorded_at
+               ) values ($1, $2, $3, $4, 'manager', 'manager.preview-shift',
+                 $5, $6, 'denied', $7, $8, null, null, $9, $10)`,
+              [
+                randomUUID(),
+                input.sandboxId,
+                context.actorStoreId,
+                input.personaId,
+                input.shiftId ? "shift" : "employee",
+                input.shiftId ?? input.employeeId,
+                error.reason,
+                input.requestId,
+                currentTime,
+                wallTime,
+              ],
+            );
+            await client.query("commit");
+          }
+          throw error;
+        }
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readHeadquartersPeopleSchedule(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertHeadquartersContext(
+          client,
+          input,
+          wallTime,
+        );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        const stores = await client.query<{
+          active_employee_count: number;
+          attendance_anomaly_count: number;
+          code: string;
+          display_name: string;
+          employee_count: number;
+          future_shift_count: number;
+          id: string;
+          manager_count: number;
+          staff_count: number;
+        }>(
+          `select store.id, store.code, store.display_name,
+                  count(employee.id)::integer as employee_count,
+                  (count(employee.id) filter (where employee.active))::integer
+                    as active_employee_count,
+                  (count(employee.id) filter (where employee.role = 'staff'))::integer
+                    as staff_count,
+                  (count(employee.id) filter (where employee.role = 'manager'))::integer
+                    as manager_count,
+                  (select count(*)::integer from attendance_records attendance
+                    where attendance.sandbox_id = store.sandbox_id
+                      and attendance.store_id = store.id
+                      and (attendance.status = 'absent'
+                        or attendance.check_in_outcome = 'late'))
+                    as attendance_anomaly_count,
+                  (select count(*)::integer from shifts shift
+                    where shift.sandbox_id = store.sandbox_id
+                      and shift.store_id = store.id and shift.status = 'scheduled'
+                      and shift.starts_at > $2) as future_shift_count
+             from stores store
+             left join employees employee on employee.store_id = store.id
+            where store.sandbox_id = $1
+            group by store.id
+            order by store.code`,
+          [input.sandboxId, currentTime],
+        );
+        const startsAt = new Date(
+          Math.floor(currentTime.getTime() / HALF_HOUR_MS) * HALF_HOUR_MS,
+        );
+        const endsAt = new Date(startsAt.getTime() + 48 * 60 * 60 * 1_000);
+        const summaries: Array<
+          DatabaseHeadquartersPeopleSchedule["stores"][number]
+        > = [];
+        for (const store of stores.rows) {
+          const shifts = await client.query<{
+            ends_at: Date;
+            starts_at: Date;
+          }>(
+            `select shift.starts_at, shift.ends_at
+               from shifts shift
+               join employees employee on employee.id = shift.employee_id
+              where shift.sandbox_id = $1 and shift.store_id = $2
+                and shift.status = 'scheduled' and employee.active = true
+                and employee.role = 'staff' and shift.starts_at < $3
+                and shift.ends_at > $4`,
+            [input.sandboxId, store.id, endsAt, startsAt],
+          );
+          summaries.push({
+            activeEmployeeCount: store.active_employee_count,
+            attendanceAnomalyCount: store.attendance_anomaly_count,
+            coverageWarnings: evaluateStaffCoverage({
+              minimumStaff: 3,
+              range: { endsAt, startsAt },
+              shifts: shifts.rows.map((shift) => ({
+                endsAt: shift.ends_at,
+                startsAt: shift.starts_at,
+              })),
+            }).length,
+            employeeCount: store.employee_count,
+            futureShiftCount: store.future_shift_count,
+            managerCount: store.manager_count,
+            staffCount: store.staff_count,
+            store: { code: store.code, displayName: store.display_name },
+          });
+        }
+        await client.query("commit");
+        return { currentTime, stores: summaries };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async executeManagerPeopleCommand(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        if (input.role !== "manager") throw new RoleContextStaleError();
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        const payload = (() => {
+          switch (input.action) {
+            case "create-employee":
+              return {
+                action: input.action,
+                displayName: input.displayName,
+                employeeCode: input.employeeCode,
+                employeeRole: input.employeeRole,
+                storeId: input.storeId,
+              };
+            case "update-employee":
+              return {
+                action: input.action,
+                displayName: input.displayName,
+                employeeCode: input.employeeCode,
+                employeeId: input.employeeId,
+                expectedVersion: input.expectedVersion,
+                storeId: input.storeId,
+              };
+            case "deactivate-employee":
+              return {
+                action: input.action,
+                employeeId: input.employeeId,
+                expectedVersion: input.expectedVersion,
+                storeId: input.storeId,
+              };
+            case "create-shift":
+              return {
+                action: input.action,
+                employeeId: input.employeeId,
+                endsAt: input.endsAt.toISOString(),
+                startsAt: input.startsAt.toISOString(),
+                storeId: input.storeId,
+              };
+            case "update-shift":
+              return {
+                action: input.action,
+                endsAt: input.endsAt.toISOString(),
+                shiftId: input.shiftId,
+                startsAt: input.startsAt.toISOString(),
+                storeId: input.storeId,
+              };
+            case "cancel-shift":
+              return {
+                action: input.action,
+                shiftId: input.shiftId,
+                storeId: input.storeId,
+              };
+            case "correct-attendance":
+              return {
+                action: input.action,
+                attendanceRecordId: input.attendanceRecordId,
+                correctedBusinessAt: input.correctedBusinessAt.toISOString(),
+                correctionKind: input.correctionKind,
+                reason: input.reason,
+                storeId: input.storeId,
+              };
+          }
+        })();
+        const idempotencyKeyHash = hash(input.idempotencyKey);
+        const payloadHash = hash(JSON.stringify(payload));
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `${input.sandboxId}:${input.personaId}:manager-people:${input.action}:${idempotencyKeyHash}`,
+          ],
+        );
+        const previous = await client.query<{
+          payload_hash: string;
+          result_data: StoredManagerPeopleCommand;
+        }>(
+          `select payload_hash, result_data
+             from manager_people_command_requests
+            where sandbox_id = $1 and actor_persona_id = $2
+              and command_type = $3 and idempotency_key_hash = $4`,
+          [input.sandboxId, input.personaId, input.action, idempotencyKeyHash],
+        );
+        const previousRow = previous.rows[0];
+        if (previousRow) {
+          if (previousRow.payload_hash !== payloadHash) {
+            throw new ManagerPeopleConflictError("idempotency-conflict");
+          }
+          await client.query("commit");
+          return managerPeopleCommandFromStored(previousRow.result_data, true);
+        }
+
+        const recordAudit = async (inputAudit: {
+          readonly after?: unknown;
+          readonly before?: unknown;
+          readonly objectId?: string;
+          readonly objectType: "attendance" | "employee" | "shift";
+          readonly reason?: ManagerPeopleConflictReason;
+          readonly result: "allowed" | "denied";
+        }) => {
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'manager', $5, $6, $7, $8, $9,
+               $10, $11::jsonb, $12::jsonb, $13, $14)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              context.actorStoreId,
+              input.personaId,
+              `manager.${input.action}`,
+              inputAudit.objectType,
+              inputAudit.objectId ?? null,
+              inputAudit.result,
+              inputAudit.reason ?? null,
+              input.requestId,
+              inputAudit.before === undefined
+                ? null
+                : JSON.stringify(inputAudit.before),
+              inputAudit.after === undefined
+                ? null
+                : JSON.stringify(inputAudit.after),
+              currentTime,
+              wallTime,
+            ],
+          );
+        };
+        const deny = async (
+          reason: ManagerPeopleConflictReason,
+          objectType: "attendance" | "employee" | "shift",
+          objectId?: string,
+          before?: unknown,
+        ): Promise<never> => {
+          await recordAudit({
+            before,
+            objectType,
+            reason,
+            result: "denied",
+            ...(objectId === undefined ? {} : { objectId }),
+          });
+          await client.query("commit");
+          throw new ManagerPeopleConflictError(reason);
+        };
+        if (input.storeId !== context.actorStoreId) {
+          await deny("cross-store", "employee", undefined, {
+            targetStoreId: input.storeId,
+          });
+        }
+        const complete = async (
+          objectId: string,
+          objectType: "attendance" | "employee" | "shift",
+          coverageWarnings: ReadonlyArray<StaffCoverageWarning>,
+          before: unknown,
+          after: unknown,
+        ) => {
+          const stored: StoredManagerPeopleCommand = {
+            action: input.action,
+            coverageWarnings: coverageWarnings.map((warning) => ({
+              actualStaff: warning.actualStaff,
+              endsAt: warning.endsAt.toISOString(),
+              minimumStaff: warning.minimumStaff,
+              startsAt: warning.startsAt.toISOString(),
+            })),
+            objectId,
+          };
+          await recordAudit({
+            after,
+            before,
+            objectId,
+            objectType,
+            result: "allowed",
+          });
+          await client.query(
+            `insert into manager_people_command_requests (
+               sandbox_id, actor_persona_id, command_type,
+               idempotency_key_hash, payload_hash, result_data
+             ) values ($1, $2, $3, $4, $5, $6::jsonb)`,
+            [
+              input.sandboxId,
+              input.personaId,
+              input.action,
+              idempotencyKeyHash,
+              payloadHash,
+              JSON.stringify(stored),
+            ],
+          );
+          await client.query("commit");
+          return managerPeopleCommandFromStored(stored, false);
+        };
+
+        if (input.action === "create-employee") {
+          let fields: ReturnType<typeof normalizeEmployeeFields>;
+          try {
+            fields = normalizeEmployeeFields(input);
+          } catch {
+            return await deny("invalid-employee", "employee");
+          }
+          const duplicate = await client.query<{ id: string }>(
+            `select id from employees
+              where sandbox_id = $1 and store_id = $2 and employee_code = $3`,
+            [input.sandboxId, context.actorStoreId, fields.employeeCode],
+          );
+          if (duplicate.rows[0]) {
+            return await deny(
+              "duplicate-employee-code",
+              "employee",
+              duplicate.rows[0].id,
+            );
+          }
+          const personaId = randomUUID();
+          const employeeId = randomUUID();
+          await client.query(
+            `insert into demo_personas (
+               id, sandbox_id, store_id, role, display_name, scope, protected
+             ) values ($1, $2, $3, $4, $5, '所属门店背景员工', false)`,
+            [
+              personaId,
+              input.sandboxId,
+              context.actorStoreId,
+              input.employeeRole,
+              fields.displayName,
+            ],
+          );
+          await client.query(
+            `insert into employees (
+               id, sandbox_id, store_id, persona_id, employee_code,
+               display_name, role, active, protected
+             ) values ($1, $2, $3, $4, $5, $6, $7, true, false)`,
+            [
+              employeeId,
+              input.sandboxId,
+              context.actorStoreId,
+              personaId,
+              fields.employeeCode,
+              fields.displayName,
+              input.employeeRole,
+            ],
+          );
+          return await complete(employeeId, "employee", [], null, {
+            active: true,
+            displayName: fields.displayName,
+            employeeCode: fields.employeeCode,
+            protected: false,
+            role: input.employeeRole,
+          });
+        }
+
+        if (
+          input.action === "update-employee" ||
+          input.action === "deactivate-employee"
+        ) {
+          await client.query(
+            "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+            [`${input.sandboxId}:employee:${input.employeeId}`],
+          );
+          const employee = await client.query<{
+            active: boolean;
+            config_version: number;
+            display_name: string;
+            employee_code: string;
+            id: string;
+            persona_id: string | null;
+            protected: boolean;
+            role: FrontlineRole;
+            store_id: string;
+          }>(
+            `select id, store_id, persona_id, employee_code, display_name,
+                    role, active, protected, config_version
+               from employees where sandbox_id = $1 and id = $2
+               for update`,
+            [input.sandboxId, input.employeeId],
+          );
+          const employeeRow = employee.rows[0];
+          if (!employeeRow || employeeRow.store_id !== context.actorStoreId) {
+            return await deny(
+              "employee-not-found",
+              "employee",
+              input.employeeId,
+            );
+          }
+          const before = {
+            active: employeeRow.active,
+            displayName: employeeRow.display_name,
+            employeeCode: employeeRow.employee_code,
+            protected: employeeRow.protected,
+            role: employeeRow.role,
+            version: employeeRow.config_version,
+          };
+          if (employeeRow.protected) {
+            return await deny(
+              "protected-employee",
+              "employee",
+              employeeRow.id,
+              before,
+            );
+          }
+          if (employeeRow.config_version !== input.expectedVersion) {
+            return await deny(
+              "version-conflict",
+              "employee",
+              employeeRow.id,
+              before,
+            );
+          }
+          if (input.action === "update-employee") {
+            if (!employeeRow.active) {
+              return await deny(
+                "inactive-employee",
+                "employee",
+                employeeRow.id,
+                before,
+              );
+            }
+            let fields: ReturnType<typeof normalizeEmployeeFields>;
+            try {
+              fields = normalizeEmployeeFields(input);
+            } catch {
+              return await deny(
+                "invalid-employee",
+                "employee",
+                employeeRow.id,
+                before,
+              );
+            }
+            const duplicate = await client.query<{ id: string }>(
+              `select id from employees
+                where sandbox_id = $1 and store_id = $2
+                  and employee_code = $3 and id <> $4`,
+              [
+                input.sandboxId,
+                context.actorStoreId,
+                fields.employeeCode,
+                employeeRow.id,
+              ],
+            );
+            if (duplicate.rows[0]) {
+              return await deny(
+                "duplicate-employee-code",
+                "employee",
+                employeeRow.id,
+                before,
+              );
+            }
+            await client.query(
+              `update employees
+                  set employee_code = $3, display_name = $4,
+                      config_version = config_version + 1
+                where sandbox_id = $1 and id = $2`,
+              [
+                input.sandboxId,
+                employeeRow.id,
+                fields.employeeCode,
+                fields.displayName,
+              ],
+            );
+            if (employeeRow.persona_id) {
+              await client.query(
+                `update demo_personas set display_name = $3
+                  where sandbox_id = $1 and id = $2 and protected = false`,
+                [input.sandboxId, employeeRow.persona_id, fields.displayName],
+              );
+            }
+            return await complete(employeeRow.id, "employee", [], before, {
+              ...before,
+              displayName: fields.displayName,
+              employeeCode: fields.employeeCode,
+              version: employeeRow.config_version + 1,
+            });
+          }
+          const dependencies = await client.query<{
+            current_or_future_shifts: number;
+            open_repairs: number;
+          }>(
+            `select
+               (select count(*)::integer from shifts shift
+                 where shift.sandbox_id = $1 and shift.employee_id = $2
+                   and shift.status = 'scheduled' and shift.ends_at > $3)
+                 as current_or_future_shifts,
+               (select count(*)::integer from repairs repair
+                 where repair.sandbox_id = $1
+                   and repair.assigned_to_persona_id = $4
+                   and repair.status <> 'closed') as open_repairs`,
+            [
+              input.sandboxId,
+              employeeRow.id,
+              currentTime,
+              employeeRow.persona_id,
+            ],
+          );
+          const dependency = dependencies.rows[0]!;
+          if (
+            dependency.current_or_future_shifts > 0 ||
+            dependency.open_repairs > 0
+          ) {
+            return await deny(
+              "employee-dependencies",
+              "employee",
+              employeeRow.id,
+              { ...before, dependencies: dependency },
+            );
+          }
+          await client.query(
+            `update employees set active = false,
+                    config_version = config_version + 1
+              where sandbox_id = $1 and id = $2`,
+            [input.sandboxId, employeeRow.id],
+          );
+          return await complete(employeeRow.id, "employee", [], before, {
+            ...before,
+            active: false,
+            version: employeeRow.config_version + 1,
+          });
+        }
+
+        if (
+          input.action === "create-shift" ||
+          input.action === "update-shift" ||
+          input.action === "cancel-shift"
+        ) {
+          let employeeId: string;
+          let shiftBefore: {
+            attendanceRecordId: string | null;
+            employeeId: string;
+            endsAt: Date;
+            shiftId: string;
+            startsAt: Date;
+            status: "cancelled" | "scheduled";
+          } | null = null;
+          if (input.action === "create-shift") {
+            employeeId = input.employeeId;
+          } else {
+            const shift = await client.query<{
+              attendance_record_id: string | null;
+              employee_id: string;
+              ends_at: Date;
+              shift_id: string;
+              starts_at: Date;
+              status: "cancelled" | "scheduled";
+              store_id: string;
+            }>(
+              `select shift.id as shift_id, shift.store_id, shift.employee_id,
+                      shift.starts_at, shift.ends_at, shift.status,
+                      attendance.id as attendance_record_id
+                 from shifts shift
+                 left join attendance_records attendance
+                   on attendance.sandbox_id = shift.sandbox_id
+                  and attendance.shift_id = shift.id
+                where shift.sandbox_id = $1 and shift.id = $2
+                for update of shift`,
+              [input.sandboxId, input.shiftId],
+            );
+            const shiftRow = shift.rows[0];
+            if (!shiftRow || shiftRow.store_id !== context.actorStoreId) {
+              return await deny("shift-not-found", "shift", input.shiftId);
+            }
+            employeeId = shiftRow.employee_id;
+            shiftBefore = {
+              attendanceRecordId: shiftRow.attendance_record_id,
+              employeeId,
+              endsAt: shiftRow.ends_at,
+              shiftId: shiftRow.shift_id,
+              startsAt: shiftRow.starts_at,
+              status: shiftRow.status,
+            };
+            if (shiftRow.attendance_record_id) {
+              return await deny(
+                "shift-attended",
+                "shift",
+                shiftRow.shift_id,
+                shiftBefore,
+              );
+            }
+            if (
+              shiftRow.status !== "scheduled" ||
+              shiftRow.starts_at.getTime() <= currentTime.getTime()
+            ) {
+              return await deny(
+                "shift-not-future",
+                "shift",
+                shiftRow.shift_id,
+                shiftBefore,
+              );
+            }
+          }
+          await client.query(
+            "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+            [`${input.sandboxId}:employee:${employeeId}`],
+          );
+          if (input.action === "cancel-shift") {
+            await client.query(
+              `update shifts set status = 'cancelled'
+                where sandbox_id = $1 and id = $2 and status = 'scheduled'`,
+              [input.sandboxId, input.shiftId],
+            );
+            return await complete(input.shiftId, "shift", [], shiftBefore, {
+              ...shiftBefore,
+              status: "cancelled",
+            });
+          }
+          if (input.startsAt.getTime() <= currentTime.getTime()) {
+            return await deny(
+              "shift-not-future",
+              "shift",
+              input.action === "update-shift" ? input.shiftId : undefined,
+              shiftBefore,
+            );
+          }
+          const preview = await managerShiftPreviewWithClient(client, {
+            ...input,
+            employeeId,
+            ...(input.action === "update-shift"
+              ? { shiftId: input.shiftId }
+              : {}),
+          });
+          if (preview.validation.status === "invalid") {
+            return await deny(
+              preview.validation.reason === "overlap"
+                ? "shift-overlap"
+                : "invalid-shift",
+              "shift",
+              input.action === "update-shift" ? input.shiftId : undefined,
+              shiftBefore,
+            );
+          }
+          if (input.action === "create-shift") {
+            const shiftId = randomUUID();
+            await client.query(
+              `insert into shifts (
+                 id, sandbox_id, store_id, employee_id, starts_at, ends_at
+               ) values ($1, $2, $3, $4, $5, $6)`,
+              [
+                shiftId,
+                input.sandboxId,
+                context.actorStoreId,
+                employeeId,
+                input.startsAt,
+                input.endsAt,
+              ],
+            );
+            return await complete(shiftId, "shift", preview.warnings, null, {
+              employeeId,
+              endsAt: input.endsAt,
+              startsAt: input.startsAt,
+              status: "scheduled",
+            });
+          }
+          await client.query(
+            `update shifts set starts_at = $3, ends_at = $4
+              where sandbox_id = $1 and id = $2 and status = 'scheduled'`,
+            [input.sandboxId, input.shiftId, input.startsAt, input.endsAt],
+          );
+          return await complete(
+            input.shiftId,
+            "shift",
+            preview.warnings,
+            shiftBefore,
+            {
+              ...shiftBefore,
+              endsAt: input.endsAt,
+              startsAt: input.startsAt,
+            },
+          );
+        }
+
+        const reason = input.reason.trim();
+        if (!isSafePlainTextReason(reason)) {
+          return await deny(
+            "invalid-attendance-correction",
+            "attendance",
+            input.attendanceRecordId,
+          );
+        }
+        const attendance = await client.query<{
+          attendance_record_id: string;
+          check_in_business_at: Date | null;
+          check_out_business_at: Date | null;
+          employee_id: string;
+          shift_id: string;
+          status: AttendanceStatus;
+          store_id: string;
+        }>(
+          `select attendance.id as attendance_record_id,
+                  attendance.store_id, attendance.employee_id,
+                  attendance.shift_id, attendance.status,
+                  attendance.check_in_business_at,
+                  attendance.check_out_business_at
+             from attendance_records attendance
+            where attendance.sandbox_id = $1 and attendance.id = $2
+            for share`,
+          [input.sandboxId, input.attendanceRecordId],
+        );
+        const attendanceRow = attendance.rows[0];
+        if (!attendanceRow || attendanceRow.store_id !== context.actorStoreId) {
+          return await deny(
+            "invalid-attendance-correction",
+            "attendance",
+            input.attendanceRecordId,
+          );
+        }
+        const correctionMatchesFact =
+          (input.correctionKind === "late" &&
+            attendanceRow.check_in_business_at !== null) ||
+          (input.correctionKind === "absence" &&
+            attendanceRow.status === "absent") ||
+          (input.correctionKind === "check-out" &&
+            attendanceRow.check_out_business_at !== null);
+        if (!correctionMatchesFact) {
+          return await deny(
+            "invalid-attendance-correction",
+            "attendance",
+            input.attendanceRecordId,
+            { status: attendanceRow.status },
+          );
+        }
+        const correctionId = randomUUID();
+        await client.query(
+          `insert into attendance_corrections (
+             id, sandbox_id, store_id, employee_id, shift_id,
+             attendance_record_id, corrected_by_persona_id, correction_kind,
+             corrected_business_at, reason, business_occurred_at, recorded_at
+           ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          [
+            correctionId,
+            input.sandboxId,
+            context.actorStoreId,
+            attendanceRow.employee_id,
+            attendanceRow.shift_id,
+            attendanceRow.attendance_record_id,
+            input.personaId,
+            input.correctionKind,
+            input.correctedBusinessAt,
+            reason,
+            currentTime,
+            wallTime,
+          ],
+        );
+        return await complete(
+          correctionId,
+          "attendance",
+          [],
+          { attendanceRecordId: attendanceRow.attendance_record_id },
+          {
+            correctedBusinessAt: input.correctedBusinessAt,
+            correctionKind: input.correctionKind,
+            reason,
+          },
+        );
       } catch (error) {
         await client.query("rollback").catch(() => undefined);
         throw error;

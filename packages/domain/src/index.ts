@@ -1,5 +1,5 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "19";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-11.3";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "20";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-11.4";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -1328,6 +1328,61 @@ export function validateShiftSchedule(input: ShiftScheduleValidationInput):
   return { status: "valid" };
 }
 
+export interface StaffCoverageWarning extends ShiftWindow {
+  readonly actualStaff: number;
+  readonly minimumStaff: number;
+}
+
+interface StaffCoverageInput {
+  readonly minimumStaff: number;
+  readonly range: ShiftWindow;
+  readonly shifts: ReadonlyArray<ShiftWindow>;
+}
+
+export function evaluateStaffCoverage(
+  input: StaffCoverageInput,
+): ReadonlyArray<StaffCoverageWarning> {
+  const halfHourMilliseconds = 30 * 60 * 1_000;
+  const warnings: StaffCoverageWarning[] = [];
+
+  for (
+    let startsAt = input.range.startsAt.getTime();
+    startsAt < input.range.endsAt.getTime();
+    startsAt += halfHourMilliseconds
+  ) {
+    const endsAt = Math.min(
+      startsAt + halfHourMilliseconds,
+      input.range.endsAt.getTime(),
+    );
+    const actualStaff = input.shifts.filter(
+      (shift) =>
+        startsAt < shift.endsAt.getTime() && endsAt > shift.startsAt.getTime(),
+    ).length;
+    if (actualStaff >= input.minimumStaff) continue;
+
+    const previous = warnings.at(-1);
+    if (
+      previous &&
+      previous.actualStaff === actualStaff &&
+      previous.endsAt.getTime() === startsAt
+    ) {
+      warnings[warnings.length - 1] = {
+        ...previous,
+        endsAt: new Date(endsAt),
+      };
+      continue;
+    }
+    warnings.push({
+      actualStaff,
+      endsAt: new Date(endsAt),
+      minimumStaff: input.minimumStaff,
+      startsAt: new Date(startsAt),
+    });
+  }
+
+  return warnings;
+}
+
 export type AttendanceStatus = "absent" | "checked-in" | "checked-out";
 export type AttendanceAction =
   "manual-check-out" | "mark-absent" | "simulated-check-in";
@@ -1516,6 +1571,14 @@ interface PublicSandboxPersonaSeed {
   readonly storeCode?: PublicSandboxStoreSeed["code"];
 }
 
+interface PublicSandboxEmployeeSeed {
+  readonly displayName: string;
+  readonly employeeCode: string;
+  readonly protected: boolean;
+  readonly role: "manager" | "staff";
+  readonly storeCode: PublicSandboxStoreSeed["code"];
+}
+
 export interface PublicSandboxSeed {
   readonly schemaVersion: string;
   readonly seedVersion: string;
@@ -1526,6 +1589,7 @@ export interface PublicSandboxSeed {
   readonly machineProfiles: ReadonlyArray<MachineProfileSeed>;
   readonly stores: ReadonlyArray<PublicSandboxStoreSeed>;
   readonly personas: ReadonlyArray<PublicSandboxPersonaSeed>;
+  readonly employees: ReadonlyArray<PublicSandboxEmployeeSeed>;
 }
 
 const machineProfileSeeds = [
@@ -1679,6 +1743,91 @@ const storeSeeds = [
   },
 ] as const satisfies ReadonlyArray<PublicSandboxStoreSeed>;
 
+const employeeSeeds = [
+  {
+    displayName: "周宁",
+    employeeCode: "PRISM-S001",
+    protected: true,
+    role: "staff",
+    storeCode: "prism-flagship",
+  },
+  ...[
+    "陈昊",
+    "苏雨",
+    "赵一航",
+    "陆远",
+    "顾辰",
+    "韩青",
+    "罗檬",
+    "叶舟",
+    "程野",
+    "乔月",
+    "唐宁",
+    "林筱",
+    "夏知",
+  ].map((displayName, index) => ({
+    displayName,
+    employeeCode: `PRISM-S${String(index + 2).padStart(3, "0")}`,
+    protected: false,
+    role: "staff" as const,
+    storeCode: "prism-flagship",
+  })),
+  {
+    displayName: "许知远",
+    employeeCode: "PRISM-M001",
+    protected: true,
+    role: "manager",
+    storeCode: "prism-flagship",
+  },
+  {
+    displayName: "周岚",
+    employeeCode: "PRISM-M002",
+    protected: false,
+    role: "manager",
+    storeCode: "prism-flagship",
+  },
+  ...[
+    "方屿",
+    "宋禾",
+    "岳然",
+    "彭越",
+    "杜衡",
+    "安夏",
+    "江临",
+    "余秋",
+    "温然",
+  ].map((displayName, index) => ({
+    displayName,
+    employeeCode: `STAR-S${String(index + 1).padStart(3, "0")}`,
+    protected: false,
+    role: "staff" as const,
+    storeCode: "starbridge-standard",
+  })),
+  {
+    displayName: "沈嘉",
+    employeeCode: "STAR-M001",
+    protected: false,
+    role: "manager",
+    storeCode: "starbridge-standard",
+  },
+  ...["顾言", "宁川", "沈星", "江澄", "白露", "夏至"].map(
+    (displayName, index) => ({
+      displayName,
+      employeeCode: `APEX-S${String(index + 1).padStart(3, "0")}`,
+      protected: false,
+      role: "staff" as const,
+      storeCode: "apex-new",
+    }),
+  ),
+  {
+    displayName: "楚云",
+    employeeCode: "APEX-M001",
+    protected: false,
+    role: "manager",
+    storeCode: "apex-new",
+  },
+] as const satisfies ReadonlyArray<PublicSandboxEmployeeSeed>;
+
 const personaSeeds = [
   {
     role: "customer",
@@ -1729,5 +1878,6 @@ export function buildPublicSandboxSeed(): PublicSandboxSeed {
       machineProfileSeatCounts: { ...store.machineProfileSeatCounts },
     })),
     personas: personaSeeds.map((persona) => ({ ...persona })),
+    employees: employeeSeeds.map((employee) => ({ ...employee })),
   };
 }

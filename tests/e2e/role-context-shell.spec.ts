@@ -4,7 +4,12 @@ import type { Page, Route } from "@playwright/test";
 import type {
   CustomerReservationStatus,
   HandoverCommandResponse,
+  HeadquartersPeopleScheduleResponse,
   ManagerHandoverExceptionsResponse,
+  ManagerPeopleCommandRequest,
+  ManagerPeopleScheduleResponse,
+  ManagerShiftCoveragePreviewRequest,
+  ManagerShiftCoveragePreviewResponse,
   ManagerStoreConfigurationCommandRequest,
   ManagerStoreConfigurationResponse,
   PublicRole,
@@ -550,6 +555,88 @@ test.beforeEach(async ({ context }) => {
       version: 5,
     },
   };
+  const managerEmployeeIds = Array.from({ length: 16 }, () =>
+    crypto.randomUUID(),
+  );
+  const managerShiftId = crypto.randomUUID();
+  const managerAttendanceId = crypto.randomUUID();
+  let managerPeople: ManagerPeopleScheduleResponse = {
+    attendance: [
+      {
+        attendanceRecordId: managerAttendanceId,
+        corrections: [],
+        employee: {
+          displayName: "周宁",
+          employeeCode: "PRISM-S001",
+          employeeId: managerEmployeeIds[0]!,
+        },
+        original: {
+          absenceBusinessAt: null,
+          checkInBusinessAt: "2026-08-09T12:08:00.000Z",
+          checkInOutcome: "late",
+          checkOutBusinessAt: "2026-08-09T20:03:00.000Z",
+          status: "checked-out",
+        },
+        shiftId: managerShiftId,
+        window: {
+          endsAt: "2026-08-09T20:00:00.000Z",
+          startsAt: "2026-08-09T12:00:00.000Z",
+        },
+      },
+    ],
+    coverageWarnings: [
+      {
+        actualStaff: 2,
+        endsAt: "2026-08-11T04:00:00.000Z",
+        minimumStaff: 3,
+        startsAt: "2026-08-11T00:00:00.000Z",
+      },
+    ],
+    currentTime: businessTime,
+    employees: managerEmployeeIds.map((employeeId, index) => ({
+      active: true,
+      dependencies: {
+        currentOrFutureShifts: index === 2 ? 1 : 0,
+        futureShifts: index === 2 ? 1 : 0,
+        openRepairAssignments: index === 2 ? 1 : 0,
+      },
+      displayName:
+        index === 0 ? "周宁" : index === 1 ? "许知远" : `背景员工 ${index + 1}`,
+      employeeCode: `PRISM-${index === 1 ? "M" : "S"}${String(index + 1).padStart(3, "0")}`,
+      employeeId,
+      protected: index < 2,
+      role: index === 1 ? "manager" : "staff",
+      store: {
+        code: "prism-flagship",
+        displayName: "棱镜旗舰店",
+        fixed: true,
+      },
+      version: 1,
+    })),
+    shifts: [
+      {
+        attendanceRecordId: null,
+        canManage: true,
+        employee: {
+          displayName: "背景员工 3",
+          employeeCode: "PRISM-S003",
+          employeeId: managerEmployeeIds[2]!,
+          role: "staff",
+        },
+        endsAt: "2026-08-11T08:00:00.000Z",
+        shiftId: managerShiftId,
+        startsAt: "2026-08-11T00:00:00.000Z",
+        status: "scheduled",
+      },
+    ],
+    status: "ready",
+    store: {
+      code: "prism-flagship",
+      displayName: "棱镜旗舰店",
+      fixed: true,
+      storeId,
+    },
+  };
 
   function staffOrderDetail(
     row: MutableStaffOrderSummary,
@@ -991,6 +1078,162 @@ test.beforeEach(async ({ context }) => {
         status: "ready",
         store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
       } satisfies StaffHandoversResponse,
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/manager/people-schedule**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === "GET") {
+      expect(currentRole).toBe("manager");
+      await route.fulfill({ json: managerPeople, status: 200 });
+      return;
+    }
+    expect(currentRole).toBe("manager");
+    expect(request.headers()["x-csrf-token"]).toBe(csrfToken);
+    if (pathname.endsWith("/shift-preview")) {
+      const body = request.postDataJSON() as ManagerShiftCoveragePreviewRequest;
+      expect(body.startsAt).toBe("2026-08-13T11:30:00.000Z");
+      expect(body.endsAt).toBe("2026-08-13T19:30:00.000Z");
+      await route.fulfill({
+        json: {
+          status: "ready",
+          validation: { status: "valid" },
+          warnings: managerPeople.coverageWarnings,
+        } satisfies ManagerShiftCoveragePreviewResponse,
+        status: 200,
+      });
+      return;
+    }
+    expect(request.headers()["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+    const body = request.postDataJSON() as ManagerPeopleCommandRequest;
+    const objectId = crypto.randomUUID();
+    if (body.action === "create-employee") {
+      managerPeople = {
+        ...managerPeople,
+        employees: [
+          ...managerPeople.employees,
+          {
+            active: true,
+            dependencies: {
+              currentOrFutureShifts: 0,
+              futureShifts: 0,
+              openRepairAssignments: 0,
+            },
+            displayName: body.displayName,
+            employeeCode: body.employeeCode,
+            employeeId: objectId,
+            protected: false,
+            role: body.employeeRole,
+            store: {
+              code: "prism-flagship",
+              displayName: "棱镜旗舰店",
+              fixed: true,
+            },
+            version: 1,
+          },
+        ],
+      };
+    } else if (body.action === "update-employee") {
+      managerPeople = {
+        ...managerPeople,
+        employees: managerPeople.employees.map((employee) =>
+          employee.employeeId === body.employeeId
+            ? {
+                ...employee,
+                displayName: body.displayName,
+                employeeCode: body.employeeCode,
+                version: employee.version + 1,
+              }
+            : employee,
+        ),
+      };
+    } else if (body.action === "deactivate-employee") {
+      managerPeople = {
+        ...managerPeople,
+        employees: managerPeople.employees.map((employee) =>
+          employee.employeeId === body.employeeId
+            ? { ...employee, active: false, version: employee.version + 1 }
+            : employee,
+        ),
+      };
+    } else if (body.action === "correct-attendance") {
+      managerPeople = {
+        ...managerPeople,
+        attendance: managerPeople.attendance.map((attendance) =>
+          attendance.attendanceRecordId === body.attendanceRecordId
+            ? {
+                ...attendance,
+                corrections: [
+                  ...attendance.corrections,
+                  {
+                    businessOccurredAt: businessTime,
+                    correctedBusinessAt: body.correctedBusinessAt,
+                    correctedBy: "许知远",
+                    correctionId: objectId,
+                    correctionKind: body.correctionKind,
+                    reason: body.reason,
+                    recordedAt: businessTime,
+                  },
+                ],
+              }
+            : attendance,
+        ),
+      };
+    }
+    await route.fulfill({
+      json: {
+        action: body.action,
+        coverageWarnings: managerPeople.coverageWarnings,
+        objectId,
+        replayed: false,
+        status: "ready",
+      },
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/hq/people-schedule", async (route) => {
+    expect(currentRole).toBe("hq");
+    await route.fulfill({
+      json: {
+        currentTime: businessTime,
+        status: "ready",
+        stores: [
+          {
+            activeEmployeeCount: 7,
+            attendanceAnomalyCount: 2,
+            coverageWarnings: 18,
+            employeeCount: 7,
+            futureShiftCount: 21,
+            managerCount: 1,
+            staffCount: 6,
+            store: { code: "apex-new", displayName: "极点新店" },
+          },
+          {
+            activeEmployeeCount: 16,
+            attendanceAnomalyCount: 1,
+            coverageWarnings: 3,
+            employeeCount: 16,
+            futureShiftCount: 48,
+            managerCount: 2,
+            staffCount: 14,
+            store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+          },
+          {
+            activeEmployeeCount: 10,
+            attendanceAnomalyCount: 3,
+            coverageWarnings: 9,
+            employeeCount: 10,
+            futureShiftCount: 30,
+            managerCount: 1,
+            staffCount: 9,
+            store: {
+              code: "starbridge-standard",
+              displayName: "星桥标准店",
+            },
+          },
+        ],
+      } satisfies HeadquartersPeopleScheduleResponse,
       status: 200,
     });
   });
@@ -2204,7 +2447,7 @@ test("staff freezes a handover snapshot, signs out immediately, and confirms ano
   await expect(page.getByText("当前没有可执行动作")).toBeVisible();
 });
 
-test("manager reads three store-scoped handover exception kinds without edit controls", async ({
+test("manager maintains owned-store employees, previews savable coverage warnings, and appends attendance corrections", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
@@ -2221,27 +2464,115 @@ test("manager reads three store-scoped handover exception kinds without edit con
     }),
   ).toBeVisible();
   await page.getByRole("button", { name: "员工与排班" }).click();
+
   await expect(
-    page.getByRole("heading", { name: "交接异常与冻结快照" }),
+    page.getByRole("heading", { name: "员工、排班与考勤" }),
+  ).toBeVisible();
+  await expect(page.getByText("所属门店员工")).toBeVisible();
+  await expect(page.getByLabel("编辑 周宁")).toBeDisabled();
+  await expect(page.getByLabel("停用 许知远")).toBeDisabled();
+
+  const dependentDeactivate = page.getByLabel("停用 背景员工 3");
+  await dependentDeactivate.click();
+  await expect(
+    page.getByText("存在依赖，必须先处理以上班次或报修分派。"),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "确认停用" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dependentDeactivate).toBeFocused();
+
+  const createEmployee = page.getByRole("button", { name: "创建背景员工" });
+  await createEmployee.click();
+  await expect(page.getByLabel("员工工作名")).toBeFocused();
+  await page.getByLabel("员工工作名").fill("夜班增援");
+  await page.getByLabel("员工编号").fill("PRISM-S017");
+  await page.getByRole("button", { name: "保存员工" }).click();
+  await expect(page.getByText("背景员工已创建")).toBeVisible();
+  await expect(page.getByText("夜班增援")).toBeVisible();
+
+  await page.getByRole("button", { name: /未来排班/u }).click();
+  await expect(page.getByText("未来排班时间轴")).toBeVisible();
+  await expect(page.getByText("人员覆盖不足", { exact: false })).toBeVisible();
+  const createShift = page.getByRole("button", {
+    name: "创建班次",
+    exact: true,
+  });
+  await createShift.click();
+  const shiftDialog = page.getByRole("dialog", { name: "创建未来班次" });
+  await expect(
+    shiftDialog.getByRole("combobox", { name: "员工", exact: true }),
+  ).toBeFocused();
+  await expect(page.getByText("覆盖不足，但允许保存")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "保留告警并保存" }),
+  ).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(createShift).toBeFocused();
+
+  await page.getByRole("button", { name: /考勤与交接/u }).click();
+  await expect(page.getByText("原始事实 · 不可编辑")).toBeVisible();
+  const correctionTrigger = page.getByRole("button", { name: "创建更正" });
+  await correctionTrigger.click();
+  await expect(page.getByLabel("更正类型")).toBeFocused();
+  await page
+    .getByLabel(/更正原因/u)
+    .fill("已核对当班交接记录，确认实际到岗时间。");
+  await page.getByRole("button", { name: "追加更正" }).click();
+  await expect(page.getByText("考勤更正已追加，原始事实未覆盖")).toBeVisible();
+  await expect(page.getByText("已核对当班交接记录")).toBeVisible();
+
+  await page.getByRole("button", { name: "查看交接快照" }).click();
+  const handoverDialog = page.getByRole("dialog", {
+    name: "交接异常与冻结快照",
+  });
+  await expect(handoverDialog).toBeVisible();
+  await expect(
+    handoverDialog.getByRole("button", { name: /^逾期未提交/u }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /^逾期未提交/u }),
+    handoverDialog.getByRole("button", { name: /^迟交/u }),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: /^迟交/u })).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /^长期未确认/u }),
+    handoverDialog.getByRole("button", { name: /^长期未确认/u }),
   ).toBeVisible();
-  await page.getByRole("button", { name: /^迟交/u }).click();
+  await handoverDialog.getByRole("button", { name: /^迟交/u }).click();
   await expect(page.getByText("A-18 报修待分派。")).toBeVisible();
   await expect(page.getByText("业务发生", { exact: true })).toBeVisible();
   await expect(page.getByText("真实服务器记录", { exact: true })).toBeVisible();
   await expect(page.getByRole("textbox")).toHaveCount(0);
+  await handoverDialog.getByRole("button", { name: "完成查看" }).click();
 
   const layout = await page.evaluate(() => ({
     clientWidth: document.body.clientWidth,
     scrollWidth: document.body.scrollWidth,
   }));
   expect(layout.scrollWidth).toBe(layout.clientWidth);
+});
+
+test("headquarters sees only the three-store people and schedule summary", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "总部运营 沈微 · 虚构人物 固定三店",
+    })
+    .click();
+  await page.getByRole("button", { name: "人员与排班" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "人员与排班汇总" }),
+  ).toBeVisible();
+  await expect(page.getByText("全门店只读")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "棱镜旗舰店" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "星桥标准店" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "极点新店" })).toBeVisible();
+  await expect(page.getByText("考勤异常", { exact: true })).toHaveCount(3);
+  await expect(page.locator(".people-hq-grid").getByRole("button")).toHaveCount(
+    0,
+  );
 });
 
 test("manager edits only the owned store through dedicated configuration forms and sees seat dependencies", async ({

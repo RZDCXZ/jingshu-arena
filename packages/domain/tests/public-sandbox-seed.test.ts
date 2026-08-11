@@ -82,5 +82,23 @@ describe("public sandbox seed", () => {
     ]);
     expect(first.personas).toHaveLength(4);
     expect(first.personas.every((persona) => persona.protected)).toBe(true);
+    expect(first.employees).toHaveLength(33);
+    expect(
+      first.stores.map((store) => ({
+        count: first.employees.filter(
+          (employee) => employee.storeCode === store.code,
+        ).length,
+        store: store.code,
+      })),
+    ).toEqual([
+      { count: 16, store: "prism-flagship" },
+      { count: 10, store: "starbridge-standard" },
+      { count: 7, store: "apex-new" },
+    ]);
+    expect(
+      first.employees
+        .filter((employee) => employee.protected)
+        .map((employee) => employee.displayName),
+    ).toEqual(["周宁", "许知远"]);
   });
 });

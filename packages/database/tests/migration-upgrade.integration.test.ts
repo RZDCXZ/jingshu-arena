@@ -664,5 +664,48 @@ describe("role-context expand migration", () => {
         weekend_half_hour_cents: 863,
       },
     ]);
+
+    await client.query(
+      "alter table attendance_records owner to ticket04_migration_owner",
+    );
+    await client.query(
+      "alter table employees owner to ticket04_migration_owner",
+    );
+    await client.query("alter table shifts owner to ticket04_migration_owner");
+    await client.query("set role ticket04_migration_owner");
+    try {
+      await applyMigration("0023_manager_people_schedule.sql");
+    } finally {
+      await client.query("reset role");
+    }
+    const peopleMetadata = await client.query<{ value: string }>(
+      "select value from jingshu_schema_metadata where key = 'schema_version'",
+    );
+    expect(peopleMetadata.rows).toEqual([{ value: "20" }]);
+    const peopleStructures = await client.query<{
+      correction_force_rls: boolean;
+      correction_table: string | null;
+      employee_version: number;
+      request_force_rls: boolean;
+      request_table: string | null;
+    }>(
+      `select
+         to_regclass('public.attendance_corrections')::text as correction_table,
+         to_regclass('public.manager_people_command_requests')::text as request_table,
+         (select relforcerowsecurity from pg_class
+           where oid = 'public.attendance_corrections'::regclass) as correction_force_rls,
+         (select relforcerowsecurity from pg_class
+           where oid = 'public.manager_people_command_requests'::regclass) as request_force_rls,
+         (select config_version from employees order by id limit 1) as employee_version`,
+    );
+    expect(peopleStructures.rows).toEqual([
+      {
+        correction_force_rls: true,
+        correction_table: "attendance_corrections",
+        employee_version: 1,
+        request_force_rls: true,
+        request_table: "manager_people_command_requests",
+      },
+    ]);
   });
 });

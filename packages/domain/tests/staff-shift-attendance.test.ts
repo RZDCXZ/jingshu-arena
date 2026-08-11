@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { decideAttendanceAction, validateShiftSchedule } from "../src/index.js";
+import {
+  decideAttendanceAction,
+  evaluateStaffCoverage,
+  validateShiftSchedule,
+} from "../src/index.js";
 
 describe("staff shift scheduling", () => {
   it("accepts an aligned cross-midnight shift and rejects misalignment, duration and overlap", () => {
@@ -36,6 +40,51 @@ describe("staff shift scheduling", () => {
         startsAt,
       }),
     ).toEqual({ reason: "overlap", status: "invalid" });
+  });
+
+  it("returns savable half-hour coverage warnings without treating them as validation errors", () => {
+    expect(
+      evaluateStaffCoverage({
+        minimumStaff: 3,
+        range: {
+          endsAt: new Date("2026-08-11T02:00:00.000Z"),
+          startsAt: new Date("2026-08-10T23:00:00.000Z"),
+        },
+        shifts: [
+          {
+            endsAt: new Date("2026-08-11T01:00:00.000Z"),
+            startsAt: new Date("2026-08-10T22:00:00.000Z"),
+          },
+          {
+            endsAt: new Date("2026-08-11T00:30:00.000Z"),
+            startsAt: new Date("2026-08-10T23:00:00.000Z"),
+          },
+          {
+            endsAt: new Date("2026-08-11T02:00:00.000Z"),
+            startsAt: new Date("2026-08-11T00:00:00.000Z"),
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        actualStaff: 2,
+        endsAt: new Date("2026-08-11T00:00:00.000Z"),
+        minimumStaff: 3,
+        startsAt: new Date("2026-08-10T23:00:00.000Z"),
+      },
+      {
+        actualStaff: 2,
+        endsAt: new Date("2026-08-11T01:00:00.000Z"),
+        minimumStaff: 3,
+        startsAt: new Date("2026-08-11T00:30:00.000Z"),
+      },
+      {
+        actualStaff: 1,
+        endsAt: new Date("2026-08-11T02:00:00.000Z"),
+        minimumStaff: 3,
+        startsAt: new Date("2026-08-11T01:00:00.000Z"),
+      },
+    ]);
   });
 });
 

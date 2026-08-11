@@ -162,6 +162,13 @@
       "when": 1786438800000,
       "tag": "0022_manager_price_store_product",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1786442400000,
+      "tag": "0023_manager_people_schedule",
+      "breakpoints": true
     }
   ]
 }

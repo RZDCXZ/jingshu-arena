@@ -27,6 +27,7 @@ import {
   Receipt,
   Seat,
   Storefront,
+  UserMinus,
   UsersThree,
   WarningCircle,
   Wrench,
@@ -687,21 +688,25 @@ export function PeopleSchedulePage({ onAction, readonly }) {
   const employeeColumns = [
     {
       key: "name",
-      label: "员工",
-      render: (row) => <strong>{row.name} · 虚构人物</strong>,
+      label: "工作名 / 员工编号",
+      render: (row) => (
+        <span className="employee-identity">
+          <strong>{row.name} · 虚构人物</strong>
+          <small>{row.code}</small>
+        </span>
+      ),
     },
     {
       key: "role",
       label: "角色",
       render: (row) => <StatusPill tone="neutral">{row.role}</StatusPill>,
     },
-    { key: "shift", label: "当前/下一班次" },
     {
-      key: "attendance",
-      label: "考勤",
-      render: (row) => <StatusPill>{row.attendance}</StatusPill>,
+      key: "status",
+      label: "任职状态",
+      render: (row) => <StatusPill tone="success">{row.status}</StatusPill>,
     },
-    { key: "handover", label: "交接" },
+    { key: "store", label: "所属门店" },
     {
       key: "protected",
       label: "人物保护",
@@ -711,6 +716,48 @@ export function PeopleSchedulePage({ onAction, readonly }) {
         ) : (
           "背景员工"
         ),
+    },
+    {
+      key: "actions",
+      label: "操作",
+      render: (row) => (
+        <div className="table-actions">
+          <Button
+            tone="ghost"
+            icon={PencilSimple}
+            disabled={readonly || row.protected}
+            onClick={() =>
+              onAction({
+                kind: "manager-employee",
+                mode: "edit",
+                label: `编辑 ${row.name}`,
+                ...row,
+              })
+            }
+          >
+            编辑
+          </Button>
+          <Button
+            tone="ghost"
+            icon={UserMinus}
+            disabled={readonly || row.protected}
+            onClick={() =>
+              onAction({
+                kind: "manager-employee",
+                mode: "deactivate",
+                label: `停用 ${row.name}`,
+                ...row,
+                dependencies:
+                  row.name === "陈昊"
+                    ? "未来班次 1 · 未关闭报修分派 1"
+                    : "无当前/未来班次或未关闭报修分派",
+              })
+            }
+          >
+            停用
+          </Button>
+        </div>
+      ),
     },
   ];
   const primaryAction =
@@ -816,12 +863,23 @@ export function PeopleSchedulePage({ onAction, readonly }) {
                       <small>{employee.role}</small>
                     </strong>
                     <div className="schedule-track">
-                      <span
+                      <button
+                        type="button"
                         className={`shift-block shift-${index + 1}`}
                         title={employee.shift}
+                        disabled={readonly || index === 0}
+                        onClick={() =>
+                          onAction({
+                            kind: "manager-shift",
+                            mode: "edit",
+                            label: `编辑 ${employee.name} 的未来班次`,
+                            employee: employee.name,
+                            window: employee.shift,
+                          })
+                        }
                       >
                         {employee.shift}
-                      </span>
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -935,6 +993,17 @@ export function PeopleSchedulePage({ onAction, readonly }) {
                     <InlineNotice tone="info" title="冻结补充说明">
                       A-18 报修待分派；晚高峰到店窗口集中。
                     </InlineNotice>
+                    <Button
+                      tone="ghost"
+                      onClick={() =>
+                        onAction({
+                          kind: "handover-snapshot",
+                          label: `查看 ${selectedHandoverException.employee} 的交接快照`,
+                        })
+                      }
+                    >
+                      查看专用快照弹窗
+                    </Button>
                   </>
                 ) : (
                   <InlineNotice tone="warning" title="逾期时尚未形成快照">

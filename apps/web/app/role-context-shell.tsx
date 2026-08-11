@@ -31,8 +31,11 @@ import { StaffOrderFulfillment } from "./staff-order-fulfillment";
 import { StoreInventory } from "./store-inventory";
 import { StaffRepairQueue } from "./staff-repair-queue";
 import { StaffShiftAttendance } from "./staff-shift-attendance";
-import { ManagerHandoverExceptions } from "./staff-handover";
 import { ManagerStoreConfiguration } from "./manager-store-configuration";
+import {
+  HeadquartersPeopleSchedule,
+  ManagerPeopleSchedule,
+} from "./manager-people-schedule";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -635,7 +638,13 @@ export function RoleContextShell({
             />
           ) : context.role.id === "manager" &&
             activePage === "people-schedule" ? (
-            <ManagerHandoverExceptions
+            <ManagerPeopleSchedule
+              csrfToken={context.csrfToken}
+              onToast={setToast}
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+            />
+          ) : context.role.id === "hq" && activePage === "hq-people" ? (
+            <HeadquartersPeopleSchedule
               refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
             />
           ) : (context.role.id === "staff" && activePage === "inventory") ||

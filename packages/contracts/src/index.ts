@@ -1820,3 +1820,171 @@ export interface ApiErrorResponse {
     readonly requestId: string;
   };
 }
+
+export type ManagerPeopleFrontlineRole = "manager" | "staff";
+
+export interface ManagerCoverageWarningResponse {
+  readonly actualStaff: number;
+  readonly endsAt: string;
+  readonly minimumStaff: number;
+  readonly startsAt: string;
+}
+
+export interface ManagerPeopleScheduleResponse {
+  readonly status: "ready";
+  readonly currentTime: string;
+  readonly store: {
+    readonly code: string;
+    readonly displayName: string;
+    readonly fixed: true;
+    readonly storeId: string;
+  };
+  readonly employees: ReadonlyArray<{
+    readonly active: boolean;
+    readonly dependencies: {
+      readonly currentOrFutureShifts: number;
+      readonly futureShifts: number;
+      readonly openRepairAssignments: number;
+    };
+    readonly displayName: string;
+    readonly employeeCode: string;
+    readonly employeeId: string;
+    readonly protected: boolean;
+    readonly role: ManagerPeopleFrontlineRole;
+    readonly store: {
+      readonly code: string;
+      readonly displayName: string;
+      readonly fixed: true;
+    };
+    readonly version: number;
+  }>;
+  readonly shifts: ReadonlyArray<{
+    readonly attendanceRecordId: string | null;
+    readonly canManage: boolean;
+    readonly employee: {
+      readonly displayName: string;
+      readonly employeeCode: string;
+      readonly employeeId: string;
+      readonly role: ManagerPeopleFrontlineRole;
+    };
+    readonly endsAt: string;
+    readonly shiftId: string;
+    readonly startsAt: string;
+    readonly status: "cancelled" | "scheduled";
+  }>;
+  readonly attendance: ReadonlyArray<{
+    readonly attendanceRecordId: string;
+    readonly corrections: ReadonlyArray<{
+      readonly businessOccurredAt: string;
+      readonly correctedBusinessAt: string;
+      readonly correctedBy: string;
+      readonly correctionId: string;
+      readonly correctionKind: "absence" | "check-out" | "late";
+      readonly reason: string;
+      readonly recordedAt: string;
+    }>;
+    readonly employee: {
+      readonly displayName: string;
+      readonly employeeCode: string;
+      readonly employeeId: string;
+    };
+    readonly original: {
+      readonly absenceBusinessAt: string | null;
+      readonly checkInBusinessAt: string | null;
+      readonly checkInOutcome: "late" | "on-time" | null;
+      readonly checkOutBusinessAt: string | null;
+      readonly status: "absent" | "checked-in" | "checked-out";
+    };
+    readonly shiftId: string;
+    readonly window: { readonly endsAt: string; readonly startsAt: string };
+  }>;
+  readonly coverageWarnings: ReadonlyArray<ManagerCoverageWarningResponse>;
+}
+
+export interface ManagerShiftCoveragePreviewRequest {
+  readonly employeeId: string;
+  readonly endsAt: string;
+  readonly startsAt: string;
+  readonly storeId: string;
+  readonly shiftId?: string;
+}
+
+export interface ManagerShiftCoveragePreviewResponse {
+  readonly status: "ready";
+  readonly validation:
+    | { readonly status: "valid" }
+    | {
+        readonly reason: "duration" | "half-hour-alignment" | "overlap";
+        readonly status: "invalid";
+      };
+  readonly warnings: ReadonlyArray<ManagerCoverageWarningResponse>;
+}
+
+interface ManagerPeopleCommandBase {
+  readonly storeId: string;
+}
+
+export type ManagerPeopleCommandRequest = ManagerPeopleCommandBase &
+  (
+    | {
+        readonly action: "create-employee";
+        readonly displayName: string;
+        readonly employeeCode: string;
+        readonly employeeRole: ManagerPeopleFrontlineRole;
+      }
+    | {
+        readonly action: "update-employee";
+        readonly displayName: string;
+        readonly employeeCode: string;
+        readonly employeeId: string;
+        readonly expectedVersion: number;
+      }
+    | {
+        readonly action: "deactivate-employee";
+        readonly employeeId: string;
+        readonly expectedVersion: number;
+      }
+    | {
+        readonly action: "create-shift";
+        readonly employeeId: string;
+        readonly endsAt: string;
+        readonly startsAt: string;
+      }
+    | {
+        readonly action: "update-shift";
+        readonly endsAt: string;
+        readonly shiftId: string;
+        readonly startsAt: string;
+      }
+    | { readonly action: "cancel-shift"; readonly shiftId: string }
+    | {
+        readonly action: "correct-attendance";
+        readonly attendanceRecordId: string;
+        readonly correctedBusinessAt: string;
+        readonly correctionKind: "absence" | "check-out" | "late";
+        readonly reason: string;
+      }
+  );
+
+export interface ManagerPeopleCommandResponse {
+  readonly action: ManagerPeopleCommandRequest["action"];
+  readonly coverageWarnings: ReadonlyArray<ManagerCoverageWarningResponse>;
+  readonly objectId: string;
+  readonly replayed: boolean;
+  readonly status: "ready";
+}
+
+export interface HeadquartersPeopleScheduleResponse {
+  readonly status: "ready";
+  readonly currentTime: string;
+  readonly stores: ReadonlyArray<{
+    readonly activeEmployeeCount: number;
+    readonly attendanceAnomalyCount: number;
+    readonly coverageWarnings: number;
+    readonly employeeCount: number;
+    readonly futureShiftCount: number;
+    readonly managerCount: number;
+    readonly staffCount: number;
+    readonly store: { readonly code: string; readonly displayName: string };
+  }>;
+}

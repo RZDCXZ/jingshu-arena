@@ -2731,6 +2731,12 @@ button.metric-card:hover {
   color: #a7eaff;
   font-size: 9px;
   white-space: nowrap;
+  cursor: pointer;
+  font-family: inherit;
+}
+.shift-block:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 .shift-1 {
   left: 30%;
@@ -2758,6 +2764,16 @@ button.metric-card:hover {
 .protected-label {
   color: var(--cyan);
   font-size: 10px;
+}
+
+.employee-identity {
+  display: grid;
+  gap: 3px;
+}
+
+.employee-identity small {
+  color: var(--faint);
+  font-size: 9px;
 }
 
 .diff-block {

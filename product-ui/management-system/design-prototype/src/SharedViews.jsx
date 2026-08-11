@@ -1164,25 +1164,57 @@ function resolveActionModal(action) {
   }
 
   if (action?.kind === "manager-employee") {
+    const deactivating = action.mode === "deactivate";
+    const editing = action.mode === "edit";
     return {
       eyebrow: "员工管理",
       title: actionLabel,
-      noticeTitle: "仅可创建背景员工",
-      noticeBody:
-        "主演示人物受保护且不可替换；新员工固定归属棱镜旗舰店，可用于未来排班与覆盖演示。",
-      confirmLabel: "创建背景员工",
-      fields: [
-        { label: "员工工作名", value: "背景员工 17" },
-        { label: "员工编号", value: "EMP-017" },
+      noticeTitle: deactivating ? "停用前必须检查业务依赖" : "仅可维护背景员工",
+      noticeBody: deactivating
+        ? "当前或未来班次、未完成报修分派必须先处理；停用保留历史排班、考勤与审计事实。"
+        : "主演示人物受保护且不可替换；背景员工固定归属棱镜旗舰店，可用于未来排班与覆盖演示。",
+      confirmLabel: deactivating
+        ? "确认停用背景员工"
+        : editing
+          ? "保存员工资料"
+          : "创建背景员工",
+      fields: deactivating
+        ? [
+            { label: "员工", value: action.name, readOnly: true },
+            {
+              label: "所属门店",
+              value: "棱镜旗舰店（固定，不跨店任职）",
+              readOnly: true,
+            },
+            {
+              label: "停用依赖",
+              value: action.dependencies,
+              readOnly: true,
+              full: true,
+            },
+            {
+              label: "历史影响",
+              value: "保留历史班次、考勤、更正、交接与审计，不执行删除。",
+              readOnly: true,
+              full: true,
+            },
+          ]
+        : [
+        { label: "员工工作名", value: action.name || "背景员工 17" },
+        {
+          label: "员工编号",
+          value: editing ? action.code || "" : action.code || "PRISM-S017",
+        },
         {
           label: "角色",
-          value: "店员",
+          value: action.role || "店员",
           options: ["店员", "店长"],
+          readOnly: editing,
         },
         {
           label: "任职状态",
-          value: "在职",
-          options: ["在职", "暂不排班"],
+          value: "任职",
+          readOnly: true,
         },
         {
           label: "所属门店",
@@ -1195,28 +1227,55 @@ function resolveActionModal(action) {
   }
 
   if (action?.kind === "manager-shift") {
+    const editing = action.mode === "edit";
+    const [shiftStartsAt = "18:00", rawShiftEndsAt = "02:00"] = (
+      action.window || "18:00–02:00"
+    ).split("–");
+    const normalizedShiftEndsAt = rawShiftEndsAt.replace("次日", "");
+    const shiftEndsAt =
+      normalizedShiftEndsAt === "24:00" ? "00:00" : normalizedShiftEndsAt;
     return {
       eyebrow: "未来排班",
       title: actionLabel,
       noticeTitle: "半小时粒度与覆盖检查",
       noticeBody:
         "班次需为 4–12 小时并可跨午夜；保存后会重新计算对应半小时区间的在班覆盖告警。",
-      confirmLabel: "创建未来班次",
+      confirmLabel: editing ? "保存未来班次" : "创建未来班次",
       fields: [
         {
           label: "排班员工",
-          value: "背景员工 17",
+          value: action.employee || "背景员工 17",
           options: ["背景员工 17", "苏雨", "陈昊", "赵一航"],
+          readOnly: editing,
         },
-        { label: "班次日期", value: "2026-08-09", type: "date" },
-        { label: "开始时间", value: "18:00", type: "time" },
-        { label: "结束时间（可跨午夜）", value: "02:00", type: "time" },
+        {
+          label: "班次日期",
+          value: action.date || "2026-08-08",
+          type: "date",
+        },
+        { label: "开始时间", value: shiftStartsAt, type: "time" },
+        {
+          label: "结束时间（可跨午夜）",
+          value: shiftEndsAt,
+          type: "time",
+        },
         {
           label: "覆盖预览",
           value: "保存后 00:00–02:00 将由 2 人提升至 3 人，覆盖告警解除。",
           readOnly: true,
           full: true,
         },
+        ...(editing
+          ? [
+              {
+                label: "可执行范围",
+                value:
+                  "仅未来未签到班次可编辑或取消；已有考勤事实的班次时间保持冻结。",
+                readOnly: true,
+                full: true,
+              },
+            ]
+          : []),
       ],
     };
   }
@@ -1233,7 +1292,7 @@ function resolveActionModal(action) {
         {
           label: "员工",
           value: action.employee || "苏雨",
-          options: ["苏雨", "背景员工 07", "陈昊", "赵一航"],
+          readOnly: true,
         },
         {
           label: "原始考勤事实",
@@ -1241,9 +1300,9 @@ function resolveActionModal(action) {
           readOnly: true,
         },
         {
-          label: "更正结果",
-          value: "已核准迟到",
-          options: ["已核准迟到", "按时到岗", "批准缺勤", "撤销异常"],
+          label: "更正类型",
+          value: "迟到时间",
+          options: ["迟到时间", "缺勤事实", "签退时间"],
         },
         {
           label: "更正生效时间",

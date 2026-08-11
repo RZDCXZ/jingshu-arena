@@ -315,6 +315,34 @@ export class ManagerStoreConfigurationConflictError extends Error {
   }
 }
 
+export type ManagerPeopleConflictReason =
+  | "cross-store"
+  | "duplicate-employee-code"
+  | "employee-dependencies"
+  | "employee-not-found"
+  | "idempotency-conflict"
+  | "inactive-employee"
+  | "invalid-attendance-correction"
+  | "invalid-employee"
+  | "invalid-shift"
+  | "protected-employee"
+  | "shift-attended"
+  | "shift-not-found"
+  | "shift-not-future"
+  | "shift-overlap"
+  | "version-conflict";
+
+export class ManagerPeopleConflictError extends Error {
+  readonly code = "MANAGER_PEOPLE_CONFLICT";
+  readonly reason: ManagerPeopleConflictReason;
+
+  constructor(reason: ManagerPeopleConflictReason) {
+    super(`Manager people command was rejected: ${reason}.`);
+    this.name = "ManagerPeopleConflictError";
+    this.reason = reason;
+  }
+}
+
 export type RepairIntakeConflictReason =
   | "description-invalid"
   | "idempotency-conflict"
