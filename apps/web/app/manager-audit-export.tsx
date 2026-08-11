@@ -24,7 +24,6 @@ import type {
   HeadquartersExportPreviewResponse,
   HeadquartersExportRequest,
   ManagerAuditSortField,
-  ManagerAuditEventResponse,
   ManagerAuditResponse,
   ManagerExportDataType,
   ManagerExportPreviewResponse,
@@ -42,6 +41,7 @@ interface ManagerAuditExportProps {
 }
 
 type AuditData = HeadquartersAuditResponse | ManagerAuditResponse;
+type AuditEvent = AuditData["events"][number];
 type ExportPreview =
   HeadquartersExportPreviewResponse | ManagerExportPreviewResponse;
 
@@ -197,11 +197,7 @@ function safeJson(value: Record<string, unknown> | null) {
   return value ? JSON.stringify(value, null, 2) : "无";
 }
 
-function AuditInspector({
-  event,
-}: {
-  readonly event: ManagerAuditEventResponse;
-}) {
+function AuditInspector({ event }: { readonly event: AuditEvent }) {
   return (
     <aside className="manager-audit-inspector" aria-label="审计详情">
       <header>
@@ -230,7 +226,9 @@ function AuditInspector({
         <div>
           <dt>门店范围</dt>
           <dd>
-            {event.store.displayName} · {event.store.code}
+            {event.store
+              ? `${event.store.displayName} · ${event.store.code}`
+              : "连锁范围 · chain"}
           </dd>
         </div>
         <div>
@@ -523,7 +521,13 @@ function ExportDialog({
       URL.revokeObjectURL(href);
       setDownloaded({ filename, rowCount });
       setPhase("success");
-      onToast("已导出 " + rowCount + " 行，并写入一条导出审计。");
+      onToast(
+        "已导出 " +
+          rowCount +
+          (scope === "headquarters"
+            ? " 行，并写入所选门店的导出审计。"
+            : " 行，并写入一条导出审计。"),
+      );
     } catch (error) {
       setFailedExport(true);
       setMessage(
@@ -747,7 +751,11 @@ function ExportDialog({
               <ArrowClockwise className="is-spinning" />
               <span>
                 <strong>正在生成 CSV…</strong>
-                <small>完成后下载文件，并写入一条导出审计。</small>
+                <small>
+                  完成后下载文件，并写入
+                  {scope === "headquarters" ? "所选门店的" : "一条"}
+                  导出审计。
+                </small>
               </span>
             </>
           ) : phase === "success" ? (
@@ -1292,8 +1300,10 @@ export function ManagerAuditExport({
                       </td>
                       {scope === "headquarters" ? (
                         <td>
-                          <strong>{event.store.displayName}</strong>
-                          <small>{event.store.code}</small>
+                          <strong>
+                            {event.store?.displayName ?? "连锁范围"}
+                          </strong>
+                          <small>{event.store?.code ?? "chain"}</small>
                         </td>
                       ) : null}
                       <td>

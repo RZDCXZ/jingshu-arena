@@ -538,7 +538,7 @@ export function calculateManagerDashboardMetrics(
         lowStockCount:
           day.key === businessDayKey(input.currentTime)
             ? input.inventory.lowStockCount
-            : 0,
+            : null,
       },
       key: day.key,
       orders: {

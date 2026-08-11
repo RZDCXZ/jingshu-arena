@@ -16,7 +16,7 @@ import {
   Wrench,
   X,
 } from "@phosphor-icons/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Icon } from "@phosphor-icons/react";
 import type {
   ApiErrorResponse,
@@ -113,7 +113,7 @@ interface MetricDefinition {
   readonly format: (value: number) => string;
   readonly icon: Icon;
   readonly label: string;
-  readonly readDay: (day: ManagerDashboardDayResponse) => number;
+  readonly readDay: (day: ManagerDashboardDayResponse) => number | null;
   readonly readSummary: (store: HeadquartersComparisonStoreResponse) => number;
 }
 
@@ -138,7 +138,7 @@ const metricDefinitions: Record<ComparisonMetric, MetricDefinition> = {
   },
   inventory: {
     definition:
-      "当前可用库存小于或等于独立阈值的项目数；总部只读，不直接修改数量。",
+      "数据截止时点的当前可用库存快照；没有历史快照时明确留空，不以零值回填。总部只读，不直接修改数量。",
     drilldown: "inventory",
     format: (value) => `${value} 项`,
     icon: Package,
@@ -218,12 +218,10 @@ function rangeFor(
   customTo: string,
 ) {
   if (preset === "current") return {};
-  const selected =
-    preset === "last7"
-      ? days.slice(-7)
-      : preset === "last14"
-        ? days
-        : days.filter((day) => day.key >= customFrom && day.key <= customTo);
+  if (preset === "custom") {
+    return customFrom && customTo ? { from: customFrom, to: customTo } : {};
+  }
+  const selected = preset === "last7" ? days.slice(-7) : days;
   return selected.length
     ? { from: selected[0]!.key, to: selected.at(-1)!.key }
     : {};
@@ -262,6 +260,46 @@ function LoadingState() {
   );
 }
 
+function useDialogKeyboard(onClose: () => void) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const close = closeRef.current;
+    close?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    dialog?.addEventListener("keydown", onKeyDown);
+    return () => dialog?.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  return { closeRef, dialogRef };
+}
+
 function DrilldownPanel({
   data,
   metric,
@@ -272,10 +310,13 @@ function DrilldownPanel({
   readonly onClose: () => void;
 }) {
   const rows = data.drilldown?.rows ?? [];
+  const { closeRef, dialogRef } = useDialogKeyboard(onClose);
   return (
     <aside
       aria-labelledby="hq-drilldown-title"
+      aria-modal="true"
       className="manager-dashboard-drilldown hq-drilldown"
+      ref={dialogRef}
       role="dialog"
     >
       <header>
@@ -283,7 +324,12 @@ function DrilldownPanel({
           <small>{data.store.displayName} · 总部只读下钻</small>
           <h2 id="hq-drilldown-title">{metricDefinitions[metric].label}构成</h2>
         </div>
-        <button aria-label="关闭总部只读下钻" onClick={onClose} type="button">
+        <button
+          aria-label="关闭总部只读下钻"
+          onClick={onClose}
+          ref={closeRef}
+          type="button"
+        >
           <X />
         </button>
       </header>
@@ -321,6 +367,92 @@ function DrilldownPanel({
   );
 }
 
+function AnomalyPanel({
+  onClose,
+  onOpenMetric,
+  store,
+}: {
+  readonly onClose: () => void;
+  readonly onOpenMetric: (metric: ComparisonMetric) => void;
+  readonly store: HeadquartersComparisonStoreResponse;
+}) {
+  const { closeRef, dialogRef } = useDialogKeyboard(onClose);
+  const categories: ReadonlyArray<{
+    readonly count: number;
+    readonly label: string;
+    readonly metric: ComparisonMetric;
+  }> = [
+    {
+      count: store.summary.inventory.lowStockCount,
+      label: "库存告警",
+      metric: "inventory",
+    },
+    {
+      count: store.summary.repairs.openCount,
+      label: "未关闭报修",
+      metric: "repairs",
+    },
+    {
+      count: attendanceExceptions(store.summary.attendance),
+      label: "考勤异常",
+      metric: "attendance",
+    },
+    {
+      count: store.summary.handoverExceptionCount,
+      label: "交接异常",
+      metric: "handover",
+    },
+  ];
+  return (
+    <aside
+      aria-labelledby="hq-anomaly-title"
+      aria-modal="true"
+      className="manager-dashboard-drilldown hq-drilldown hq-anomaly-dialog"
+      ref={dialogRef}
+      role="dialog"
+    >
+      <header>
+        <div>
+          <small>{store.store.displayName} · 总部只读下钻</small>
+          <h2 id="hq-anomaly-title">经营异常构成</h2>
+        </div>
+        <button
+          aria-label="关闭经营异常构成"
+          onClick={onClose}
+          ref={closeRef}
+          type="button"
+        >
+          <X />
+        </button>
+      </header>
+      <div className="manager-dashboard-drilldown-body">
+        <ol>
+          {categories.map((category) => (
+            <li key={category.metric}>
+              <span>
+                <strong>{category.label}</strong>
+                <small>{category.count} 项</small>
+              </span>
+              <button
+                disabled={category.count === 0}
+                onClick={() => onOpenMetric(category.metric)}
+                type="button"
+              >
+                查看构成 <ArrowRight />
+              </button>
+            </li>
+          ))}
+        </ol>
+      </div>
+      <footer>
+        <span>
+          合计 {anomalyCount(store)} 项；各类异常分别进入对应事实下钻。
+        </span>
+      </footer>
+    </aside>
+  );
+}
+
 export function HeadquartersComparison({
   onNavigateAudit,
   onNavigateCompare,
@@ -341,21 +473,44 @@ export function HeadquartersComparison({
     readonly metric: ComparisonMetric;
     readonly store: HeadquartersComparisonStoreResponse;
   } | null>(null);
+  const [anomalyStore, setAnomalyStore] =
+    useState<HeadquartersComparisonStoreResponse | null>(null);
+  const returnFocusRef = useRef<HTMLButtonElement | null>(null);
 
   const load = useCallback(
     async (
       nextPreset: RangePreset,
       customRange?: { readonly from: string; readonly to: string },
+      refreshRollingRange = false,
     ) => {
       setLoading(true);
       setError("");
-      const range = rangeFor(
-        nextPreset,
-        data?.availableBusinessDays ?? [],
-        customRange?.from ?? customFrom,
-        customRange?.to ?? customTo,
-      );
       try {
+        let availableBusinessDays = data?.availableBusinessDays ?? [];
+        if (
+          refreshRollingRange &&
+          (nextPreset === "last7" || nextPreset === "last14")
+        ) {
+          const freshResponse = await fetch(dashboardUrl({}), {
+            cache: "no-store",
+            credentials: "same-origin",
+          });
+          const freshPayload: unknown = await freshResponse
+            .json()
+            .catch(() => null);
+          if (!freshResponse.ok) {
+            throw new Error(failureMessage(freshPayload));
+          }
+          availableBusinessDays = (
+            freshPayload as HeadquartersComparisonResponse
+          ).availableBusinessDays;
+        }
+        const range = rangeFor(
+          nextPreset,
+          availableBusinessDays,
+          customRange?.from ?? customFrom,
+          customRange?.to ?? customTo,
+        );
         const response = await fetch(dashboardUrl(range), {
           cache: "no-store",
           credentials: "same-origin",
@@ -384,14 +539,21 @@ export function HeadquartersComparison({
   );
 
   useEffect(() => {
-    void load(preset);
+    void load(preset, undefined, true);
   }, [refreshKey]);
 
   useEffect(() => {
     setMetric(page === "chain" ? "utilization" : "revenue");
     setStoreFilter("");
     setDrilldown(null);
+    setAnomalyStore(null);
   }, [page]);
+
+  function closeOverlay() {
+    setDrilldown(null);
+    setAnomalyStore(null);
+    requestAnimationFrame(() => returnFocusRef.current?.focus());
+  }
 
   async function openDrilldown(
     store: HeadquartersComparisonStoreResponse,
@@ -399,12 +561,15 @@ export function HeadquartersComparison({
   ) {
     setError("");
     try {
-      const range = rangeFor(
-        preset,
-        data?.availableBusinessDays ?? [],
-        customFrom,
-        customTo,
-      );
+      const range =
+        selectedMetric === "inventory"
+          ? {}
+          : rangeFor(
+              preset,
+              data?.availableBusinessDays ?? [],
+              customFrom,
+              customTo,
+            );
       const response = await fetch(
         dashboardUrl(
           range,
@@ -442,7 +607,7 @@ export function HeadquartersComparison({
       ? (visibleStores[0]?.trend ?? [])
       : (visibleStores[0]?.days ?? []);
   const chartData = chartDays.map((day) => {
-    const row: Record<string, number | string> = {
+    const row: Record<string, number | string | null> = {
       day: dayLabel(day.key),
       key: day.key,
     };
@@ -450,7 +615,7 @@ export function HeadquartersComparison({
       const storeDay = (preset === "current" ? store.trend : store.days).find(
         (candidate) => candidate.key === day.key,
       );
-      row[store.store.code] = storeDay ? definition.readDay(storeDay) : 0;
+      row[store.store.code] = storeDay ? definition.readDay(storeDay) : null;
     }
     return row;
   });
@@ -677,7 +842,10 @@ export function HeadquartersComparison({
                       <td>
                         <button
                           aria-label={`查看 ${store.store.displayName} 经营异常`}
-                          onClick={() => void openDrilldown(store, "repairs")}
+                          onClick={(event) => {
+                            returnFocusRef.current = event.currentTarget;
+                            setAnomalyStore(store);
+                          }}
                           type="button"
                         >
                           查看 <ArrowRight />
@@ -741,7 +909,11 @@ export function HeadquartersComparison({
             </span>
             <div>
               <small>
-                {preset === "current" ? "最近 7 个经营日趋势" : "当前筛选范围"}
+                {metric === "inventory"
+                  ? "当前快照 · 不回填历史"
+                  : preset === "current"
+                    ? "最近 7 个经营日趋势"
+                    : "当前筛选范围"}
               </small>
               <h2>{definition.label}</h2>
             </div>
@@ -789,7 +961,11 @@ export function HeadquartersComparison({
                   width={68}
                 />
                 <Tooltip
-                  formatter={(value) => definition.format(Number(value ?? 0))}
+                  formatter={(value) =>
+                    value === null || value === undefined
+                      ? "未生成历史快照"
+                      : definition.format(Number(value))
+                  }
                   labelFormatter={(label) => `经营日 ${label}`}
                 />
                 <Legend iconType="circle" wrapperStyle={{ fontSize: 10 }} />
@@ -801,6 +977,7 @@ export function HeadquartersComparison({
                   return (
                     <Line
                       dataKey={store.store.code}
+                      connectNulls={false}
                       dot={{ r: 2 }}
                       key={store.store.storeId}
                       name={`${store.store.displayName} · ${store.store.code}`}
@@ -829,7 +1006,10 @@ export function HeadquartersComparison({
             {visibleStores.map((store, index) => (
               <button
                 key={store.store.storeId}
-                onClick={() => void openDrilldown(store, metric)}
+                onClick={(event) => {
+                  returnFocusRef.current = event.currentTarget;
+                  void openDrilldown(store, metric);
+                }}
                 type="button"
               >
                 <span>
@@ -891,7 +1071,10 @@ export function HeadquartersComparison({
                   <th>{String(row.key)}</th>
                   {visibleStores.map((store) => (
                     <td key={store.store.storeId}>
-                      {definition.format(Number(row[store.store.code] ?? 0))}
+                      {row[store.store.code] === null ||
+                      row[store.store.code] === undefined
+                        ? "未生成历史快照"
+                        : definition.format(Number(row[store.store.code]))}
                     </td>
                   ))}
                 </tr>
@@ -910,7 +1093,17 @@ export function HeadquartersComparison({
         <DrilldownPanel
           data={drilldown.store}
           metric={drilldown.metric}
-          onClose={() => setDrilldown(null)}
+          onClose={closeOverlay}
+        />
+      ) : null}
+      {anomalyStore ? (
+        <AnomalyPanel
+          onClose={closeOverlay}
+          onOpenMetric={(selectedMetric) => {
+            setAnomalyStore(null);
+            void openDrilldown(anomalyStore, selectedMetric);
+          }}
+          store={anomalyStore}
         />
       ) : null}
     </main>

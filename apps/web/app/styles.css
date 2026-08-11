@@ -409,6 +409,24 @@
   grid-template-columns: 1fr;
 }
 
+.hq-anomaly-dialog .manager-dashboard-drilldown-body li {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.hq-anomaly-dialog .manager-dashboard-drilldown-body li > button {
+  min-height: 31px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+}
+
+.hq-anomaly-dialog .manager-dashboard-drilldown-body li > button svg {
+  width: 13px;
+  height: 13px;
+}
+
 @media (max-width: 1180px) {
   .hq-comparison-grid {
     grid-template-columns: minmax(0, 1.25fr) minmax(250px, 0.75fr);

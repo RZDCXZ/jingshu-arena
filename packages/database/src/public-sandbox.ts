@@ -1100,6 +1100,15 @@ export interface ReadManagerAuditsInput extends ReadRoleContextInput {
   readonly toBusinessDay?: string;
 }
 
+export interface ReadHeadquartersAuditsInput extends ReadRoleContextInput {
+  readonly filters: ManagerAuditFilters;
+  readonly fromBusinessDay?: string;
+  readonly role: "hq";
+  readonly selectedStoreIds: ReadonlyArray<string>;
+  readonly sort: ReadManagerAuditsInput["sort"];
+  readonly toBusinessDay?: string;
+}
+
 export interface DatabaseManagerAuditEvent {
   readonly action: string;
   readonly actor: {
@@ -1154,6 +1163,19 @@ export interface DatabaseManagerAudits {
   readonly totalCount: number;
 }
 
+export interface DatabaseHeadquartersAudits extends Omit<
+  DatabaseManagerAudits,
+  "events" | "store"
+> {
+  readonly events: ReadonlyArray<
+    Omit<DatabaseManagerAuditEvent, "store"> & {
+      readonly store: DatabaseManagerAuditEvent["store"] | null;
+    }
+  >;
+  readonly selectedStoreIds: ReadonlyArray<string>;
+  readonly stores: ReadonlyArray<DatabaseManagerAudits["store"]>;
+}
+
 export type ManagerExportInput = ReadRoleContextInput &
   ManagerExportRequest & {
     readonly requestId?: string;
@@ -1180,6 +1202,23 @@ export interface DatabaseManagerExport {
     readonly displayName: string;
     readonly storeId: string;
   };
+}
+
+export interface RecordHeadquartersExportInput extends ReadRoleContextInput {
+  readonly dataType: ManagerExportDataType;
+  readonly filters: ManagerExportRequest["filters"];
+  readonly fromBusinessDay: string;
+  readonly requestId: string;
+  readonly role: "hq";
+  readonly sort: {
+    readonly direction: ManagerExportSortDirection;
+    readonly field: string;
+  };
+  readonly stores: ReadonlyArray<{
+    readonly rowCount: number;
+    readonly storeId: string;
+  }>;
+  readonly toBusinessDay: string;
 }
 
 export interface DatabaseManagerDashboard {
@@ -2461,12 +2500,16 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readManagerAudits(
     input: ReadManagerAuditsInput,
   ): Promise<DatabaseManagerAudits>;
+  readHeadquartersAudits(
+    input: ReadHeadquartersAuditsInput,
+  ): Promise<DatabaseHeadquartersAudits>;
   prepareManagerExport(
     input: ManagerExportInput,
   ): Promise<DatabaseManagerExport>;
   createManagerExport(
     input: ManagerExportInput & { readonly requestId: string },
   ): Promise<DatabaseManagerExport>;
+  recordHeadquartersExport(input: RecordHeadquartersExportInput): Promise<void>;
   readManagerPeopleSchedule(
     input: ReadManagerPeopleScheduleInput,
   ): Promise<DatabaseManagerPeopleSchedule>;
@@ -8848,9 +8891,9 @@ interface ManagerAuditRow {
   request_id: string;
   result: ManagerAuditResult;
   role: PublicRole;
-  store_code: string;
-  store_display_name: string;
-  store_id: string;
+  store_code: string | null;
+  store_display_name: string | null;
+  store_id: string | null;
 }
 
 function auditOrderBy(sort: ReadManagerAuditsInput["sort"]) {
@@ -8921,11 +8964,86 @@ async function managerAuditRowsWithClient(
     result: row.result,
     role: row.role,
     store: {
-      code: row.store_code,
-      displayName: row.store_display_name,
-      storeId: row.store_id,
+      code: row.store_code!,
+      displayName: row.store_display_name!,
+      storeId: row.store_id!,
     },
   }));
+}
+
+async function headquartersAuditRowsWithClient(
+  client: PoolClient,
+  input: ReadHeadquartersAuditsInput,
+  range: { readonly endsAt: Date; readonly startsAt: Date },
+  includeChainScope: boolean,
+) {
+  const rows = await client.query<ManagerAuditRow>(
+    `select audit.id, audit.action, audit.object_type, audit.object_id,
+            audit.result, audit.reason, audit.request_id, audit.before_data,
+            audit.after_data, audit.business_occurred_at, audit.recorded_at,
+            audit.role, audit.persona_id,
+            persona.display_name as actor_display_name,
+            store.id as store_id, store.code as store_code,
+            store.display_name as store_display_name
+       from audit_events audit
+       left join stores store on store.id = audit.store_id
+       left join demo_personas persona on persona.id = audit.persona_id
+      where audit.sandbox_id = $1
+        and (audit.store_id = any($2::uuid[])
+          or ($3::boolean and audit.store_id is null))
+        and audit.business_occurred_at >= $4
+        and audit.business_occurred_at < $5
+        and ($6::uuid is null or audit.persona_id = $6)
+        and ($7::text is null or audit.role = $7)
+        and ($8::text is null or audit.action = $8)
+        and ($9::text is null or audit.object_type = $9)
+        and ($10::text is null or audit.result = $10)
+      order by ${auditOrderBy(input.sort)}`,
+    [
+      input.sandboxId,
+      input.selectedStoreIds,
+      includeChainScope,
+      range.startsAt,
+      range.endsAt,
+      input.filters.personaId ?? null,
+      input.filters.role ?? null,
+      input.filters.action ?? null,
+      input.filters.objectType ?? null,
+      input.filters.result ?? null,
+    ],
+  );
+  return rows.rows.map(
+    (
+      row,
+    ): Omit<DatabaseManagerAuditEvent, "store"> & {
+      readonly store: DatabaseManagerAuditEvent["store"] | null;
+    } => ({
+      action: row.action,
+      actor: {
+        displayName: row.actor_display_name ?? "系统",
+        personaId: row.persona_id,
+      },
+      after: sanitizeAuditRecord(row.after_data),
+      before: sanitizeAuditRecord(row.before_data),
+      businessOccurredAt: row.business_occurred_at,
+      eventId: row.id,
+      objectId: row.object_id,
+      objectType: row.object_type,
+      reason: sanitizeAuditReason(row.reason),
+      recordedAt: row.recorded_at,
+      requestId: row.request_id,
+      result: row.result,
+      role: row.role,
+      store:
+        row.store_id && row.store_code && row.store_display_name
+          ? {
+              code: row.store_code,
+              displayName: row.store_display_name,
+              storeId: row.store_id,
+            }
+          : null,
+    }),
+  );
 }
 
 const exportColumns = {
@@ -14457,11 +14575,204 @@ export function createPublicSandboxDatabase(
         client.release();
       }
     },
+    async readHeadquartersAudits(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertHeadquartersContext(
+          client,
+          input,
+          wallTime,
+        );
+        const allStores = await client.query<ManagerScopedStore>(
+          `select id, code, display_name from stores
+            where sandbox_id = $1 and code = any($2::text[])
+            order by array_position($2::text[], code)`,
+          [input.sandboxId, HEADQUARTERS_FIXED_STORE_CODES],
+        );
+        if (allStores.rows.length !== HEADQUARTERS_FIXED_STORE_CODES.length) {
+          throw new RoleContextUnavailableError();
+        }
+        const availableStoreIds = new Set(
+          allStores.rows.map((store) => store.id),
+        );
+        if (
+          input.selectedStoreIds.length < 1 ||
+          input.selectedStoreIds.length >
+            HEADQUARTERS_FIXED_STORE_CODES.length ||
+          new Set(input.selectedStoreIds).size !==
+            input.selectedStoreIds.length ||
+          input.selectedStoreIds.some(
+            (storeId) => !availableStoreIds.has(storeId),
+          )
+        ) {
+          throw new ManagerAuditExportError("store-not-found");
+        }
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        const selection = managerBusinessDaySelection(
+          currentTime,
+          input.fromBusinessDay,
+          input.toBusinessDay,
+        );
+        const includeChainScope =
+          input.selectedStoreIds.length ===
+          HEADQUARTERS_FIXED_STORE_CODES.length;
+        const events = await headquartersAuditRowsWithClient(
+          client,
+          input,
+          selection,
+          includeChainScope,
+        );
+        const options = await client.query<{
+          actions: string[];
+          object_types: string[];
+          personas: Array<{ displayName: string; personaId: string }>;
+          roles: PublicRole[];
+        }>(
+          `select
+             coalesce(array_agg(distinct audit.action order by audit.action)
+               filter (where audit.action is not null), '{}') as actions,
+             coalesce(array_agg(distinct audit.object_type order by audit.object_type)
+               filter (where audit.object_type is not null), '{}') as object_types,
+             coalesce(array_agg(distinct audit.role order by audit.role)
+               filter (where audit.role is not null), '{}') as roles,
+             coalesce(jsonb_agg(distinct jsonb_build_object(
+               'personaId', persona.id, 'displayName', persona.display_name
+             )) filter (where persona.id is not null), '[]'::jsonb) as personas
+           from audit_events audit
+           left join demo_personas persona on persona.id = audit.persona_id
+          where audit.sandbox_id = $1
+            and (audit.store_id = any($2::uuid[])
+              or ($3::boolean and audit.store_id is null))`,
+          [input.sandboxId, input.selectedStoreIds, includeChainScope],
+        );
+        const filterOptions = options.rows[0];
+        await client.query("commit");
+        return {
+          availableBusinessDays: selection.availableBusinessDays,
+          currentTime,
+          events,
+          filterOptions: {
+            actions: filterOptions?.actions ?? [],
+            objectTypes: filterOptions?.object_types ?? [],
+            personas: (filterOptions?.personas ?? []).toSorted((left, right) =>
+              left.displayName.localeCompare(right.displayName, "zh-CN"),
+            ),
+            roles: filterOptions?.roles ?? [],
+          },
+          range: {
+            endsAt: selection.endsAt,
+            fromBusinessDay: selection.fromBusinessDay,
+            startsAt: selection.startsAt,
+            toBusinessDay: selection.toBusinessDay,
+          },
+          selectedStoreIds: input.selectedStoreIds,
+          sort: input.sort,
+          stores: allStores.rows.map((store) => ({
+            code: store.code,
+            displayName: store.display_name,
+            storeId: store.id,
+          })),
+          totalCount: events.length,
+        };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async prepareManagerExport(input) {
       return executeManagerExport(input, false);
     },
     async createManagerExport(input) {
       return executeManagerExport(input, true);
+    },
+    async recordHeadquartersExport(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const sandbox = await assertHeadquartersContext(
+          client,
+          input,
+          wallTime,
+        );
+        const stores = await client.query<{ id: string }>(
+          `select id from stores
+            where sandbox_id = $1 and id = any($2::uuid[])
+              and code = any($3::text[])`,
+          [
+            input.sandboxId,
+            input.stores.map((store) => store.storeId),
+            HEADQUARTERS_FIXED_STORE_CODES,
+          ],
+        );
+        if (
+          input.stores.length < 1 ||
+          new Set(input.stores.map((store) => store.storeId)).size !==
+            input.stores.length ||
+          stores.rows.length !== input.stores.length
+        ) {
+          throw new ManagerAuditExportError("store-not-found");
+        }
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
+        const selection = managerBusinessDaySelection(
+          currentTime,
+          input.fromBusinessDay,
+          input.toBusinessDay,
+        );
+        const ids = input.stores.map(() => randomUUID());
+        await client.query(
+          `insert into audit_events (
+             id, sandbox_id, store_id, persona_id, role, action, object_type,
+             object_id, result, reason, request_id, before_data, after_data,
+             business_occurred_at, recorded_at
+           ) select event_id, sandbox_id, store_id, persona_id, 'hq',
+                    'export.csv', 'export', null, 'allowed', null, request_id,
+                    null, after_data, business_occurred_at, recorded_at
+               from unnest(
+                 $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
+                 $6::jsonb[], $7::timestamptz[], $8::timestamptz[]
+               ) as item(event_id, sandbox_id, store_id, persona_id,
+                         request_id, after_data, business_occurred_at, recorded_at)`,
+          [
+            ids,
+            input.stores.map(() => input.sandboxId),
+            input.stores.map((store) => store.storeId),
+            input.stores.map(() => input.personaId),
+            input.stores.map(() => input.requestId),
+            input.stores.map((store) =>
+              JSON.stringify({
+                dataType: input.dataType,
+                filters: input.filters,
+                fromBusinessDay: selection.fromBusinessDay,
+                rowCount: store.rowCount,
+                sortDirection: input.sort.direction,
+                sortField: input.sort.field,
+                toBusinessDay: selection.toBusinessDay,
+              }),
+            ),
+            input.stores.map(() => currentTime),
+            input.stores.map(() => wallTime),
+          ],
+        );
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async readManagerDashboard(input) {
       const client = await pool.connect();
@@ -14792,9 +15103,7 @@ export function createPublicSandboxDatabase(
             businessOccurredAt: item.business_occurred_at,
           })),
           inventory: {
-            lowStockCount: selectedKeys.has(currentBusinessDay)
-              ? inventory.rows.length
-              : 0,
+            lowStockCount: inventory.rows.length,
           },
           orders: orderFacts,
           repairs: repairFacts,
@@ -14985,19 +15294,17 @@ export function createPublicSandboxDatabase(
             title: "交接异常",
           });
         }
-        if (selectedKeys.has(currentBusinessDay)) {
-          for (const item of inventory.rows) {
-            rangeRows.push({
-              amountCents: null,
-              businessDayKey: currentBusinessDay,
-              detail: `可用 ${item.available_quantity} · 阈值 ${item.low_stock_threshold}`,
-              objectId: item.id,
-              objectType: "inventory",
-              occurredAt: currentTime,
-              status: "low-stock",
-              title: item.display_name,
-            });
-          }
+        for (const item of inventory.rows) {
+          rangeRows.push({
+            amountCents: null,
+            businessDayKey: currentBusinessDay,
+            detail: `可用 ${item.available_quantity} · 阈值 ${item.low_stock_threshold}`,
+            objectId: item.id,
+            objectType: "inventory",
+            occurredAt: currentTime,
+            status: "low-stock",
+            title: item.display_name,
+          });
         }
         const drilldownRows =
           input.drilldown === "revenue"
@@ -15042,14 +15349,20 @@ export function createPublicSandboxDatabase(
           days: selectedMetrics.days,
           drilldown: input.drilldown
             ? {
-                fromBusinessDay,
+                fromBusinessDay:
+                  input.drilldown === "inventory"
+                    ? currentBusinessDay
+                    : fromBusinessDay,
                 kind: input.drilldown,
                 rows: drilldownRows.sort(
                   (left, right) =>
                     right.occurredAt.getTime() - left.occurredAt.getTime(),
                 ),
                 storeCode: storeRow.code,
-                toBusinessDay,
+                toBusinessDay:
+                  input.drilldown === "inventory"
+                    ? currentBusinessDay
+                    : toBusinessDay,
               }
             : null,
           range: {

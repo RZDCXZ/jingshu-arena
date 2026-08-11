@@ -24,10 +24,11 @@ import {
   type PublicRole,
 } from "@jingshu/contracts";
 import type {
-  DatabaseManagerAuditEvent,
+  DatabaseHeadquartersAudits,
   DatabaseManagerAudits,
   DatabaseManagerExport,
 } from "@jingshu/database";
+import { businessDayKey } from "@jingshu/domain";
 
 import { authorizeRoleCapability } from "./role-authorization.js";
 import { readRoleSession } from "./role-session.js";
@@ -362,22 +363,6 @@ function failure(
   };
 }
 
-function auditValue(
-  event: DatabaseManagerAuditEvent,
-  field: ManagerAuditSortField,
-) {
-  const values: Record<ManagerAuditSortField, Date | string> = {
-    action: event.action,
-    businessOccurredAt: event.businessOccurredAt,
-    objectType: event.objectType,
-    persona: event.actor.displayName,
-    recordedAt: event.recordedAt,
-    result: event.result,
-    role: event.role,
-  };
-  return values[field];
-}
-
 function compareValues(
   left: Date | number | string,
   right: Date | number | string,
@@ -387,6 +372,56 @@ function compareValues(
   return typeof leftValue === "number" && typeof rightValue === "number"
     ? leftValue - rightValue
     : String(leftValue).localeCompare(String(rightValue), "zh-CN");
+}
+
+function headquartersAuditExport(result: DatabaseHeadquartersAudits) {
+  const columns = [
+    "门店代码",
+    "门店",
+    "经营日",
+    "业务发生时间",
+    "服务器记录时间",
+    "演示人物",
+    "角色",
+    "动作",
+    "对象类型",
+    "对象ID",
+    "结果",
+    "原因",
+    "请求关联ID",
+    "变更前",
+    "变更后",
+  ] as const;
+  const rows = result.events.map((event) =>
+    [
+      event.store?.code ?? "chain",
+      event.store?.displayName ?? "连锁范围",
+      businessDayKey(event.businessOccurredAt),
+      formatDateTime(event.businessOccurredAt),
+      formatDateTime(event.recordedAt),
+      event.actor.displayName,
+      event.role,
+      event.action,
+      event.objectType,
+      event.objectId ?? "",
+      event.result,
+      event.reason ?? "",
+      event.requestId,
+      event.before ? JSON.stringify(event.before) : "",
+      event.after ? JSON.stringify(event.after) : "",
+    ].map(safeSpreadsheetText),
+  );
+  return {
+    columns,
+    rows,
+    stores: result.stores
+      .filter((store) => result.selectedStoreIds.includes(store.storeId))
+      .map((store) => ({
+        code: store.code as HeadquartersFixedStoreCode,
+        displayName: store.displayName,
+        storeId: store.storeId,
+      })),
+  };
 }
 
 function orderedStores(
@@ -570,90 +605,45 @@ export function registerHeadquartersAuditExportRoutes(
       ? [query.storeId]
       : auth.session.storeIds;
     try {
-      const allResults = await Promise.all(
-        auth.session.storeIds.map((storeId) =>
-          services.sandboxDatabase!.readManagerAudits({
-            contextVersion: auth.session!.contextVersion,
-            filters: query.filters,
-            ...(query.fromBusinessDay
-              ? { fromBusinessDay: query.fromBusinessDay }
-              : {}),
-            personaId: auth.session!.personaId,
-            role: "hq",
-            sandboxId: auth.session!.sandboxId,
-            sort: query.sort,
-            storeId,
-            ...(query.toBusinessDay
-              ? { toBusinessDay: query.toBusinessDay }
-              : {}),
-          }),
-        ),
-      );
-      const results = query.storeId
-        ? allResults.filter((result) => result.store.storeId === query.storeId)
-        : allResults;
-      const first = results[0]!;
-      const direction = query.sort.direction === "asc" ? 1 : -1;
-      const events = results
-        .flatMap((result) => result.events)
-        .sort((left, right) => {
-          const compared = compareValues(
-            auditValue(left, query.sort.field),
-            auditValue(right, query.sort.field),
-          );
-          return compared === 0
-            ? left.eventId.localeCompare(right.eventId) * direction
-            : compared * direction;
-        });
-      const personas = new Map(
-        allResults.flatMap((result) =>
-          result.filterOptions.personas.map(
-            (persona) => [persona.personaId, persona] as const,
-          ),
-        ),
-      );
+      const result = await services.sandboxDatabase.readHeadquartersAudits({
+        contextVersion: auth.session.contextVersion,
+        filters: query.filters,
+        ...(query.fromBusinessDay
+          ? { fromBusinessDay: query.fromBusinessDay }
+          : {}),
+        personaId: auth.session.personaId,
+        role: "hq",
+        sandboxId: auth.session.sandboxId,
+        selectedStoreIds: targetStoreIds,
+        sort: query.sort,
+        ...(query.toBusinessDay ? { toBusinessDay: query.toBusinessDay } : {}),
+      });
       return context.json({
-        availableBusinessDays: first.availableBusinessDays.map((day) => ({
+        availableBusinessDays: result.availableBusinessDays.map((day) => ({
           ...day,
           endsAt: day.endsAt.toISOString(),
           startsAt: day.startsAt.toISOString(),
         })),
-        currentTime: first.currentTime.toISOString(),
-        events: events.map((event) => ({
+        currentTime: result.currentTime.toISOString(),
+        events: result.events.map((event) => ({
           ...event,
           businessOccurredAt: event.businessOccurredAt.toISOString(),
           recordedAt: event.recordedAt.toISOString(),
         })),
-        filterOptions: {
-          actions: [
-            ...new Set(
-              allResults.flatMap((result) => result.filterOptions.actions),
-            ),
-          ].toSorted(),
-          objectTypes: [
-            ...new Set(
-              allResults.flatMap((result) => result.filterOptions.objectTypes),
-            ),
-          ].toSorted(),
-          personas: [...personas.values()].toSorted((left, right) =>
-            left.displayName.localeCompare(right.displayName, "zh-CN"),
-          ),
-          roles: [
-            ...new Set(
-              allResults.flatMap((result) => result.filterOptions.roles),
-            ),
-          ].toSorted(),
-        },
+        filterOptions: result.filterOptions,
         range: {
-          ...first.range,
-          endsAt: first.range.endsAt.toISOString(),
-          startsAt: first.range.startsAt.toISOString(),
+          ...result.range,
+          endsAt: result.range.endsAt.toISOString(),
+          startsAt: result.range.startsAt.toISOString(),
         },
         selectedStoreIds: targetStoreIds,
         sort: query.sort,
         status: "ready",
-        stores: orderedStores(allResults),
-        totalCount: events.length,
+        stores: result.stores.map((store) => ({
+          ...store,
+          code: store.code as HeadquartersFixedStoreCode,
+        })),
+        totalCount: result.totalCount,
       } satisfies HeadquartersAuditResponse);
     } catch (error) {
       const mapped = failure(error, requestId, "audit");
@@ -735,34 +725,68 @@ export function registerHeadquartersAuditExportRoutes(
       };
     });
     try {
-      const results = await Promise.all(
-        requests.map((request) =>
-          preview
-            ? services.sandboxDatabase!.prepareManagerExport(request)
-            : services.sandboxDatabase!.createManagerExport({
-                ...request,
-                requestId,
-              }),
-        ),
-      );
-      const combined = combinedExport(results, body);
-      const first = results[0]!;
+      const auditResult =
+        body.dataType === "audits"
+          ? await services.sandboxDatabase.readHeadquartersAudits({
+              contextVersion: auth.session.contextVersion,
+              filters: body.filters,
+              fromBusinessDay: body.fromBusinessDay,
+              personaId: auth.session.personaId,
+              role: "hq",
+              sandboxId: auth.session.sandboxId,
+              selectedStoreIds: storeIds,
+              sort: body.sort,
+              toBusinessDay: body.toBusinessDay,
+            })
+          : null;
+      const results = auditResult
+        ? []
+        : await Promise.all(
+            requests.map((request) =>
+              services.sandboxDatabase!.prepareManagerExport(request),
+            ),
+          );
+      const combined = auditResult
+        ? headquartersAuditExport(auditResult)
+        : combinedExport(results, body);
+      const range = auditResult?.range ?? results[0]!.range;
       if (preview) {
         return context.json({
           columns: combined.columns,
           dataType: body.dataType,
           estimatedRowCount: combined.rows.length,
           range: {
-            ...first.range,
-            endsAt: first.range.endsAt.toISOString(),
-            startsAt: first.range.startsAt.toISOString(),
+            ...range,
+            endsAt: range.endsAt.toISOString(),
+            startsAt: range.startsAt.toISOString(),
           },
           rows: combined.rows,
           status: "ready",
           stores: combined.stores,
         } satisfies HeadquartersExportPreviewResponse);
       }
-      const filename = `jingshu-hq-${body.dataType}-${first.range.fromBusinessDay}-${first.range.toBusinessDay}.csv`;
+      await services.sandboxDatabase.recordHeadquartersExport({
+        contextVersion: auth.session.contextVersion,
+        dataType: body.dataType,
+        filters: body.filters,
+        fromBusinessDay: body.fromBusinessDay,
+        personaId: auth.session.personaId,
+        requestId,
+        role: "hq",
+        sandboxId: auth.session.sandboxId,
+        sort: body.sort,
+        stores: storeIds.map((storeId) => ({
+          rowCount: auditResult
+            ? auditResult.events.filter(
+                (event) => event.store?.storeId === storeId,
+              ).length
+            : (results.find((result) => result.store.storeId === storeId)?.rows
+                .length ?? 0),
+          storeId,
+        })),
+        toBusinessDay: body.toBusinessDay,
+      });
+      const filename = `jingshu-hq-${body.dataType}-${range.fromBusinessDay}-${range.toBusinessDay}.csv`;
       context.header("Content-Type", "text/csv; charset=utf-8");
       context.header(
         "Content-Disposition",

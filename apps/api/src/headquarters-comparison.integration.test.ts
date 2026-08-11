@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type {
-  ManagerAuditEventResponse,
+  HeadquartersAuditResponse as HeadquartersAuditContractResponse,
   ManagerDashboardResponse,
   RoleContextReadyResponse,
 } from "@jingshu/contracts";
@@ -63,6 +63,7 @@ async function createHeadquartersSession() {
 interface HeadquartersComparisonResponse {
   readonly status: "ready";
   readonly stores: ReadonlyArray<{
+    readonly drilldown: ManagerDashboardResponse["drilldown"];
     readonly store: {
       readonly code: string;
       readonly displayName: string;
@@ -74,7 +75,7 @@ interface HeadquartersComparisonResponse {
 
 interface HeadquartersAuditResponse {
   readonly status: "ready";
-  readonly events: ReadonlyArray<ManagerAuditEventResponse>;
+  readonly events: HeadquartersAuditContractResponse["events"];
   readonly stores: ReadonlyArray<{
     readonly code: string;
     readonly displayName: string;
@@ -92,6 +93,45 @@ interface HeadquartersExportPreviewResponse {
 }
 
 describe("headquarters comparison API", () => {
+  it("records multi-store exports atomically when every store is valid", async () => {
+    const world = await database.create({
+      creationKey: crypto.randomUUID(),
+      selectedRole: "hq",
+      visitorKey: `ticket-26-${crypto.randomUUID()}`,
+    });
+    const context = {
+      contextVersion: world.roleContext.contextVersion,
+      personaId: world.roleContext.persona.id,
+      role: "hq" as const,
+      sandboxId: world.sandboxId,
+    };
+    const catalogs = await database.readHeadquartersCatalogs(context);
+
+    await expect(
+      database.recordHeadquartersExport({
+        ...context,
+        dataType: "reservations",
+        filters: {},
+        fromBusinessDay: "2026-08-11",
+        requestId: crypto.randomUUID(),
+        sort: { direction: "asc", field: "businessOccurredAt" },
+        stores: [
+          { rowCount: 1, storeId: catalogs.stores[0]!.storeId },
+          { rowCount: 1, storeId: crypto.randomUUID() },
+        ],
+        toBusinessDay: "2026-08-11",
+      }),
+    ).rejects.toMatchObject({ code: "MANAGER_AUDIT_EXPORT_INVALID" });
+
+    const audits = await database.readHeadquartersAudits({
+      ...context,
+      filters: { action: "export.csv" },
+      selectedStoreIds: catalogs.stores.map((store) => store.storeId),
+      sort: { direction: "asc", field: "recordedAt" },
+    });
+    expect(audits.events).toHaveLength(0);
+  });
+
   it("compares exactly three stores with the same formula as the manager dashboard", async () => {
     const headquarters = await createHeadquartersSession();
     const comparisonResponse = await app.request(
@@ -119,6 +159,22 @@ describe("headquarters comparison API", () => {
               entry.summary.seats.maintenanceMinutes,
       ),
     ).toBe(true);
+
+    const inventoryDrilldownResponse = await app.request(
+      `/api/v1/hq/dashboard?storeId=${comparison.stores[0]!.store.storeId}&from=2026-08-05&to=2026-08-05&drilldown=inventory`,
+      { headers: { Cookie: headquarters.cookie } },
+    );
+    const inventoryDrilldown =
+      (await inventoryDrilldownResponse.json()) as HeadquartersComparisonResponse;
+    expect(inventoryDrilldownResponse.status).toBe(200);
+    expect(inventoryDrilldown.stores[0]!.drilldown).toMatchObject({
+      fromBusinessDay: "2026-08-05",
+      kind: "inventory",
+      toBusinessDay: "2026-08-05",
+    });
+    expect(inventoryDrilldown.stores[0]!.drilldown!.rows).toHaveLength(
+      inventoryDrilldown.stores[0]!.summary.inventory.lowStockCount,
+    );
 
     const switched = await app.request("/api/v1/demo/context/switch", {
       body: JSON.stringify({ targetRole: "manager" }),
@@ -149,6 +205,29 @@ describe("headquarters comparison API", () => {
       (await comparisonResponse.json()) as HeadquartersComparisonResponse;
     const storeIds = comparison.stores.map((entry) => entry.store.storeId);
 
+    const createCatalogEvent = await app.request(
+      "/api/v1/hq/catalogs/commands",
+      {
+        body: JSON.stringify({
+          action: "create-product",
+          availableStoreIds: storeIds,
+          category: "drink",
+          code: "ticket-26-audit-drink",
+          description: "用于验证总部级审计范围的虚构饮品",
+          displayName: "审计验证饮品",
+        }),
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: headquarters.cookie,
+          "Idempotency-Key": crypto.randomUUID(),
+          Origin: publicOrigin,
+          "X-CSRF-Token": headquarters.context.csrfToken,
+        },
+        method: "POST",
+      },
+    );
+    expect(createCatalogEvent.status).toBe(200);
+
     const auditsResponse = await app.request(
       "/api/v1/hq/audits?from=2026-07-29&to=2026-08-11&sort=recordedAt:asc",
       { headers: { Cookie: headquarters.cookie } },
@@ -157,9 +236,13 @@ describe("headquarters comparison API", () => {
     expect(auditsResponse.status).toBe(200);
     expect(audits.stores.map((store) => store.storeId)).toEqual(storeIds);
     expect(audits.events).toHaveLength(audits.totalCount);
-    expect(
-      audits.events.every((event) => storeIds.includes(event.store.storeId)),
-    ).toBe(true);
+    expect(audits.events).toContainEqual(
+      expect.objectContaining({
+        action: "headquarters-catalog.create-product",
+        role: "hq",
+        store: null,
+      }),
+    );
 
     const exportRequest = {
       dataType: "reservations",
@@ -212,6 +295,18 @@ describe("headquarters comparison API", () => {
     ).toHaveLength(1);
     expect(new Set(auditPreview.columns).size).toBe(
       auditPreview.columns.length,
+    );
+    expect(auditPreview.rows).toContainEqual(
+      expect.arrayContaining([
+        "chain",
+        "连锁范围",
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        "沈微",
+        "hq",
+        "headquarters-catalog.create-product",
+      ]),
     );
 
     const download = await app.request("/api/v1/hq/exports", {

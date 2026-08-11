@@ -1155,7 +1155,7 @@ test.beforeEach(async ({ context }) => {
     const selectedStores = headquartersCatalogs.stores.filter(
       (store) => !selectedStoreId || store.storeId === selectedStoreId,
     );
-    const events = selectedStores.flatMap((store, storeIndex) =>
+    const storeEvents = selectedStores.flatMap((store, storeIndex) =>
       manager.events.map((event, eventIndex) => ({
         ...event,
         eventId: `00000000-0000-4000-8000-${String(300 + storeIndex * 10 + eventIndex).padStart(12, "0")}`,
@@ -1163,6 +1163,19 @@ test.beforeEach(async ({ context }) => {
         store,
       })),
     );
+    const events = selectedStoreId
+      ? storeEvents
+      : [
+          ...storeEvents,
+          {
+            ...manager.events[0]!,
+            action: "headquarters-catalog.create-product",
+            eventId: "00000000-0000-4000-8000-000000000399",
+            requestId: "00000000-0000-4000-8000-000000000499",
+            role: "hq" as const,
+            store: null,
+          },
+        ];
     return {
       availableBusinessDays: manager.availableBusinessDays,
       currentTime: manager.currentTime,
@@ -3854,6 +3867,19 @@ test("headquarters compares all three stores, opens read-only evidence, and expo
     }),
   ).toHaveCount(0);
 
+  const anomalyTrigger = pulse.getByRole("button", {
+    name: "查看 棱镜旗舰店 经营异常",
+  });
+  await anomalyTrigger.click();
+  const anomalyDialog = page.getByRole("dialog", { name: "经营异常构成" });
+  await expect(
+    anomalyDialog.getByRole("button", { name: "关闭经营异常构成" }),
+  ).toBeFocused();
+  await expect(anomalyDialog.getByText(/合计 \d+ 项/u)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(anomalyDialog).toHaveCount(0);
+  await expect(anomalyTrigger).toBeFocused();
+
   await page.getByRole("button", { name: "门店比较" }).click();
   await expect(page.getByRole("heading", { name: "门店比较" })).toBeVisible();
   const metric = page.getByRole("combobox", { name: "比较指标" });
@@ -3863,11 +3889,17 @@ test("headquarters compares all three stores, opens read-only evidence, and expo
     .getByRole("combobox", { name: "比较门店" })
     .selectOption({ label: "星桥标准店" });
   await expect(page.getByText(/星桥标准店 2 项/u)).toBeVisible();
-  await page.locator(".hq-metric-summary").getByRole("button").click();
+  const metricTrigger = page.locator(".hq-metric-summary").getByRole("button");
+  await metricTrigger.click();
   const drilldown = page.getByRole("dialog", { name: "未关闭报修构成" });
   await expect(drilldown.getByText("总部只读下钻")).toBeVisible();
   await expect(drilldown.getByRole("button")).toHaveCount(1);
-  await drilldown.getByRole("button", { name: "关闭总部只读下钻" }).click();
+  await expect(
+    drilldown.getByRole("button", { name: "关闭总部只读下钻" }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(drilldown).toHaveCount(0);
+  await expect(metricTrigger).toBeFocused();
 
   await page.getByRole("button", { name: "审计与导出" }).click();
   await expect(page.getByRole("heading", { name: "审计与导出" })).toBeVisible();
@@ -3875,6 +3907,7 @@ test("headquarters compares all three stores, opens read-only evidence, and expo
   await expect(auditTable.getByText("棱镜旗舰店").first()).toBeVisible();
   await expect(auditTable.getByText("星桥标准店").first()).toBeVisible();
   await expect(auditTable.getByText("极点新店").first()).toBeVisible();
+  await expect(auditTable.getByText("连锁范围").first()).toBeVisible();
   await page.getByRole("button", { name: "导出 CSV" }).click();
   const exportDialog = page.getByRole("dialog", { name: "导出三店数据" });
   await expect(exportDialog.getByLabel("导出门店")).toHaveValue(

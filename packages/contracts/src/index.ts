@@ -1863,7 +1863,7 @@ export interface ManagerDashboardDayResponse {
     readonly onTime: number;
   };
   readonly handoverExceptionCount: number;
-  readonly inventory: { readonly lowStockCount: number };
+  readonly inventory: { readonly lowStockCount: number | null };
   readonly key: string;
   readonly orders: ManagerDashboardResponse["summary"]["orders"];
   readonly repairs: ManagerDashboardResponse["summary"]["repairs"];
@@ -2146,7 +2146,18 @@ export interface HeadquartersScopedStoreResponse {
   readonly storeId: string;
 }
 
-export type HeadquartersAuditResponse = Omit<ManagerAuditResponse, "store"> & {
+export type HeadquartersAuditEventResponse = Omit<
+  ManagerAuditEventResponse,
+  "store"
+> & {
+  readonly store: ManagerAuditEventResponse["store"] | null;
+};
+
+export type HeadquartersAuditResponse = Omit<
+  ManagerAuditResponse,
+  "events" | "store"
+> & {
+  readonly events: ReadonlyArray<HeadquartersAuditEventResponse>;
   readonly selectedStoreIds: ReadonlyArray<string>;
   readonly stores: ReadonlyArray<HeadquartersScopedStoreResponse>;
 };
