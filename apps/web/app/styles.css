@@ -11658,6 +11658,191 @@ strong {
   font-size: 8px;
 }
 
+/* Ticket 20 — manager price plans and store products */
+
+.store-config-data-panel {
+  min-width: 0;
+  margin-top: 12px;
+  padding: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.store-config-data-panel > header {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.store-config-data-panel > header > span {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  flex: none;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: #0e2c3a;
+  color: var(--cyan);
+}
+
+.store-config-data-panel > header > span svg {
+  width: 20px;
+  height: 20px;
+}
+
+.store-config-data-panel > header > div {
+  min-width: 0;
+}
+
+.store-config-data-panel > header small {
+  color: var(--cyan);
+  font-size: 7px;
+}
+
+.store-config-data-panel > header h2 {
+  margin-top: 2px;
+  font-size: 14px;
+}
+
+.store-config-data-panel > header p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.store-config-data-panel > header > button {
+  min-height: 37px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 0 12px;
+  border: 1px solid #9bcf3d;
+  border-radius: var(--radius-sm);
+  background: var(--lime);
+  color: #0b190c;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.store-config-data-panel > header > button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.store-config-data-table-wrap {
+  max-height: 510px;
+  margin-top: 12px;
+}
+
+.store-config-seat-table.store-config-data-table {
+  min-width: 1020px;
+  table-layout: auto;
+}
+
+.store-config-seat-table.store-config-data-table th {
+  width: auto;
+  min-width: 96px;
+}
+
+.store-config-seat-table.store-config-data-table th:first-child,
+.store-config-seat-table.store-config-data-table th:nth-child(5) {
+  min-width: 170px;
+}
+
+.store-config-seat-table.store-config-data-table td {
+  height: 64px;
+  display: table-cell;
+  vertical-align: middle;
+}
+
+.store-config-data-table td strong,
+.store-config-data-table td small {
+  display: block;
+}
+
+.store-config-data-table td strong + small {
+  margin-top: 4px;
+}
+
+.store-config-data-table.is-products {
+  min-width: 840px;
+}
+
+.store-config-status.is-scheduled {
+  background: #3b3012;
+  color: var(--amber);
+}
+
+.store-config-status.is-historical,
+.store-config-status.is-archived {
+  background: #202a30;
+  color: var(--muted);
+}
+
+.store-config-review {
+  display: grid;
+  gap: 0;
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid #315166;
+  border-radius: var(--radius-sm);
+  background: #0b2130;
+}
+
+.store-config-review > header {
+  padding: 9px 11px;
+  border-bottom: 1px solid #315166;
+  color: var(--cyan);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.store-config-review > div {
+  min-height: 39px;
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--line);
+  font-size: 8px;
+}
+
+.store-config-review > div span {
+  color: var(--muted);
+}
+
+.store-config-review > div strong {
+  overflow-wrap: anywhere;
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.store-config-review > p {
+  padding: 9px 11px;
+  color: #a9ddc1;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.store-config-review.is-conflict {
+  border-color: #7d3c34;
+  background: #2a1717;
+}
+
+.store-config-review.is-conflict > header,
+.store-config-review.is-conflict > p {
+  color: #ffb3a8;
+}
+
 @media (max-width: 1100px) {
   .store-config-profile-grid {
     grid-template-columns: minmax(0, 1fr) minmax(290px, 0.85fr);

@@ -4,8 +4,10 @@ import {
   Archive,
   CalendarPlus,
   Clock,
+  CurrencyDollar,
   MapPin,
   MagnifyingGlass,
+  Package,
   PencilSimple,
   Plus,
   Seat,
@@ -26,12 +28,16 @@ import type {
 
 type Configuration = ManagerStoreConfigurationResponse;
 type Area = Configuration["areas"][number];
+type StoreProduct = Configuration["products"][number];
 type StoreSeat = Configuration["seats"][number];
 type Command = ManagerStoreConfigurationCommandRequest;
+type ConfigurationTab = "profile" | "seats" | "pricing" | "products";
 
 type DialogState =
   | { readonly kind: "area"; readonly area?: Area }
   | { readonly kind: "hours" }
+  | { readonly kind: "price" }
+  | { readonly kind: "product"; readonly product: StoreProduct }
   | { readonly kind: "seat"; readonly seat?: StoreSeat }
   | { readonly kind: "dependencies"; readonly seat: StoreSeat };
 
@@ -56,6 +62,29 @@ function shanghaiDateTime(value: string) {
     timeStyle: "short",
     timeZone: "Asia/Shanghai",
   }).format(new Date(value));
+}
+
+function formatCents(value: number) {
+  return `¥${(value / 100).toFixed(2)}`;
+}
+
+function productCategoryLabel(
+  value: StoreProduct["headquartersProduct"]["category"],
+) {
+  return {
+    drink: "饮品",
+    meal: "餐食",
+    snack: "零食",
+    supply: "用品",
+  }[value];
+}
+
+function nextHalfHour(value: string) {
+  const halfHourMs = 30 * 60 * 1_000;
+  const time = new Date(value).getTime();
+  return new Date(
+    Math.ceil((time + 1) / halfHourMs) * halfHourMs,
+  ).toISOString();
 }
 
 function shanghaiDateTimeLocal(value: string) {
@@ -1010,6 +1039,451 @@ function DependencyDialog({
   );
 }
 
+function PricePlanDialog({
+  configuration,
+  onClose,
+  onSubmit,
+}: {
+  configuration: Configuration;
+  onClose: () => void;
+  onSubmit: (command: Command, success: string) => Promise<string | null>;
+}) {
+  const baseline =
+    configuration.pricePlans.find((plan) => plan.status === "current") ??
+    configuration.pricePlans[0];
+  const firstArea =
+    configuration.areas.find((area) => area.lifecycleStatus === "active") ??
+    configuration.areas[0];
+  const firstProfile =
+    configuration.machineProfiles.find((profile) => !profile.archived) ??
+    configuration.machineProfiles[0];
+  const [areaId, setAreaId] = useState(
+    baseline?.area.areaId ?? firstArea?.areaId ?? "",
+  );
+  const [machineProfileId, setMachineProfileId] = useState(
+    baseline?.machineProfile.machineProfileId ??
+      firstProfile?.machineProfileId ??
+      "",
+  );
+  const [startsAt, setStartsAt] = useState(baseline?.startsAt ?? "06:00");
+  const [endsAt, setEndsAt] = useState(baseline?.endsAt ?? "06:00");
+  const [endsNextDay, setEndsNextDay] = useState(baseline?.endsNextDay ?? true);
+  const [weekdayCents, setWeekdayCents] = useState(
+    String(baseline?.weekdayHalfHourCents ?? 800),
+  );
+  const [weekendCents, setWeekendCents] = useState(
+    String(baseline?.weekendHalfHourCents ?? 1_000),
+  );
+  const [effectiveFrom, setEffectiveFrom] = useState(
+    shanghaiDateTimeLocal(nextHalfHour(configuration.currentTime)),
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const areaFieldRef = useRef<HTMLSelectElement>(null);
+  const parsedEffectiveFrom = parseShanghaiDateTimeLocal(effectiveFrom);
+  const parsedWeekdayCents = Number(weekdayCents);
+  const parsedWeekendCents = Number(weekendCents);
+  const selectedArea = configuration.areas.find(
+    (area) => area.areaId === areaId,
+  );
+  const selectedProfile = configuration.machineProfiles.find(
+    (profile) => profile.machineProfileId === machineProfileId,
+  );
+  const overlappingPlan = configuration.pricePlans.find(
+    (plan) =>
+      plan.status !== "archived" &&
+      plan.status !== "historical" &&
+      plan.area.areaId === areaId &&
+      plan.machineProfile.machineProfileId === machineProfileId &&
+      plan.startsAt === startsAt &&
+      plan.endsAt === endsAt &&
+      plan.endsNextDay === endsNextDay &&
+      parsedEffectiveFrom &&
+      new Date(plan.effectiveFrom).getTime() >= parsedEffectiveFrom.getTime(),
+  );
+  const rangeValid = endsNextDay ? endsAt <= startsAt : endsAt > startsAt;
+  const valid =
+    Boolean(selectedArea && selectedProfile && parsedEffectiveFrom) &&
+    parsedEffectiveFrom!.getTime() >
+      new Date(configuration.currentTime).getTime() &&
+    parsedEffectiveFrom!.getTime() % (30 * 60 * 1_000) === 0 &&
+    /^\d{2}:(?:00|30)$/u.test(startsAt) &&
+    /^\d{2}:(?:00|30)$/u.test(endsAt) &&
+    rangeValid &&
+    Number.isInteger(parsedWeekdayCents) &&
+    parsedWeekdayCents >= 0 &&
+    Number.isInteger(parsedWeekendCents) &&
+    parsedWeekendCents >= 0 &&
+    !overlappingPlan;
+
+  async function submit() {
+    if (!valid || !parsedEffectiveFrom || submitting) return;
+    setSubmitting(true);
+    setError("");
+    const failure = await onSubmit(
+      {
+        action: "create-price-plan",
+        areaId,
+        effectiveFrom: parsedEffectiveFrom.toISOString(),
+        endsAt,
+        endsNextDay,
+        expectedVersion: configuration.store.version,
+        machineProfileId,
+        startsAt,
+        storeId: configuration.store.storeId,
+        weekdayHalfHourCents: parsedWeekdayCents,
+        weekendHalfHourCents: parsedWeekendCents,
+      },
+      "未来价格版本已由服务端确认创建",
+    );
+    if (failure) setError(failure);
+    else onClose();
+    setSubmitting(false);
+  }
+
+  return (
+    <DialogFrame
+      firstFieldRef={areaFieldRef}
+      icon={<CurrencyDollar />}
+      onClose={onClose}
+      submitting={submitting}
+      title="新建未来价格版本"
+    >
+      <p className="store-config-dialog-notice">
+        只允许创建未来生效版本；同一门店、区域、机型与时段不能出现重叠版本。
+      </p>
+      <div className="store-config-fields">
+        <label>
+          <span>所属门店</span>
+          <input disabled value={configuration.store.displayName} />
+        </label>
+        <label>
+          <span>区域</span>
+          <select
+            aria-label="价格适用区域"
+            onChange={(event) => setAreaId(event.target.value)}
+            ref={areaFieldRef}
+            value={areaId}
+          >
+            {configuration.areas
+              .filter((area) => area.lifecycleStatus === "active")
+              .map((area) => (
+                <option key={area.areaId} value={area.areaId}>
+                  {area.displayName} · {area.code}
+                </option>
+              ))}
+          </select>
+        </label>
+        <label>
+          <span>总部机型</span>
+          <select
+            aria-label="价格适用机型"
+            onChange={(event) => setMachineProfileId(event.target.value)}
+            value={machineProfileId}
+          >
+            {configuration.machineProfiles
+              .filter((profile) => !profile.archived)
+              .map((profile) => (
+                <option
+                  key={profile.machineProfileId}
+                  value={profile.machineProfileId}
+                >
+                  {profile.displayName} · {profile.code}
+                </option>
+              ))}
+          </select>
+        </label>
+        <label>
+          <span>生效时间（上海时区）</span>
+          <input
+            aria-label="价格生效时间"
+            min={shanghaiDateTimeLocal(nextHalfHour(configuration.currentTime))}
+            onChange={(event) => setEffectiveFrom(event.target.value)}
+            step={1_800}
+            type="datetime-local"
+            value={effectiveFrom}
+          />
+        </label>
+        <label>
+          <span>开始时刻</span>
+          <input
+            aria-label="价格时段开始"
+            onChange={(event) => setStartsAt(event.target.value)}
+            step={1_800}
+            type="time"
+            value={startsAt}
+          />
+        </label>
+        <label>
+          <span>结束时刻</span>
+          <input
+            aria-label="价格时段结束"
+            onChange={(event) => setEndsAt(event.target.value)}
+            step={1_800}
+            type="time"
+            value={endsAt}
+          />
+        </label>
+        <label>
+          <span>工作日每半小时（分）</span>
+          <input
+            aria-label="工作日每半小时价格"
+            inputMode="numeric"
+            min={0}
+            onChange={(event) => setWeekdayCents(event.target.value)}
+            type="number"
+            value={weekdayCents}
+          />
+        </label>
+        <label>
+          <span>周末每半小时（分）</span>
+          <input
+            aria-label="周末每半小时价格"
+            inputMode="numeric"
+            min={0}
+            onChange={(event) => setWeekendCents(event.target.value)}
+            type="number"
+            value={weekendCents}
+          />
+        </label>
+        <label className="store-config-check">
+          <input
+            checked={endsNextDay}
+            onChange={(event) => setEndsNextDay(event.target.checked)}
+            type="checkbox"
+          />
+          <span>结束时刻属于次日（06:00 经营日边界）</span>
+        </label>
+      </div>
+      <section
+        className={`store-config-review ${overlappingPlan || !rangeValid ? "is-conflict" : ""}`}
+      >
+        <header>提交前核对</header>
+        <div>
+          <span>匹配范围</span>
+          <strong>
+            {configuration.store.displayName} /{" "}
+            {selectedArea?.displayName ?? "—"} /{" "}
+            {selectedProfile?.displayName ?? "—"}
+          </strong>
+        </div>
+        <div>
+          <span>价格与时段</span>
+          <strong>
+            工作日 {formatCents(parsedWeekdayCents || 0)} · 周末{" "}
+            {formatCents(parsedWeekendCents || 0)} / 半小时；{startsAt}–{endsAt}
+            {endsNextDay ? "（次日）" : ""}
+          </strong>
+        </div>
+        <div>
+          <span>生效与重叠</span>
+          <strong>
+            {parsedEffectiveFrom
+              ? shanghaiDateTime(parsedEffectiveFrom.toISOString())
+              : "时间无效"}
+            ；
+            {overlappingPlan
+              ? `与 v${overlappingPlan.version} 重叠`
+              : "未发现重叠"}
+          </strong>
+        </div>
+        <p>新版本仅影响生效后的新预约，不会改写已有预约价格快照。</p>
+      </section>
+      {error ? (
+        <p className="store-config-form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <footer>
+        <button disabled={submitting} onClick={onClose}>
+          返回
+        </button>
+        <button
+          className="is-primary"
+          disabled={!valid || submitting}
+          onClick={() => void submit()}
+        >
+          {submitting ? "提交中…" : "确认创建版本"}
+        </button>
+      </footer>
+    </DialogFrame>
+  );
+}
+
+function StoreProductDialog({
+  configuration,
+  onClose,
+  onSubmit,
+  product,
+}: {
+  configuration: Configuration;
+  onClose: () => void;
+  onSubmit: (command: Command, success: string) => Promise<string | null>;
+  product: StoreProduct;
+}) {
+  const [listed, setListed] = useState(product.listed);
+  const [unitPriceCents, setUnitPriceCents] = useState(
+    String(product.unitPriceCents),
+  );
+  const [lowStockThreshold, setLowStockThreshold] = useState(
+    String(product.lowStockThreshold),
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const listedFieldRef = useRef<HTMLInputElement>(null);
+  const parsedPrice = Number(unitPriceCents);
+  const parsedThreshold = Number(lowStockThreshold);
+  const valid =
+    !product.archived &&
+    Number.isInteger(parsedPrice) &&
+    parsedPrice >= 0 &&
+    Number.isInteger(parsedThreshold) &&
+    parsedThreshold >= 0;
+
+  async function execute(command: Command, success: string) {
+    setSubmitting(true);
+    setError("");
+    const failure = await onSubmit(command, success);
+    if (failure) setError(failure);
+    else onClose();
+    setSubmitting(false);
+  }
+
+  return (
+    <DialogFrame
+      firstFieldRef={listedFieldRef}
+      icon={<Package />}
+      onClose={onClose}
+      submitting={submitting}
+      title={`门店商品 · ${product.headquartersProduct.displayName}`}
+    >
+      <p className="store-config-dialog-notice">
+        总部商品档案只读；门店只维护上架、整数分价格与库存预警阈值。下架或归档不会改写历史订单。
+      </p>
+      <div className="store-config-fields">
+        <label>
+          <span>总部商品代码</span>
+          <input disabled value={product.headquartersProduct.code} />
+        </label>
+        <label>
+          <span>总部分类</span>
+          <input
+            disabled
+            value={productCategoryLabel(product.headquartersProduct.category)}
+          />
+        </label>
+        <label className="is-wide">
+          <span>总部名称与说明</span>
+          <textarea
+            disabled
+            value={`${product.headquartersProduct.displayName}\n${product.headquartersProduct.description}`}
+          />
+        </label>
+        <label className="store-config-check">
+          <input
+            aria-label="门店上架"
+            checked={listed}
+            disabled={product.archived}
+            onChange={(event) => setListed(event.target.checked)}
+            ref={listedFieldRef}
+            type="checkbox"
+          />
+          <span>在当前门店上架</span>
+        </label>
+        <label>
+          <span>门店售价（分）</span>
+          <input
+            aria-label="门店商品售价"
+            disabled={product.archived}
+            inputMode="numeric"
+            min={0}
+            onChange={(event) => setUnitPriceCents(event.target.value)}
+            type="number"
+            value={unitPriceCents}
+          />
+        </label>
+        <label>
+          <span>低库存预警阈值</span>
+          <input
+            aria-label="低库存预警阈值"
+            disabled={product.archived}
+            inputMode="numeric"
+            min={0}
+            onChange={(event) => setLowStockThreshold(event.target.value)}
+            type="number"
+            value={lowStockThreshold}
+          />
+        </label>
+        <label>
+          <span>在手 / 预留</span>
+          <input
+            disabled
+            value={`${product.onHandQuantity} / ${product.reservedQuantity}`}
+          />
+        </label>
+        <label>
+          <span>可用库存</span>
+          <input disabled value={product.availableQuantity} />
+        </label>
+      </div>
+      {product.businessReferenced ? (
+        <p className="store-config-dependency-summary">
+          <Warning /> 已有订单引用；允许下架或归档配置，历史订单快照保持不变。
+        </p>
+      ) : null}
+      {error ? (
+        <p className="store-config-form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <footer>
+        {!product.archived ? (
+          <button
+            className="is-danger"
+            disabled={submitting}
+            onClick={() =>
+              void execute(
+                {
+                  action: "archive-store-product",
+                  expectedVersion: product.version,
+                  storeId: configuration.store.storeId,
+                  storeProductId: product.storeProductId,
+                },
+                "门店商品配置已归档，历史订单保持不变",
+              )
+            }
+          >
+            归档配置
+          </button>
+        ) : null}
+        <button disabled={submitting} onClick={onClose}>
+          返回
+        </button>
+        <button
+          className="is-primary"
+          disabled={!valid || submitting}
+          onClick={() =>
+            void execute(
+              {
+                action: "update-store-product",
+                expectedVersion: product.version,
+                listed,
+                lowStockThreshold: parsedThreshold,
+                storeId: configuration.store.storeId,
+                storeProductId: product.storeProductId,
+                unitPriceCents: parsedPrice,
+              },
+              "门店商品配置已由服务端确认保存",
+            )
+          }
+        >
+          {submitting ? "提交中…" : "保存门店配置"}
+        </button>
+      </footer>
+    </DialogFrame>
+  );
+}
+
 export function ManagerStoreConfiguration({
   csrfToken,
   onNavigateRepairs,
@@ -1028,13 +1502,15 @@ export function ManagerStoreConfiguration({
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState<"profile" | "seats">("profile");
+  const [tab, setTab] = useState<ConfigurationTab>("profile");
   const [search, setSearch] = useState("");
   const [areaFilter, setAreaFilter] = useState("all");
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const returnFocusRef = useRef<HTMLButtonElement | null>(null);
   const profileTabRef = useRef<HTMLButtonElement>(null);
   const seatsTabRef = useRef<HTMLButtonElement>(null);
+  const pricingTabRef = useRef<HTMLButtonElement>(null);
+  const productsTabRef = useRef<HTMLButtonElement>(null);
   const pendingCommandKeysRef = useRef(new Map<string, string>());
 
   const load = useCallback(async () => {
@@ -1150,10 +1626,27 @@ export function ManagerStoreConfiguration({
       return;
     }
     event.preventDefault();
-    const nextTab =
-      event.key === "ArrowLeft" || event.key === "Home" ? "profile" : "seats";
-    setTab(nextTab);
-    (nextTab === "profile" ? profileTabRef : seatsTabRef).current?.focus();
+    const tabs: ReadonlyArray<{
+      ref: RefObject<HTMLButtonElement | null>;
+      value: ConfigurationTab;
+    }> = [
+      { ref: profileTabRef, value: "profile" },
+      { ref: seatsTabRef, value: "seats" },
+      { ref: pricingTabRef, value: "pricing" },
+      { ref: productsTabRef, value: "products" },
+    ];
+    const currentIndex = tabs.findIndex((item) => item.value === tab);
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? tabs.length - 1
+          : event.key === "ArrowLeft"
+            ? (currentIndex - 1 + tabs.length) % tabs.length
+            : (currentIndex + 1) % tabs.length;
+    const nextTab = tabs[nextIndex]!;
+    setTab(nextTab.value);
+    nextTab.ref.current?.focus();
   }
 
   if (loading && !configuration)
@@ -1231,6 +1724,32 @@ export function ManagerStoreConfiguration({
           tabIndex={tab === "seats" ? 0 : -1}
         >
           区域与座位 <span>{configuration.seats.length}</span>
+        </button>
+        <button
+          aria-controls="store-config-pricing-panel"
+          aria-selected={tab === "pricing"}
+          className={tab === "pricing" ? "is-active" : ""}
+          id="store-config-pricing-tab"
+          onClick={() => setTab("pricing")}
+          onKeyDown={handleTabKeyDown}
+          ref={pricingTabRef}
+          role="tab"
+          tabIndex={tab === "pricing" ? 0 : -1}
+        >
+          价格计划 <span>{configuration.pricePlans.length}</span>
+        </button>
+        <button
+          aria-controls="store-config-products-panel"
+          aria-selected={tab === "products"}
+          className={tab === "products" ? "is-active" : ""}
+          id="store-config-products-tab"
+          onClick={() => setTab("products")}
+          onKeyDown={handleTabKeyDown}
+          ref={productsTabRef}
+          role="tab"
+          tabIndex={tab === "products" ? 0 : -1}
+        >
+          商品上架 <span>{configuration.products.length}</span>
         </button>
       </div>
       {tab === "profile" ? (
@@ -1332,7 +1851,7 @@ export function ManagerStoreConfiguration({
             </div>
           </section>
         </div>
-      ) : (
+      ) : tab === "seats" ? (
         <div
           aria-labelledby="store-config-seats-tab"
           className="store-config-seats-layout"
@@ -1502,6 +2021,209 @@ export function ManagerStoreConfiguration({
             </div>
           </section>
         </div>
+      ) : tab === "pricing" ? (
+        <section
+          aria-labelledby="store-config-pricing-tab"
+          className="store-config-data-panel"
+          id="store-config-pricing-panel"
+          role="tabpanel"
+        >
+          <header>
+            <span>
+              <CurrencyDollar />
+            </span>
+            <div>
+              <small>未来版本 · 整数分 · 06:00 经营日</small>
+              <h2>价格计划</h2>
+              <p>历史版本只读；新版本生效后，已有预约价格快照保持不变。</p>
+            </div>
+            <button
+              className="is-primary"
+              onClick={(event) =>
+                openDialog({ kind: "price" }, event.currentTarget)
+              }
+            >
+              <Plus /> 新建未来版本
+            </button>
+          </header>
+          <div className="store-config-seat-table-wrap store-config-data-table-wrap">
+            <table className="store-config-seat-table store-config-data-table">
+              <thead>
+                <tr>
+                  <th>门店 / 区域</th>
+                  <th>总部机型</th>
+                  <th>适用时段</th>
+                  <th>工作日 / 周末</th>
+                  <th>有效期</th>
+                  <th>版本状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {configuration.pricePlans.map((plan) => (
+                  <tr key={plan.pricePlanId}>
+                    <td>
+                      <strong>{plan.area.displayName}</strong>
+                      <small>
+                        {plan.store.displayName} · {plan.area.code}
+                      </small>
+                    </td>
+                    <td>
+                      <strong>{plan.machineProfile.displayName}</strong>
+                      <small>{plan.machineProfile.code}</small>
+                    </td>
+                    <td>
+                      <strong>
+                        {plan.startsAt}–{plan.endsAt}
+                      </strong>
+                      <small>
+                        {plan.endsNextDay ? "结束于次日" : "当日时段"}
+                      </small>
+                    </td>
+                    <td>
+                      <strong>{formatCents(plan.weekdayHalfHourCents)}</strong>
+                      <small>
+                        {formatCents(plan.weekendHalfHourCents)} / 半小时
+                      </small>
+                    </td>
+                    <td>
+                      <strong>{shanghaiDateTime(plan.effectiveFrom)}</strong>
+                      <small>
+                        {plan.effectiveUntil
+                          ? `至 ${shanghaiDateTime(plan.effectiveUntil)}`
+                          : "持续有效"}
+                      </small>
+                    </td>
+                    <td>
+                      <span className={`store-config-status is-${plan.status}`}>
+                        v{plan.version} ·{" "}
+                        {plan.status === "current"
+                          ? "当前"
+                          : plan.status === "scheduled"
+                            ? "未来"
+                            : plan.status === "historical"
+                              ? "历史"
+                              : "已归档"}
+                      </span>
+                    </td>
+                    <td>
+                      {plan.status === "scheduled" ? (
+                        <button
+                          className="store-config-edit-button"
+                          onClick={() =>
+                            void execute(
+                              {
+                                action: "archive-price-plan",
+                                expectedVersion: plan.configVersion,
+                                pricePlanId: plan.pricePlanId,
+                                storeId: configuration.store.storeId,
+                              },
+                              "未来价格版本已归档",
+                            )
+                          }
+                        >
+                          <Archive /> 归档
+                        </button>
+                      ) : (
+                        <span className="store-config-no-dependency">只读</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : (
+        <section
+          aria-labelledby="store-config-products-tab"
+          className="store-config-data-panel"
+          id="store-config-products-panel"
+          role="tabpanel"
+        >
+          <header>
+            <span>
+              <Package />
+            </span>
+            <div>
+              <small>总部商品只读 · 门店配置可维护</small>
+              <h2>商品上架</h2>
+              <p>只调整本店上架、售价和库存阈值；下架与归档不改写历史订单。</p>
+            </div>
+          </header>
+          <div className="store-config-seat-table-wrap store-config-data-table-wrap">
+            <table className="store-config-seat-table store-config-data-table is-products">
+              <thead>
+                <tr>
+                  <th>总部商品</th>
+                  <th>分类</th>
+                  <th>门店售价</th>
+                  <th>库存</th>
+                  <th>预警阈值</th>
+                  <th>门店状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {configuration.products.map((product) => (
+                  <tr key={product.storeProductId}>
+                    <td>
+                      <strong>{product.headquartersProduct.displayName}</strong>
+                      <small>{product.headquartersProduct.code}</small>
+                    </td>
+                    <td>
+                      {productCategoryLabel(
+                        product.headquartersProduct.category,
+                      )}
+                    </td>
+                    <td>
+                      <strong>{formatCents(product.unitPriceCents)}</strong>
+                      <small>整数分</small>
+                    </td>
+                    <td>
+                      <strong>{product.availableQuantity} 可用</strong>
+                      <small>
+                        {product.onHandQuantity} 在手 ·{" "}
+                        {product.reservedQuantity} 预留
+                      </small>
+                    </td>
+                    <td>
+                      <strong>{product.lowStockThreshold}</strong>
+                      <small>
+                        {product.alerting ? "已触发预警" : "库存正常"}
+                      </small>
+                    </td>
+                    <td>
+                      <span
+                        className={`store-config-status ${product.archived ? "is-archived" : product.listed ? "is-current" : "is-inactive"}`}
+                      >
+                        {product.archived
+                          ? "已归档"
+                          : product.listed
+                            ? "已上架"
+                            : "已下架"}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        aria-label={`配置商品 ${product.headquartersProduct.displayName}`}
+                        className="store-config-edit-button"
+                        onClick={(event) =>
+                          openDialog(
+                            { kind: "product", product },
+                            event.currentTarget,
+                          )
+                        }
+                      >
+                        <PencilSimple /> {product.archived ? "查看" : "配置"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
       {dialog?.kind === "hours" ? (
         <HoursDialog
@@ -1516,6 +2238,21 @@ export function ManagerStoreConfiguration({
           configuration={configuration}
           onClose={closeDialog}
           onSubmit={execute}
+        />
+      ) : null}
+      {dialog?.kind === "price" ? (
+        <PricePlanDialog
+          configuration={configuration}
+          onClose={closeDialog}
+          onSubmit={execute}
+        />
+      ) : null}
+      {dialog?.kind === "product" ? (
+        <StoreProductDialog
+          configuration={configuration}
+          onClose={closeDialog}
+          onSubmit={execute}
+          product={dialog.product}
         />
       ) : null}
       {dialog?.kind === "seat" ? (

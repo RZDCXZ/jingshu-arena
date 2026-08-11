@@ -86,8 +86,8 @@ describe("POST /api/v1/public/sandboxes", () => {
         scope: "浏览三店 · 只管理自己的记录",
       },
       world: {
-        schemaVersion: "18",
-        seedVersion: "2026-08-11.1",
+        schemaVersion: "19",
+        seedVersion: "2026-08-11.2",
         operator: { displayName: "竞枢演示经营方", city: "栖光市" },
         stores: [
           { displayName: "棱镜旗舰店" },
@@ -141,8 +141,8 @@ describe("POST /api/v1/public/sandboxes", () => {
       },
       capabilities: ["customer:manage-own-records"],
       sandbox: {
-        schemaVersion: "18",
-        seedVersion: "2026-08-11.1",
+        schemaVersion: "19",
+        seedVersion: "2026-08-11.2",
         expiresAt: expect.any(String),
       },
       freshness: {

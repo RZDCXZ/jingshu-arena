@@ -1,5 +1,5 @@
-export const PUBLIC_SANDBOX_SCHEMA_VERSION = "18";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-11.1";
+export const PUBLIC_SANDBOX_SCHEMA_VERSION = "19";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-11.2";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -291,6 +291,126 @@ interface PriceReservationWindowInput {
 export interface ReservationPricePreview {
   readonly segments: ReadonlyArray<ReservationPriceSegment>;
   readonly totalCents: number;
+}
+
+export interface PricePlanEffectiveRange {
+  readonly effectiveFrom: Date;
+  readonly effectiveUntil: Date | null;
+}
+
+export interface VersionedPricePlan extends PricePlanEffectiveRange {
+  readonly status: "active" | "archived";
+  readonly version: number;
+}
+
+export function pricePlanEffectiveRangesOverlap(
+  left: PricePlanEffectiveRange,
+  right: PricePlanEffectiveRange,
+): boolean {
+  const leftEnd = left.effectiveUntil?.getTime() ?? Number.POSITIVE_INFINITY;
+  const rightEnd = right.effectiveUntil?.getTime() ?? Number.POSITIVE_INFINITY;
+  return (
+    left.effectiveFrom.getTime() < rightEnd &&
+    right.effectiveFrom.getTime() < leftEnd
+  );
+}
+
+export function selectPricePlanVersion<T extends VersionedPricePlan>(
+  plans: ReadonlyArray<T>,
+  at: Date,
+): T | null {
+  const atTime = at.getTime();
+  return (
+    plans
+      .filter(
+        (plan) =>
+          plan.status === "active" &&
+          plan.effectiveFrom.getTime() <= atTime &&
+          (plan.effectiveUntil === null ||
+            plan.effectiveUntil.getTime() > atTime),
+      )
+      .toSorted(
+        (left, right) =>
+          right.effectiveFrom.getTime() - left.effectiveFrom.getTime() ||
+          right.version - left.version,
+      )[0] ?? null
+  );
+}
+
+interface ExplicitPricePlanWindow {
+  readonly endsAt: string;
+  readonly endsNextDay: boolean;
+  readonly startsAt: string;
+  readonly weekdayHalfHourCents: number;
+  readonly weekendHalfHourCents: number;
+}
+
+function isPriceSegmentInsidePlan(
+  segmentStart: Date,
+  plan: ExplicitPricePlanWindow,
+) {
+  const parts = shanghaiDateParts(segmentStart);
+  const segmentMinutes = parts.hour * 60 + parts.minute;
+  const startsMinutes = clockMinutes(plan.startsAt);
+  const endsMinutes = clockMinutes(plan.endsAt);
+  if (plan.endsNextDay) {
+    return segmentMinutes >= startsMinutes || segmentMinutes < endsMinutes;
+  }
+  return segmentMinutes >= startsMinutes && segmentMinutes < endsMinutes;
+}
+
+export function priceReservationWindowForPlan(input: {
+  readonly endsAt: Date;
+  readonly plan: ExplicitPricePlanWindow;
+  readonly startsAt: Date;
+}): ReservationPricePreview {
+  const timePattern = /^(?:[01]\d|2[0-3]):(?:00|30)$/u;
+  if (
+    !Number.isInteger(input.plan.weekdayHalfHourCents) ||
+    input.plan.weekdayHalfHourCents < 0 ||
+    !Number.isInteger(input.plan.weekendHalfHourCents) ||
+    input.plan.weekendHalfHourCents < 0 ||
+    !timePattern.test(input.plan.startsAt) ||
+    !timePattern.test(input.plan.endsAt) ||
+    input.startsAt.getTime() % HALF_HOUR_MS !== 0 ||
+    input.endsAt.getTime() <= input.startsAt.getTime() ||
+    (input.endsAt.getTime() - input.startsAt.getTime()) % HALF_HOUR_MS !== 0
+  ) {
+    throw new RangeError(
+      "Price-plan windows use aligned half-hours and non-negative integer cents.",
+    );
+  }
+
+  const segments: ReservationPriceSegment[] = [];
+  for (
+    let segmentStart = input.startsAt.getTime();
+    segmentStart < input.endsAt.getTime();
+    segmentStart += HALF_HOUR_MS
+  ) {
+    const startsAt = new Date(segmentStart);
+    if (!isPriceSegmentInsidePlan(startsAt, input.plan)) {
+      throw new RangeError("The reservation extends outside the price plan.");
+    }
+    const businessDay = new Date(`${businessDayKey(startsAt)}T00:00:00.000Z`);
+    const dayOfWeek = businessDay.getUTCDay();
+    const weekend = dayOfWeek === 0 || dayOfWeek === 6;
+    segments.push({
+      amountCents: weekend
+        ? input.plan.weekendHalfHourCents
+        : input.plan.weekdayHalfHourCents,
+      endsAt: new Date(segmentStart + HALF_HOUR_MS),
+      multiplierBasisPoints: 10_000,
+      rule: weekend ? "weekend" : "weekday-base",
+      startsAt,
+    });
+  }
+  return {
+    segments,
+    totalCents: segments.reduce(
+      (total, segment) => total + segment.amountCents,
+      0,
+    ),
+  };
 }
 
 export function priceReservationWindow(

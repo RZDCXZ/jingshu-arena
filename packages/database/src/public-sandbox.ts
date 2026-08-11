@@ -36,6 +36,7 @@ import {
   type CustomerOrderStatus,
   type MachineProfileCode,
   priceReservationWindow,
+  priceReservationWindowForPlan,
   reservationGrowthAward,
   type ReservationPriceRule,
   type ReservationCouponEligibility,
@@ -81,8 +82,11 @@ import {
 const { Pool } = pg;
 
 const SANDBOX_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const HALF_HOUR_MS = 30 * 60 * 1_000;
 const REPAIR_IMAGE_INTENT_LIFETIME_MS = 5 * 60 * 1000;
 const REPAIR_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const clockMinutes = (value: string) =>
+  Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
 const repairImageExtensions: Record<
   RepairImageContentType,
   ReadonlySet<string>
@@ -1096,6 +1100,52 @@ export interface DatabaseManagerStoreConfiguration {
     readonly experienceDescription: string;
     readonly machineProfileId: string;
   }>;
+  readonly pricePlans: ReadonlyArray<{
+    readonly area: {
+      readonly areaId: string;
+      readonly code: string;
+      readonly displayName: string;
+    };
+    readonly effectiveFrom: Date;
+    readonly effectiveUntil: Date | null;
+    readonly endsAt: string;
+    readonly endsNextDay: boolean;
+    readonly machineProfile: {
+      readonly code: MachineProfileCode;
+      readonly displayName: string;
+      readonly machineProfileId: string;
+    };
+    readonly pricePlanId: string;
+    readonly configVersion: number;
+    readonly startsAt: string;
+    readonly status: "archived" | "current" | "historical" | "scheduled";
+    readonly store: { readonly code: string; readonly displayName: string };
+    readonly version: number;
+    readonly weekdayHalfHourCents: number;
+    readonly weekendHalfHourCents: number;
+  }>;
+  readonly products: ReadonlyArray<{
+    readonly alerting: boolean;
+    readonly archived: boolean;
+    readonly availableQuantity: number;
+    readonly businessReferenced: boolean;
+    readonly headquartersProduct: {
+      readonly archived: boolean;
+      readonly category: "drink" | "meal" | "snack" | "supply";
+      readonly code: string;
+      readonly description: string;
+      readonly displayName: string;
+      readonly productId: string;
+    };
+    readonly inventoryItemId: string;
+    readonly listed: boolean;
+    readonly lowStockThreshold: number;
+    readonly onHandQuantity: number;
+    readonly reservedQuantity: number;
+    readonly storeProductId: string;
+    readonly unitPriceCents: number;
+    readonly version: number;
+  }>;
   readonly seats: ReadonlyArray<{
     readonly area: { readonly areaId: string; readonly displayName: string };
     readonly businessReferenced: boolean;
@@ -1166,6 +1216,32 @@ export type ExecuteManagerStoreConfigurationCommandInput =
           readonly lifecycleStatus: "active" | "draft";
           readonly machineProfileId: string;
           readonly sortOrder: number;
+        }
+      | {
+          readonly action: "create-price-plan";
+          readonly areaId: string;
+          readonly effectiveFrom: Date;
+          readonly endsAt: string;
+          readonly endsNextDay: boolean;
+          readonly machineProfileId: string;
+          readonly startsAt: string;
+          readonly weekdayHalfHourCents: number;
+          readonly weekendHalfHourCents: number;
+        }
+      | {
+          readonly action: "archive-price-plan";
+          readonly pricePlanId: string;
+        }
+      | {
+          readonly action: "update-store-product";
+          readonly listed: boolean;
+          readonly lowStockThreshold: number;
+          readonly storeProductId: string;
+          readonly unitPriceCents: number;
+        }
+      | {
+          readonly action: "archive-store-product";
+          readonly storeProductId: string;
         }
       | {
           readonly action: "update-seat";
@@ -2112,6 +2188,12 @@ interface MachineSelectionRow {
   display_name: string;
   experience_description: string;
   id: string;
+  ends_at: string;
+  ends_next_day: boolean;
+  pricing_model: "explicit-half-hour" | "legacy";
+  starts_at: string;
+  weekday_half_hour_cents: number;
+  weekend_half_hour_cents: number;
 }
 
 interface SeatBrowseRow {
@@ -3409,6 +3491,28 @@ function managerStoreConfigurationDenialSummary(
       };
     case "delete-seat":
       return { ...common, seatId: input.seatId };
+    case "create-price-plan":
+      return {
+        ...common,
+        areaId: input.areaId,
+        effectiveFrom: input.effectiveFrom.toISOString(),
+        endsNextDay: input.endsNextDay,
+        machineProfileId: input.machineProfileId,
+        weekdayHalfHourCents: input.weekdayHalfHourCents,
+        weekendHalfHourCents: input.weekendHalfHourCents,
+      };
+    case "archive-price-plan":
+      return { ...common, pricePlanId: input.pricePlanId };
+    case "update-store-product":
+      return {
+        ...common,
+        listed: input.listed,
+        lowStockThreshold: input.lowStockThreshold,
+        storeProductId: input.storeProductId,
+        unitPriceCents: input.unitPriceCents,
+      };
+    case "archive-store-product":
+      return { ...common, storeProductId: input.storeProductId };
   }
 }
 
@@ -6020,16 +6124,24 @@ async function materializePublicSandbox(input: {
         id: randomUUID(),
         machineProfileId: machineProfileIds.get(profile.code),
         storeId: store.id,
+        weekdayHalfHourCents: Math.ceil(
+          store.baseHourlyCents[profile.code] / 2,
+        ),
+        weekendHalfHourCents: Math.floor(
+          (store.baseHourlyCents[profile.code] * 11_500 + 10_000) / 20_000,
+        ),
       }));
   });
   await input.client.query(
     `insert into price_plans (
        id, sandbox_id, store_id, area_id, machine_profile_id, version,
-       base_hourly_cents, effective_from, status
+       base_hourly_cents, weekday_half_hour_cents, weekend_half_hour_cents,
+       effective_from, status
      )
      select * from unnest(
        $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
-       $6::integer[], $7::integer[], $8::timestamptz[], $9::text[]
+       $6::integer[], $7::integer[], $8::integer[], $9::integer[],
+       $10::timestamptz[], $11::text[]
      )`,
     [
       seededPricePlans.map((plan) => plan.id),
@@ -6039,6 +6151,8 @@ async function materializePublicSandbox(input: {
       seededPricePlans.map((plan) => plan.machineProfileId),
       seededPricePlans.map(() => 1),
       seededPricePlans.map((plan) => plan.baseHourlyCents),
+      seededPricePlans.map((plan) => plan.weekdayHalfHourCents),
+      seededPricePlans.map((plan) => plan.weekendHalfHourCents),
       seededPricePlans.map(() => priceEffectiveFrom),
       seededPricePlans.map(() => "active"),
     ],
@@ -12038,6 +12152,80 @@ export function createPublicSandboxDatabase(
             order by case code when 'standard' then 1 when 'competitive' then 2 else 3 end`,
           [input.sandboxId],
         );
+        const pricePlans = await client.query<{
+          area_code: string;
+          area_display_name: string;
+          area_id: string;
+          config_version: number;
+          effective_from: Date;
+          effective_until: Date | null;
+          ends_at: string;
+          ends_next_day: boolean;
+          id: string;
+          machine_code: MachineProfileCode;
+          machine_display_name: string;
+          machine_profile_id: string;
+          starts_at: string;
+          status: "active" | "archived";
+          version: number;
+          weekday_half_hour_cents: number;
+          weekend_half_hour_cents: number;
+        }>(
+          `select plan.id, plan.version, plan.config_version, plan.starts_at, plan.ends_at,
+                  plan.ends_next_day, plan.weekday_half_hour_cents,
+                  plan.weekend_half_hour_cents, plan.effective_from,
+                  plan.effective_until, plan.status,
+                  area.id as area_id, area.code as area_code,
+                  area.display_name as area_display_name,
+                  profile.id as machine_profile_id,
+                  profile.code as machine_code,
+                  profile.display_name as machine_display_name
+             from price_plans plan
+             join store_areas area on area.id = plan.area_id
+             join machine_profiles profile on profile.id = plan.machine_profile_id
+            where plan.sandbox_id = $1 and plan.store_id = $2
+            order by area.sort_order, profile.code, plan.effective_from desc,
+                     plan.version desc`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const products = await client.query<{
+          archived: boolean;
+          available_quantity: number;
+          business_referenced: boolean;
+          config_version: number;
+          inventory_item_id: string;
+          listed: boolean;
+          low_stock_threshold: number;
+          on_hand_quantity: number;
+          product_archived: boolean;
+          product_category: "drink" | "meal" | "snack" | "supply";
+          product_code: string;
+          product_description: string;
+          product_id: string;
+          product_name: string;
+          reserved_quantity: number;
+          store_product_id: string;
+          unit_price_cents: number;
+        }>(
+          `select config.id as store_product_id, config.listed,
+                  config.unit_price_cents, config.archived,
+                  config.config_version, product.id as product_id,
+                  product.code as product_code, product.name as product_name,
+                  product.description as product_description,
+                  product.category as product_category,
+                  product.archived as product_archived,
+                  item.id as inventory_item_id, item.on_hand_quantity,
+                  item.reserved_quantity, item.low_stock_threshold,
+                  item.on_hand_quantity - item.reserved_quantity as available_quantity,
+                  exists(select 1 from order_inventory_reservations reservation
+                    where reservation.inventory_item_id = item.id) as business_referenced
+             from store_products config
+             join products product on product.id = config.product_id
+             join inventory_items item on item.id = config.inventory_item_id
+            where config.sandbox_id = $1 and config.store_id = $2
+            order by product.category, product.name, product.code`,
+          [input.sandboxId, context.actorStoreId],
+        );
         const scheduled = await client.query<{
           closes_at: string;
           closes_next_day: boolean;
@@ -12129,6 +12317,63 @@ export function createPublicSandboxDatabase(
             displayName: profile.display_name,
             experienceDescription: profile.experience_description,
             machineProfileId: profile.id,
+          })),
+          pricePlans: pricePlans.rows.map((plan) => ({
+            area: {
+              areaId: plan.area_id,
+              code: plan.area_code,
+              displayName: plan.area_display_name,
+            },
+            effectiveFrom: plan.effective_from,
+            effectiveUntil: plan.effective_until,
+            endsAt: plan.ends_at.slice(0, 5),
+            endsNextDay: plan.ends_next_day,
+            machineProfile: {
+              code: plan.machine_code,
+              displayName: plan.machine_display_name,
+              machineProfileId: plan.machine_profile_id,
+            },
+            pricePlanId: plan.id,
+            configVersion: plan.config_version,
+            startsAt: plan.starts_at.slice(0, 5),
+            status:
+              plan.status === "archived"
+                ? "archived"
+                : plan.effective_from.getTime() > currentTime.getTime()
+                  ? "scheduled"
+                  : plan.effective_until &&
+                      plan.effective_until.getTime() <= currentTime.getTime()
+                    ? "historical"
+                    : "current",
+            store: {
+              code: storeRow.code,
+              displayName: storeRow.display_name,
+            },
+            version: plan.version,
+            weekdayHalfHourCents: plan.weekday_half_hour_cents,
+            weekendHalfHourCents: plan.weekend_half_hour_cents,
+          })),
+          products: products.rows.map((product) => ({
+            alerting: product.available_quantity <= product.low_stock_threshold,
+            archived: product.archived,
+            availableQuantity: product.available_quantity,
+            businessReferenced: product.business_referenced,
+            headquartersProduct: {
+              archived: product.product_archived,
+              category: product.product_category,
+              code: product.product_code,
+              description: product.product_description,
+              displayName: product.product_name,
+              productId: product.product_id,
+            },
+            inventoryItemId: product.inventory_item_id,
+            listed: product.listed,
+            lowStockThreshold: product.low_stock_threshold,
+            onHandQuantity: product.on_hand_quantity,
+            reservedQuantity: product.reserved_quantity,
+            storeProductId: product.store_product_id,
+            unitPriceCents: product.unit_price_cents,
+            version: product.config_version,
           })),
           seats: seats.rows.map((seat) => ({
             area: {
@@ -12236,6 +12481,44 @@ export function createPublicSandboxDatabase(
                 machineProfileId: input.machineProfileId,
                 sortOrder: input.sortOrder,
                 storeId: input.storeId,
+              };
+            case "create-price-plan":
+              return {
+                action: input.action,
+                areaId: input.areaId,
+                effectiveFrom: input.effectiveFrom.toISOString(),
+                endsAt: input.endsAt,
+                endsNextDay: input.endsNextDay,
+                expectedVersion: input.expectedVersion,
+                machineProfileId: input.machineProfileId,
+                startsAt: input.startsAt,
+                storeId: input.storeId,
+                weekdayHalfHourCents: input.weekdayHalfHourCents,
+                weekendHalfHourCents: input.weekendHalfHourCents,
+              };
+            case "archive-price-plan":
+              return {
+                action: input.action,
+                expectedVersion: input.expectedVersion,
+                pricePlanId: input.pricePlanId,
+                storeId: input.storeId,
+              };
+            case "update-store-product":
+              return {
+                action: input.action,
+                expectedVersion: input.expectedVersion,
+                listed: input.listed,
+                lowStockThreshold: input.lowStockThreshold,
+                storeId: input.storeId,
+                storeProductId: input.storeProductId,
+                unitPriceCents: input.unitPriceCents,
+              };
+            case "archive-store-product":
+              return {
+                action: input.action,
+                expectedVersion: input.expectedVersion,
+                storeId: input.storeId,
+                storeProductId: input.storeProductId,
               };
             case "update-seat":
               return {
@@ -13038,6 +13321,410 @@ export function createPublicSandboxDatabase(
             version: storeVersion,
           });
         }
+        if (input.action === "create-price-plan") {
+          const timePattern = /^(?:[01]\d|2[0-3]):(?:00|30)$/u;
+          const startsMinutes = clockMinutes(input.startsAt);
+          const endsMinutes = clockMinutes(input.endsAt);
+          const timeRangeValid = input.endsNextDay
+            ? endsMinutes <= startsMinutes
+            : endsMinutes > startsMinutes;
+          const pricePlanValid =
+            timePattern.test(input.startsAt) &&
+            timePattern.test(input.endsAt) &&
+            timeRangeValid &&
+            Number.isInteger(input.weekdayHalfHourCents) &&
+            input.weekdayHalfHourCents >= 0 &&
+            Number.isInteger(input.weekendHalfHourCents) &&
+            input.weekendHalfHourCents >= 0 &&
+            input.effectiveFrom.getTime() > currentTime.getTime() &&
+            input.effectiveFrom.getTime() % HALF_HOUR_MS === 0;
+          if (!pricePlanValid) {
+            throw new ManagerStoreConfigurationConflictError(
+              "invalid-price-plan",
+            );
+          }
+          if (commandStore.rows[0].config_version !== input.expectedVersion) {
+            throw new ManagerStoreConfigurationConflictError(
+              "version-conflict",
+            );
+          }
+          const scope = await client.query<{
+            area_exists: boolean;
+            profile_exists: boolean;
+          }>(
+            `select
+               exists(select 1 from store_areas
+                 where sandbox_id = $1 and store_id = $2 and id = $3
+                   and lifecycle_status = 'active') as area_exists,
+               exists(select 1 from machine_profiles
+                 where sandbox_id = $1 and id = $4 and archived = false)
+                 as profile_exists`,
+            [
+              input.sandboxId,
+              input.storeId,
+              input.areaId,
+              input.machineProfileId,
+            ],
+          );
+          if (!scope.rows[0]?.area_exists) {
+            throw new ManagerStoreConfigurationConflictError("area-not-found");
+          }
+          if (!scope.rows[0]?.profile_exists) {
+            throw new ManagerStoreConfigurationConflictError(
+              "machine-profile-not-found",
+            );
+          }
+          const plans = await client.query<{
+            effective_from: Date;
+            effective_until: Date | null;
+            id: string;
+            version: number;
+          }>(
+            `select id, version, effective_from, effective_until
+               from price_plans
+              where sandbox_id = $1 and store_id = $2 and area_id = $3
+                and machine_profile_id = $4 and starts_at = $5
+                and ends_at = $6 and ends_next_day = $7
+                and status = 'active'
+              order by effective_from for update`,
+            [
+              input.sandboxId,
+              input.storeId,
+              input.areaId,
+              input.machineProfileId,
+              input.startsAt,
+              input.endsAt,
+              input.endsNextDay,
+            ],
+          );
+          if (
+            plans.rows.some(
+              (plan) =>
+                plan.effective_from.getTime() >= input.effectiveFrom.getTime(),
+            )
+          ) {
+            throw new ManagerStoreConfigurationConflictError(
+              "price-plan-overlap",
+            );
+          }
+          const predecessor = plans.rows.at(-1) ?? null;
+          if (
+            predecessor &&
+            (predecessor.effective_until === null ||
+              predecessor.effective_until.getTime() >
+                input.effectiveFrom.getTime())
+          ) {
+            await client.query(
+              `update price_plans set effective_until = $3
+                where sandbox_id = $1 and id = $2`,
+              [input.sandboxId, predecessor.id, input.effectiveFrom],
+            );
+          }
+          const versionResult = await client.query<{ version: number }>(
+            `select coalesce(max(version), 0)::integer + 1 as version
+               from price_plans
+              where sandbox_id = $1 and store_id = $2 and area_id = $3
+                and machine_profile_id = $4`,
+            [
+              input.sandboxId,
+              input.storeId,
+              input.areaId,
+              input.machineProfileId,
+            ],
+          );
+          const pricePlanId = randomUUID();
+          const version = versionResult.rows[0]!.version;
+          await client.query(
+            `insert into price_plans (
+               id, sandbox_id, store_id, area_id, machine_profile_id,
+               version, base_hourly_cents, starts_at, ends_at,
+               ends_next_day, weekday_half_hour_cents,
+               weekend_half_hour_cents, pricing_model, effective_from, status
+             ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+               $12, 'explicit-half-hour', $13, 'active')`,
+            [
+              pricePlanId,
+              input.sandboxId,
+              input.storeId,
+              input.areaId,
+              input.machineProfileId,
+              version,
+              input.weekdayHalfHourCents * 2,
+              input.startsAt,
+              input.endsAt,
+              input.endsNextDay,
+              input.weekdayHalfHourCents,
+              input.weekendHalfHourCents,
+              input.effectiveFrom,
+            ],
+          );
+          const updatedStore = await client.query<{ config_version: number }>(
+            `update stores set config_version = config_version + 1
+              where sandbox_id = $1 and id = $2 returning config_version`,
+            [input.sandboxId, input.storeId],
+          );
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'manager', 'price-plan.create-version',
+               'price_plan', $5, 'allowed', null, $6, $7::jsonb, $8::jsonb,
+               $9, $10)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.storeId,
+              input.personaId,
+              pricePlanId,
+              input.requestId,
+              JSON.stringify(
+                predecessor
+                  ? {
+                      predecessorEffectiveUntil: predecessor.effective_until,
+                      predecessorId: predecessor.id,
+                    }
+                  : null,
+              ),
+              JSON.stringify(commandPayload),
+              currentTime,
+              wallTime,
+            ],
+          );
+          return persistCommand({
+            action: input.action,
+            objectId: pricePlanId,
+            replayed: false,
+            version: updatedStore.rows[0]!.config_version,
+          });
+        }
+        if (input.action === "archive-price-plan") {
+          const plan = await client.query<{
+            area_id: string;
+            config_version: number;
+            effective_from: Date;
+            effective_until: Date | null;
+            ends_at: string;
+            ends_next_day: boolean;
+            machine_profile_id: string;
+            starts_at: string;
+            status: "active" | "archived";
+          }>(
+            `select area_id, machine_profile_id, starts_at, ends_at,
+                    ends_next_day, effective_from, effective_until, status,
+                    config_version
+               from price_plans
+              where sandbox_id = $1 and store_id = $2 and id = $3
+              for update`,
+            [input.sandboxId, input.storeId, input.pricePlanId],
+          );
+          const planRow = plan.rows[0];
+          if (!planRow) {
+            throw new ManagerStoreConfigurationConflictError(
+              "price-plan-not-found",
+            );
+          }
+          if (planRow.config_version !== input.expectedVersion) {
+            throw new ManagerStoreConfigurationConflictError(
+              "version-conflict",
+            );
+          }
+          const activeNow =
+            planRow.status === "active" &&
+            planRow.effective_from.getTime() <= currentTime.getTime() &&
+            (planRow.effective_until === null ||
+              planRow.effective_until.getTime() > currentTime.getTime());
+          if (activeNow) {
+            throw new ManagerStoreConfigurationConflictError(
+              "price-plan-not-archivable",
+            );
+          }
+          if (planRow.status === "archived") {
+            throw new ManagerStoreConfigurationConflictError(
+              "price-plan-not-archivable",
+            );
+          }
+          if (planRow.effective_from.getTime() > currentTime.getTime()) {
+            await client.query(
+              `update price_plans set effective_until = $9
+                where sandbox_id = $1 and store_id = $2 and area_id = $3
+                  and machine_profile_id = $4 and starts_at = $5
+                  and ends_at = $6 and ends_next_day = $7
+                  and effective_until = $8 and status = 'active'`,
+              [
+                input.sandboxId,
+                input.storeId,
+                planRow.area_id,
+                planRow.machine_profile_id,
+                planRow.starts_at,
+                planRow.ends_at,
+                planRow.ends_next_day,
+                planRow.effective_from,
+                planRow.effective_until,
+              ],
+            );
+          }
+          const archived = await client.query<{ config_version: number }>(
+            `update price_plans set status = 'archived',
+                config_version = config_version + 1
+              where sandbox_id = $1 and id = $2 returning config_version`,
+            [input.sandboxId, input.pricePlanId],
+          );
+          await client.query(
+            `update stores set config_version = config_version + 1
+              where sandbox_id = $1 and id = $2`,
+            [input.sandboxId, input.storeId],
+          );
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'manager', 'price-plan.archive',
+               'price_plan', $5, 'allowed', null, $6, $7::jsonb, $8::jsonb,
+               $9, $10)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.storeId,
+              input.personaId,
+              input.pricePlanId,
+              input.requestId,
+              JSON.stringify(planRow),
+              JSON.stringify({ status: "archived" }),
+              currentTime,
+              wallTime,
+            ],
+          );
+          return persistCommand({
+            action: input.action,
+            objectId: input.pricePlanId,
+            replayed: false,
+            version: archived.rows[0]!.config_version,
+          });
+        }
+        if (
+          input.action === "update-store-product" ||
+          input.action === "archive-store-product"
+        ) {
+          const product = await client.query<{
+            archived: boolean;
+            config_version: number;
+            inventory_item_id: string;
+            listed: boolean;
+            low_stock_threshold: number;
+            unit_price_cents: number;
+          }>(
+            `select config.archived, config.config_version,
+                    config.inventory_item_id, config.listed,
+                    config.unit_price_cents, item.low_stock_threshold
+               from store_products config
+               join inventory_items item on item.id = config.inventory_item_id
+              where config.sandbox_id = $1 and config.store_id = $2
+                and config.id = $3
+              for update of config, item`,
+            [input.sandboxId, input.storeId, input.storeProductId],
+          );
+          const productRow = product.rows[0];
+          if (!productRow) {
+            throw new ManagerStoreConfigurationConflictError(
+              "store-product-not-found",
+            );
+          }
+          if (productRow.config_version !== input.expectedVersion) {
+            throw new ManagerStoreConfigurationConflictError(
+              "version-conflict",
+            );
+          }
+          if (productRow.archived) {
+            throw new ManagerStoreConfigurationConflictError(
+              "store-product-archived",
+            );
+          }
+          if (input.action === "update-store-product") {
+            if (
+              !Number.isInteger(input.unitPriceCents) ||
+              input.unitPriceCents < 0 ||
+              !Number.isInteger(input.lowStockThreshold) ||
+              input.lowStockThreshold < 0
+            ) {
+              throw new ManagerStoreConfigurationConflictError(
+                "invalid-store-product",
+              );
+            }
+            await client.query(
+              `update inventory_items set low_stock_threshold = $3
+                where sandbox_id = $1 and id = $2`,
+              [
+                input.sandboxId,
+                productRow.inventory_item_id,
+                input.lowStockThreshold,
+              ],
+            );
+            await client.query(
+              `update store_products set listed = $3, unit_price_cents = $4,
+                  config_version = config_version + 1
+                where sandbox_id = $1 and id = $2`,
+              [
+                input.sandboxId,
+                input.storeProductId,
+                input.listed,
+                input.unitPriceCents,
+              ],
+            );
+          } else {
+            await client.query(
+              `update store_products set listed = false, archived = true,
+                  config_version = config_version + 1
+                where sandbox_id = $1 and id = $2`,
+              [input.sandboxId, input.storeProductId],
+            );
+          }
+          const confirmedProduct = await client.query<{
+            archived: boolean;
+            config_version: number;
+            listed: boolean;
+            unit_price_cents: number;
+          }>(
+            `select archived, config_version, listed, unit_price_cents
+               from store_products where sandbox_id = $1 and id = $2`,
+            [input.sandboxId, input.storeProductId],
+          );
+          await client.query(
+            `update stores set config_version = config_version + 1
+              where sandbox_id = $1 and id = $2`,
+            [input.sandboxId, input.storeId],
+          );
+          await client.query(
+            `insert into audit_events (
+               id, sandbox_id, store_id, persona_id, role, action,
+               object_type, object_id, result, reason, request_id,
+               before_data, after_data, business_occurred_at, recorded_at
+             ) values ($1, $2, $3, $4, 'manager', $5, 'store_product', $6,
+               'allowed', null, $7, $8::jsonb, $9::jsonb, $10, $11)`,
+            [
+              randomUUID(),
+              input.sandboxId,
+              input.storeId,
+              input.personaId,
+              input.action === "update-store-product"
+                ? "store-product.update"
+                : "store-product.archive",
+              input.storeProductId,
+              input.requestId,
+              JSON.stringify(productRow),
+              JSON.stringify(commandPayload),
+              currentTime,
+              wallTime,
+            ],
+          );
+          return persistCommand({
+            action: input.action,
+            objectId: input.storeProductId,
+            replayed: false,
+            version: confirmedProduct.rows[0]!.config_version,
+          });
+        }
         if (input.action === "schedule-business-hours") {
           const timePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/u;
           const minuteOfDay = (value: string) =>
@@ -13280,6 +13967,19 @@ export function createPublicSandboxDatabase(
               case "update-seat":
               case "delete-seat":
                 return { objectId: input.seatId, objectType: "seat" };
+              case "create-price-plan":
+                return { objectId: null, objectType: "price_plan" };
+              case "archive-price-plan":
+                return {
+                  objectId: input.pricePlanId,
+                  objectType: "price_plan",
+                };
+              case "update-store-product":
+              case "archive-store-product":
+                return {
+                  objectId: input.storeProductId,
+                  objectType: "store_product",
+                };
             }
           })();
           const serializedDeniedPayload = JSON.stringify(
@@ -13951,7 +14651,10 @@ export function createPublicSandboxDatabase(
         }
         const machineResult = await client.query<MachineSelectionRow>(
           `select profile.id, profile.code, profile.display_name,
-                  profile.experience_description, plan.base_hourly_cents
+                  profile.experience_description, plan.base_hourly_cents,
+                  plan.starts_at, plan.ends_at, plan.ends_next_day,
+                  plan.weekday_half_hour_cents,
+                  plan.weekend_half_hour_cents, plan.pricing_model
              from machine_profiles profile
              join price_plans plan on plan.machine_profile_id = profile.id
             where profile.sandbox_id = $1 and profile.code = $2
@@ -13959,6 +14662,15 @@ export function createPublicSandboxDatabase(
               and plan.area_id = $4 and plan.status = 'active'
               and plan.effective_from <= $5
               and (plan.effective_until is null or plan.effective_until > $5)
+              and (
+                (plan.ends_next_day and (
+                  ($5 at time zone 'Asia/Shanghai')::time >= plan.starts_at
+                  or ($5 at time zone 'Asia/Shanghai')::time < plan.ends_at
+                ))
+                or (not plan.ends_next_day
+                  and ($5 at time zone 'Asia/Shanghai')::time >= plan.starts_at
+                  and ($5 at time zone 'Asia/Shanghai')::time < plan.ends_at)
+              )
             order by plan.version desc limit 1`,
           [
             input.sandboxId,
@@ -14021,11 +14733,24 @@ export function createPublicSandboxDatabase(
           throw new CustomerReservationCreateConflictError("customer-conflict");
         }
 
-        const price = priceReservationWindow({
-          baseHourlyCents: machine.base_hourly_cents,
-          endsAt: window.endsAt,
-          startsAt: window.startsAt,
-        });
+        const price =
+          machine.pricing_model === "explicit-half-hour"
+            ? priceReservationWindowForPlan({
+                endsAt: window.endsAt,
+                plan: {
+                  endsAt: machine.ends_at.slice(0, 5),
+                  endsNextDay: machine.ends_next_day,
+                  startsAt: machine.starts_at.slice(0, 5),
+                  weekdayHalfHourCents: machine.weekday_half_hour_cents,
+                  weekendHalfHourCents: machine.weekend_half_hour_cents,
+                },
+                startsAt: window.startsAt,
+              })
+            : priceReservationWindow({
+                baseHourlyCents: machine.base_hourly_cents,
+                endsAt: window.endsAt,
+                startsAt: window.startsAt,
+              });
         let selectedCoupon: ExperienceCouponRow | null = null;
         let couponEligibility: ReservationCouponEligibility | null = null;
         if (input.couponId) {
@@ -14242,7 +14967,8 @@ export function createPublicSandboxDatabase(
              join products product on product.id = config.product_id
              join inventory_items item on item.id = config.inventory_item_id
             where config.sandbox_id = $1 and config.store_id = $2
-              and config.listed = true and product.archived = false
+              and config.listed = true and config.archived = false
+              and product.archived = false
               and item.kind = 'product'`,
           [input.sandboxId, reservation.store_id],
         );
@@ -14391,7 +15117,8 @@ export function createPublicSandboxDatabase(
              join products product on product.id = config.product_id
              join inventory_items item on item.id = config.inventory_item_id
             where config.sandbox_id = $1 and config.store_id = $2
-              and config.listed = true and product.archived = false
+              and config.listed = true and config.archived = false
+              and product.archived = false
               and item.kind = 'product' and product.id = any($3::uuid[])
             order by item.id
             for update of item`,
@@ -15788,6 +16515,7 @@ export function createPublicSandboxDatabase(
           input,
           wallTime,
         );
+        const currentTime = businessTimeForSandbox(sandbox, wallTime);
         const operator = await client.query<{ city: string }>(
           "select city from operators where sandbox_id = $1",
           [input.sandboxId],
@@ -15819,14 +16547,16 @@ export function createPublicSandboxDatabase(
              from seats seat
              join machine_profiles profile on profile.id = seat.machine_profile_id
              join price_plans plan
-               on plan.store_id = seat.store_id
+              on plan.store_id = seat.store_id
               and plan.machine_profile_id = seat.machine_profile_id
               and plan.status = 'active'
+              and plan.effective_from <= $2
+              and (plan.effective_until is null or plan.effective_until > $2)
             where seat.sandbox_id = $1 and profile.archived = false
               and seat.lifecycle_status = 'active'
             group by seat.store_id, profile.code, profile.display_name,
                      profile.experience_description`,
-          [input.sandboxId],
+          [input.sandboxId, currentTime],
         );
         const storeOrder = new Map(
           storeSeeds.map((store, index) => [store.code, index]),
@@ -15846,7 +16576,6 @@ export function createPublicSandboxDatabase(
         if (!city) {
           throw new Error("The customer store catalog has no operator city.");
         }
-        const currentTime = businessTimeForSandbox(sandbox, wallTime);
         const catalogStores: Array<
           DatabaseCustomerStoreCatalog["stores"][number]
         > = [];
@@ -15982,7 +16711,10 @@ export function createPublicSandboxDatabase(
         }
         const machineResult = await client.query<MachineSelectionRow>(
           `select profile.id, profile.code, profile.display_name,
-                  profile.experience_description, plan.base_hourly_cents
+                  profile.experience_description, plan.base_hourly_cents,
+                  plan.starts_at, plan.ends_at, plan.ends_next_day,
+                  plan.weekday_half_hour_cents,
+                  plan.weekend_half_hour_cents, plan.pricing_model
              from machine_profiles profile
              join price_plans plan on plan.machine_profile_id = profile.id
             where profile.sandbox_id = $1 and profile.code = $2
@@ -15990,6 +16722,15 @@ export function createPublicSandboxDatabase(
               and plan.area_id = $4 and plan.status = 'active'
               and plan.effective_from <= $5
               and (plan.effective_until is null or plan.effective_until > $5)
+              and (
+                (plan.ends_next_day and (
+                  ($5 at time zone 'Asia/Shanghai')::time >= plan.starts_at
+                  or ($5 at time zone 'Asia/Shanghai')::time < plan.ends_at
+                ))
+                or (not plan.ends_next_day
+                  and ($5 at time zone 'Asia/Shanghai')::time >= plan.starts_at
+                  and ($5 at time zone 'Asia/Shanghai')::time < plan.ends_at)
+              )
             order by plan.version desc limit 1`,
           [
             input.sandboxId,
@@ -16047,11 +16788,24 @@ export function createPublicSandboxDatabase(
           reservations.push(reservation);
           reservationsBySeat.set(reservation.seat_id, reservations);
         }
-        const price = priceReservationWindow({
-          baseHourlyCents: machine.base_hourly_cents,
-          endsAt: window.endsAt,
-          startsAt: window.startsAt,
-        });
+        const price =
+          machine.pricing_model === "explicit-half-hour"
+            ? priceReservationWindowForPlan({
+                endsAt: window.endsAt,
+                plan: {
+                  endsAt: machine.ends_at.slice(0, 5),
+                  endsNextDay: machine.ends_next_day,
+                  startsAt: machine.starts_at.slice(0, 5),
+                  weekdayHalfHourCents: machine.weekday_half_hour_cents,
+                  weekendHalfHourCents: machine.weekend_half_hour_cents,
+                },
+                startsAt: window.startsAt,
+              })
+            : priceReservationWindow({
+                baseHourlyCents: machine.base_hourly_cents,
+                endsAt: window.endsAt,
+                startsAt: window.startsAt,
+              });
         const couponResult = await client.query<ExperienceCouponRow>(
           `select coupon.id, coupon.code, coupon.display_name,
                   coupon.business_kind, coupon.discount_cents,

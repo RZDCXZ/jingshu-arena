@@ -71,6 +71,183 @@ describe("manager store configuration", () => {
       display: "24 小时",
       isOpen24Hours: true,
     });
+    expect(configuration.pricePlans.length).toBeGreaterThan(0);
+    expect(configuration.pricePlans[0]).toMatchObject({
+      store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+      weekdayHalfHourCents: expect.any(Number),
+      weekendHalfHourCents: expect.any(Number),
+    });
+    expect(configuration.products).toHaveLength(12);
+    expect(configuration.products[0]).toMatchObject({
+      availableQuantity: expect.any(Number),
+      headquartersProduct: {
+        archived: false,
+        displayName: expect.any(String),
+      },
+      lowStockThreshold: expect.any(Number),
+      unitPriceCents: expect.any(Number),
+    });
+  });
+
+  it("creates a future price version, closes the previous range, rejects overlap, and selects the new version", async () => {
+    const context = await createManagerContext();
+    const before = await database.readManagerStoreConfiguration(context);
+    const existing = before.pricePlans.find(
+      (plan) =>
+        plan.area.code === "competitive-a" &&
+        plan.machineProfile.code === "competitive",
+    )!;
+    const effectiveFrom = new Date("2026-08-10T12:30:00.000Z");
+    const idempotencyKey = randomUUID();
+    const create = () =>
+      database.executeManagerStoreConfigurationCommand({
+        ...context,
+        action: "create-price-plan" as const,
+        areaId: existing.area.areaId,
+        effectiveFrom,
+        endsAt: existing.endsAt,
+        endsNextDay: existing.endsNextDay,
+        expectedVersion: before.store.version,
+        idempotencyKey,
+        machineProfileId: existing.machineProfile.machineProfileId,
+        requestId: randomUUID(),
+        startsAt: existing.startsAt,
+        storeId: before.store.storeId,
+        weekdayHalfHourCents: 975,
+        weekendHalfHourCents: 1_175,
+      });
+
+    await expect(create()).resolves.toMatchObject({
+      action: "create-price-plan",
+      replayed: false,
+    });
+    await expect(create()).resolves.toMatchObject({
+      action: "create-price-plan",
+      replayed: true,
+    });
+    const confirmed = await database.readManagerStoreConfiguration(context);
+    const created = confirmed.pricePlans.find(
+      (plan) =>
+        plan.area.areaId === existing.area.areaId &&
+        plan.machineProfile.machineProfileId ===
+          existing.machineProfile.machineProfileId &&
+        plan.version === existing.version + 1,
+    )!;
+    expect(created).toMatchObject({
+      effectiveFrom,
+      effectiveUntil: null,
+      status: "scheduled",
+      weekdayHalfHourCents: 975,
+      weekendHalfHourCents: 1_175,
+    });
+    expect(
+      confirmed.pricePlans.find(
+        (plan) => plan.pricePlanId === existing.pricePlanId,
+      )?.effectiveUntil,
+    ).toEqual(effectiveFrom);
+
+    await expect(
+      database.executeManagerStoreConfigurationCommand({
+        ...context,
+        action: "create-price-plan",
+        areaId: existing.area.areaId,
+        effectiveFrom,
+        endsAt: existing.endsAt,
+        endsNextDay: existing.endsNextDay,
+        expectedVersion: confirmed.store.version,
+        idempotencyKey: randomUUID(),
+        machineProfileId: existing.machineProfile.machineProfileId,
+        requestId: randomUUID(),
+        startsAt: existing.startsAt,
+        storeId: before.store.storeId,
+        weekdayHalfHourCents: 1_000,
+        weekendHalfHourCents: 1_200,
+      }),
+    ).rejects.toMatchObject({ reason: "price-plan-overlap" });
+
+    const customerRole = await database.switchRoleContext({
+      ...context,
+      requestId: randomUUID(),
+      targetRole: "customer",
+    });
+    const availability = await database.readCustomerSeatAvailability({
+      areaCode: existing.area.code,
+      contextVersion: customerRole.contextVersion,
+      durationHours: 1,
+      machineProfileCode: existing.machineProfile.code,
+      mode: "future",
+      personaId: customerRole.persona.id,
+      requestedStartsAt: effectiveFrom,
+      role: "customer",
+      sandboxId: context.sandboxId,
+      storeCode: "prism-flagship",
+    });
+    expect(
+      availability.price.segments.map((segment) => segment.amountCents),
+    ).toEqual([975, 975]);
+  });
+
+  it("updates and archives a store product without changing historical order snapshots", async () => {
+    const context = await createManagerContext();
+    const before = await database.readManagerStoreConfiguration(context);
+    const product = before.products.find((candidate) => candidate.listed)!;
+    const snapshotBefore = await sql.query<{ order_snapshot: unknown }>(
+      `select order_snapshot from customer_orders
+        where sandbox_id = $1 and store_id = $2
+        order by id limit 1`,
+      [context.sandboxId, before.store.storeId],
+    );
+    const idempotencyKey = randomUUID();
+    const update = () =>
+      database.executeManagerStoreConfigurationCommand({
+        ...context,
+        action: "update-store-product" as const,
+        expectedVersion: product.version,
+        idempotencyKey,
+        listed: false,
+        lowStockThreshold: product.lowStockThreshold + 2,
+        requestId: randomUUID(),
+        storeId: before.store.storeId,
+        storeProductId: product.storeProductId,
+        unitPriceCents: product.unitPriceCents + 125,
+      });
+    await expect(update()).resolves.toMatchObject({
+      action: "update-store-product",
+      replayed: false,
+    });
+    await expect(update()).resolves.toMatchObject({ replayed: true });
+
+    const updated = await database.readManagerStoreConfiguration(context);
+    const confirmedProduct = updated.products.find(
+      (candidate) => candidate.storeProductId === product.storeProductId,
+    )!;
+    expect(confirmedProduct).toMatchObject({
+      listed: false,
+      lowStockThreshold: product.lowStockThreshold + 2,
+      unitPriceCents: product.unitPriceCents + 125,
+    });
+    await database.executeManagerStoreConfigurationCommand({
+      ...context,
+      action: "archive-store-product",
+      expectedVersion: confirmedProduct.version,
+      idempotencyKey: randomUUID(),
+      requestId: randomUUID(),
+      storeId: before.store.storeId,
+      storeProductId: confirmedProduct.storeProductId,
+    });
+    const archived = await database.readManagerStoreConfiguration(context);
+    expect(
+      archived.products.find(
+        (candidate) => candidate.storeProductId === product.storeProductId,
+      ),
+    ).toMatchObject({ archived: true, listed: false });
+    const snapshotAfter = await sql.query<{ order_snapshot: unknown }>(
+      `select order_snapshot from customer_orders
+        where sandbox_id = $1 and store_id = $2
+        order by id limit 1`,
+      [context.sandboxId, before.store.storeId],
+    );
+    expect(snapshotAfter.rows).toEqual(snapshotBefore.rows);
   });
 
   it("saves store display information and exposes it to customers only after the server transaction confirms", async () => {

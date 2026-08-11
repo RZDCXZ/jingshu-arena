@@ -155,6 +155,13 @@
       "when": 1786381200000,
       "tag": "0021_manager_store_configuration",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1786438800000,
+      "tag": "0022_manager_price_store_product",
+      "breakpoints": true
     }
   ]
 }

@@ -1008,23 +1008,37 @@ function resolveActionModal(action) {
         "新版本只用于生效后的新预约；已有预约继续使用创建时保存的半小时价格快照。",
       confirmLabel: "创建价格版本",
       fields: [
-        { label: "版本名称", value: action.name || "晚高峰价格 v5" },
+        { label: "所属门店", value: "棱镜旗舰店", readOnly: true },
         {
-          label: "适用范围",
+          label: "区域",
           value: "竞技区",
-          options: ["全部运营座位", "竞技区", "旗舰区"],
+          options: ["竞技区", "旗舰区", "训练区"],
         },
         {
-          label: "适用日期",
-          value: "周五至周日",
-          options: ["每天", "工作日", "周五至周日"],
+          label: "总部机型",
+          value: "竞技型",
+          options: ["竞技型", "旗舰型", "标准型"],
         },
-        { label: "适用时段", value: "18:00–23:00" },
-        { label: "半小时价格", value: "7.50", type: "number" },
+        { label: "开始时刻", value: "06:00", type: "time" },
+        { label: "结束时刻（次日）", value: "06:00", type: "time" },
+        { label: "工作日每半小时（分）", value: "900", type: "number" },
+        { label: "周末每半小时（分）", value: "1100", type: "number" },
         {
           label: "生效时间",
-          value: "2026-08-09T06:00",
+          value: "2026-08-12T06:00",
           type: "datetime-local",
+        },
+        {
+          label: "范围重叠检查",
+          value: "未发现重叠；可创建未来版本",
+          readOnly: true,
+          full: true,
+        },
+        {
+          label: "快照影响",
+          value: "只影响生效后的新预约；已有预约价格快照保持不变。",
+          readOnly: true,
+          full: true,
         },
       ],
     };
@@ -1041,9 +1055,14 @@ function resolveActionModal(action) {
       confirmLabel: editing ? "保存商品配置" : "创建商品配置",
       fields: [
         {
-          label: "商品资料",
+          label: "总部商品资料",
           value: action.name || "零点气泡水",
-          options: ["脉冲能量饮料", "折线薯片", "零点气泡水", "外设清洁套装"],
+          readOnly: true,
+        },
+        {
+          label: "总部分类 / 代码",
+          value: `${action.category || "饮品"} · ${action.code || "zero-sparkling-water"}`,
+          readOnly: true,
         },
         {
           label: "本店售价",

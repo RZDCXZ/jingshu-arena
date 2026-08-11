@@ -1036,6 +1036,52 @@ export interface ManagerStoreConfigurationResponse {
     readonly experienceDescription: string;
     readonly machineProfileId: string;
   }>;
+  readonly pricePlans: ReadonlyArray<{
+    readonly area: {
+      readonly areaId: string;
+      readonly code: string;
+      readonly displayName: string;
+    };
+    readonly effectiveFrom: string;
+    readonly effectiveUntil: string | null;
+    readonly endsAt: string;
+    readonly endsNextDay: boolean;
+    readonly machineProfile: {
+      readonly code: CustomerMachineProfileCode;
+      readonly displayName: string;
+      readonly machineProfileId: string;
+    };
+    readonly pricePlanId: string;
+    readonly configVersion: number;
+    readonly startsAt: string;
+    readonly status: "archived" | "current" | "historical" | "scheduled";
+    readonly store: { readonly code: string; readonly displayName: string };
+    readonly version: number;
+    readonly weekdayHalfHourCents: number;
+    readonly weekendHalfHourCents: number;
+  }>;
+  readonly products: ReadonlyArray<{
+    readonly alerting: boolean;
+    readonly archived: boolean;
+    readonly availableQuantity: number;
+    readonly businessReferenced: boolean;
+    readonly headquartersProduct: {
+      readonly archived: boolean;
+      readonly category: "drink" | "meal" | "snack" | "supply";
+      readonly code: string;
+      readonly description: string;
+      readonly displayName: string;
+      readonly productId: string;
+    };
+    readonly inventoryItemId: string;
+    readonly listed: boolean;
+    readonly lowStockThreshold: number;
+    readonly onHandQuantity: number;
+    readonly reservedQuantity: number;
+    readonly storeProductId: string;
+    readonly unitPriceCents: number;
+    readonly version: number;
+  }>;
   readonly seats: ReadonlyArray<{
     readonly area: { readonly areaId: string; readonly displayName: string };
     readonly businessReferenced: boolean;
@@ -1106,6 +1152,32 @@ export type ManagerStoreConfigurationCommandRequest =
           readonly lifecycleStatus: Exclude<SeatLifecycleStatus, "inactive">;
           readonly machineProfileId: string;
           readonly sortOrder: number;
+        }
+      | {
+          readonly action: "create-price-plan";
+          readonly areaId: string;
+          readonly effectiveFrom: string;
+          readonly endsAt: string;
+          readonly endsNextDay: boolean;
+          readonly machineProfileId: string;
+          readonly startsAt: string;
+          readonly weekdayHalfHourCents: number;
+          readonly weekendHalfHourCents: number;
+        }
+      | {
+          readonly action: "archive-price-plan";
+          readonly pricePlanId: string;
+        }
+      | {
+          readonly action: "update-store-product";
+          readonly listed: boolean;
+          readonly lowStockThreshold: number;
+          readonly storeProductId: string;
+          readonly unitPriceCents: number;
+        }
+      | {
+          readonly action: "archive-store-product";
+          readonly storeProductId: string;
         }
       | {
           readonly action: "update-seat";

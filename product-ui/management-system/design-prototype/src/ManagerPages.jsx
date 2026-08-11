@@ -360,6 +360,8 @@ export function StoreConfigPage({ onAction, readonly }) {
   ];
   const productRows = [
     {
+      category: "饮品",
+      code: "energy-pulse",
       name: "脉冲能量饮料",
       price: "¥10.00",
       listed: "已上架",
@@ -367,6 +369,8 @@ export function StoreConfigPage({ onAction, readonly }) {
       available: 42,
     },
     {
+      category: "零食",
+      code: "polyline-chips",
       name: "折线薯片",
       price: "¥8.00",
       listed: "已上架",
@@ -374,6 +378,8 @@ export function StoreConfigPage({ onAction, readonly }) {
       available: 21,
     },
     {
+      category: "外设用品",
+      code: "peripheral-clean-kit",
       name: "外设清洁套装",
       price: "¥18.00",
       listed: "已上架",
@@ -400,11 +406,7 @@ export function StoreConfigPage({ onAction, readonly }) {
               mode: "create",
               label: "创建价格版本",
             }
-          : {
-              kind: "manager-store-product",
-              mode: "create",
-              label: "创建门店商品配置",
-            };
+          : null;
   const createActionLabel =
     tab === "profile"
       ? "新建规则"
@@ -412,7 +414,7 @@ export function StoreConfigPage({ onAction, readonly }) {
         ? "新建座位"
         : tab === "pricing"
           ? "新建版本"
-          : "新建商品";
+          : "";
 
   return (
     <div className="view-shell">
@@ -425,14 +427,16 @@ export function StoreConfigPage({ onAction, readonly }) {
               被业务引用的配置只能归档或停用；保存后不追溯修改历史预约与价格快照。
             </p>
           </div>
-          <Button
-            tone="primary"
-            icon={Plus}
-            disabled={readonly}
-            onClick={() => onAction(createAction)}
-          >
-            {createActionLabel}
-          </Button>
+          {createAction ? (
+            <Button
+              tone="primary"
+              icon={Plus}
+              disabled={readonly}
+              onClick={() => onAction(createAction)}
+            >
+              {createActionLabel}
+            </Button>
+          ) : null}
         </div>
         <Tabs
           value={tab}
@@ -551,16 +555,12 @@ export function StoreConfigPage({ onAction, readonly }) {
             <Surface className="table-surface">
               <DataTable
                 columns={[
-                  {
-                    key: "name",
-                    label: "计划名称",
-                    render: (row) => <strong>{row.name}</strong>,
-                  },
-                  { key: "scope", label: "适用范围" },
-                  { key: "days", label: "星期" },
+                  { key: "storeArea", label: "门店 / 区域" },
+                  { key: "profile", label: "总部机型" },
                   { key: "time", label: "时段" },
-                  { key: "price", label: "半小时价格" },
-                  { key: "effective", label: "生效时间" },
+                  { key: "weekdayPrice", label: "工作日 / 半小时" },
+                  { key: "weekendPrice", label: "周末 / 半小时" },
+                  { key: "effective", label: "有效期" },
                   {
                     key: "version",
                     label: "版本",
@@ -568,7 +568,7 @@ export function StoreConfigPage({ onAction, readonly }) {
                   },
                 ]}
                 rows={pricePlans}
-                rowKey="name"
+                rowKey="id"
               />
             </Surface>
           </>
@@ -577,11 +577,17 @@ export function StoreConfigPage({ onAction, readonly }) {
           <Surface className="table-surface">
             <DataTable
               columns={[
-                {
-                  key: "name",
-                  label: "商品资料",
-                  render: (row) => <strong>{row.name}</strong>,
-                },
+                  {
+                    key: "name",
+                    label: "商品资料",
+                    render: (row) => (
+                      <span>
+                        <strong>{row.name}</strong>
+                        <small>{row.code}</small>
+                      </span>
+                    ),
+                  },
+                { key: "category", label: "总部分类" },
                 { key: "price", label: "本店售价" },
                 {
                   key: "listed",

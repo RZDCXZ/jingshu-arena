@@ -286,8 +286,13 @@ export type ManagerStoreConfigurationConflictReason =
   | "invalid-area"
   | "invalid-business-hours"
   | "invalid-profile"
+  | "invalid-price-plan"
   | "invalid-seat"
+  | "invalid-store-product"
   | "machine-profile-not-found"
+  | "price-plan-not-archivable"
+  | "price-plan-not-found"
+  | "price-plan-overlap"
   | "area-not-found"
   | "referenced-seat-immutable"
   | "referenced-area-immutable"
@@ -295,6 +300,8 @@ export type ManagerStoreConfigurationConflictReason =
   | "seat-lifecycle-transition"
   | "seat-not-deletable"
   | "seat-not-found"
+  | "store-product-archived"
+  | "store-product-not-found"
   | "version-conflict";
 
 export class ManagerStoreConfigurationConflictError extends Error {

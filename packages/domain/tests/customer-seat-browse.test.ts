@@ -5,8 +5,11 @@ import {
   businessDayKey,
   deriveSeatAvailability,
   evaluateReservationCoupon,
+  pricePlanEffectiveRangesOverlap,
   priceReservationWindow,
+  priceReservationWindowForPlan,
   resolveCustomerReservationWindow,
+  selectPricePlanVersion,
 } from "../src/index.js";
 
 const hour = 60 * 60 * 1_000;
@@ -196,6 +199,102 @@ describe("customer reservation browsing rules", () => {
     expect(midnight.segments.map((segment) => segment.amountCents)).toEqual([
       900, 900, 675, 675,
     ]);
+  });
+
+  it("selects the latest effective non-archived price-plan version", () => {
+    const plans = [
+      {
+        effectiveFrom: new Date("2026-08-01T00:00:00.000Z"),
+        effectiveUntil: new Date("2026-08-15T00:00:00.000Z"),
+        id: "v1",
+        status: "active" as const,
+        version: 1,
+      },
+      {
+        effectiveFrom: new Date("2026-08-15T00:00:00.000Z"),
+        effectiveUntil: null,
+        id: "v2",
+        status: "active" as const,
+        version: 2,
+      },
+      {
+        effectiveFrom: new Date("2026-08-20T00:00:00.000Z"),
+        effectiveUntil: null,
+        id: "archived-v3",
+        status: "archived" as const,
+        version: 3,
+      },
+    ];
+
+    expect(
+      selectPricePlanVersion(plans, new Date("2026-08-14T23:59:59.000Z"))?.id,
+    ).toBe("v1");
+    expect(
+      selectPricePlanVersion(plans, new Date("2026-08-15T00:00:00.000Z"))?.id,
+    ).toBe("v2");
+  });
+
+  it("detects overlapping effective intervals with an exclusive end", () => {
+    const existing = {
+      effectiveFrom: new Date("2026-08-15T00:00:00.000Z"),
+      effectiveUntil: new Date("2026-09-01T00:00:00.000Z"),
+    };
+
+    expect(
+      pricePlanEffectiveRangesOverlap(existing, {
+        effectiveFrom: new Date("2026-08-20T00:00:00.000Z"),
+        effectiveUntil: null,
+      }),
+    ).toBe(true);
+    expect(
+      pricePlanEffectiveRangesOverlap(existing, {
+        effectiveFrom: new Date("2026-09-01T00:00:00.000Z"),
+        effectiveUntil: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("prices a cross-midnight plan by the 06:00 Shanghai business day", () => {
+    const fridayOvernight = priceReservationWindowForPlan({
+      endsAt: new Date("2026-08-14T17:30:00.000Z"),
+      plan: {
+        endsAt: "06:00",
+        endsNextDay: true,
+        startsAt: "18:00",
+        weekdayHalfHourCents: 900,
+        weekendHalfHourCents: 1_100,
+      },
+      startsAt: new Date("2026-08-14T15:30:00.000Z"),
+    });
+    expect(fridayOvernight.segments.map((segment) => segment.rule)).toEqual([
+      "weekday-base",
+      "weekday-base",
+      "weekday-base",
+      "weekday-base",
+    ]);
+    expect(
+      fridayOvernight.segments.map((segment) => segment.amountCents),
+    ).toEqual([900, 900, 900, 900]);
+    expect(fridayOvernight.totalCents).toBe(3_600);
+
+    const saturdayNight = priceReservationWindowForPlan({
+      endsAt: new Date("2026-08-15T17:00:00.000Z"),
+      plan: {
+        endsAt: "06:00",
+        endsNextDay: true,
+        startsAt: "18:00",
+        weekdayHalfHourCents: 900,
+        weekendHalfHourCents: 1_100,
+      },
+      startsAt: new Date("2026-08-15T15:00:00.000Z"),
+    });
+    expect(saturdayNight.segments.map((segment) => segment.rule)).toEqual([
+      "weekend",
+      "weekend",
+      "weekend",
+      "weekend",
+    ]);
+    expect(saturdayNight.totalCents).toBe(4_400);
   });
 
   it("explains coupon eligibility and caps a reservation discount at zero payable", () => {

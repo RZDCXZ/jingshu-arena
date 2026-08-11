@@ -91,15 +91,40 @@ function failure(error: unknown, requestId: string) {
         message: "门店资料格式无效，虚构城市必须明确标注为虚构。",
         status: 422,
       },
+      "invalid-price-plan": {
+        code: "STORE_PRICE_PLAN_INVALID",
+        message: "价格版本必须使用未来半小时时点、有效时段和整数分金额。",
+        status: 422,
+      },
       "invalid-seat": {
         code: "STORE_SEAT_INVALID",
         message: "座位资料格式无效，请检查编号和排序。",
+        status: 422,
+      },
+      "invalid-store-product": {
+        code: "STORE_PRODUCT_INVALID",
+        message: "门店售价和低库存阈值必须使用非负整数。",
         status: 422,
       },
       "machine-profile-not-found": {
         code: "STORE_CONFIGURATION_NOT_FOUND",
         message: "没有找到当前沙箱可用的总部机型档案。",
         status: 404,
+      },
+      "price-plan-not-archivable": {
+        code: "STORE_PRICE_PLAN_NOT_ARCHIVABLE",
+        message: "当前生效的价格版本不能直接归档，请先创建未来接续版本。",
+        status: 409,
+      },
+      "price-plan-not-found": {
+        code: "STORE_CONFIGURATION_NOT_FOUND",
+        message: "没有找到当前门店可维护的价格版本。",
+        status: 404,
+      },
+      "price-plan-overlap": {
+        code: "STORE_PRICE_PLAN_OVERLAP",
+        message: "相同适用范围已经存在重叠的生效版本，请调整生效时间。",
+        status: 409,
       },
       "referenced-area-immutable": {
         code: "STORE_AREA_REFERENCED",
@@ -129,6 +154,16 @@ function failure(error: unknown, requestId: string) {
       "seat-not-found": {
         code: "STORE_CONFIGURATION_NOT_FOUND",
         message: "没有找到当前门店可维护的配置对象。",
+        status: 404,
+      },
+      "store-product-archived": {
+        code: "STORE_PRODUCT_ARCHIVED",
+        message: "该门店商品配置已经归档，不能继续编辑。",
+        status: 409,
+      },
+      "store-product-not-found": {
+        code: "STORE_CONFIGURATION_NOT_FOUND",
+        message: "没有找到当前门店可维护的商品配置。",
         status: 404,
       },
       "version-conflict": {
@@ -361,6 +396,76 @@ function parseCommand(
         integerValue(body.sortOrder)
         ? (body as unknown as ManagerStoreConfigurationCommandRequest)
         : null;
+    case "create-price-plan": {
+      const parsed = stringValue(body.effectiveFrom)
+        ? new Date(body.effectiveFrom)
+        : null;
+      return exactKeys(body, [
+        "action",
+        "areaId",
+        "effectiveFrom",
+        "endsAt",
+        "endsNextDay",
+        "expectedVersion",
+        "machineProfileId",
+        "startsAt",
+        "storeId",
+        "weekdayHalfHourCents",
+        "weekendHalfHourCents",
+      ]) &&
+        stringValue(body.areaId) &&
+        UUID_V4_PATTERN.test(body.areaId) &&
+        parsed !== null &&
+        !Number.isNaN(parsed.getTime()) &&
+        stringValue(body.endsAt) &&
+        typeof body.endsNextDay === "boolean" &&
+        stringValue(body.machineProfileId) &&
+        UUID_V4_PATTERN.test(body.machineProfileId) &&
+        stringValue(body.startsAt) &&
+        integerValue(body.weekdayHalfHourCents) &&
+        integerValue(body.weekendHalfHourCents)
+        ? (body as unknown as ManagerStoreConfigurationCommandRequest)
+        : null;
+    }
+    case "archive-price-plan":
+      return exactKeys(body, [
+        "action",
+        "expectedVersion",
+        "pricePlanId",
+        "storeId",
+      ]) &&
+        stringValue(body.pricePlanId) &&
+        UUID_V4_PATTERN.test(body.pricePlanId)
+        ? (body as unknown as ManagerStoreConfigurationCommandRequest)
+        : null;
+    case "update-store-product":
+      return exactKeys(body, [
+        "action",
+        "expectedVersion",
+        "listed",
+        "lowStockThreshold",
+        "storeId",
+        "storeProductId",
+        "unitPriceCents",
+      ]) &&
+        typeof body.listed === "boolean" &&
+        integerValue(body.lowStockThreshold) &&
+        stringValue(body.storeProductId) &&
+        UUID_V4_PATTERN.test(body.storeProductId) &&
+        integerValue(body.unitPriceCents)
+        ? (body as unknown as ManagerStoreConfigurationCommandRequest)
+        : null;
+    case "archive-store-product":
+      return exactKeys(body, [
+        "action",
+        "expectedVersion",
+        "storeId",
+        "storeProductId",
+      ]) &&
+        stringValue(body.storeProductId) &&
+        UUID_V4_PATTERN.test(body.storeProductId)
+        ? (body as unknown as ManagerStoreConfigurationCommandRequest)
+        : null;
     case "update-seat":
       return exactKeys(body, [
         "action",
@@ -426,6 +531,11 @@ export function registerManagerStoreConfigurationRoutes(
             effectiveFrom: hours.effectiveFrom.toISOString(),
           })),
         },
+        pricePlans: result.pricePlans.map((plan) => ({
+          ...plan,
+          effectiveFrom: plan.effectiveFrom.toISOString(),
+          effectiveUntil: plan.effectiveUntil?.toISOString() ?? null,
+        })),
         currentTime: result.currentTime.toISOString(),
         status: "ready",
       } satisfies ManagerStoreConfigurationResponse);
@@ -532,7 +642,7 @@ export function registerManagerStoreConfigurationRoutes(
         return context.json(
           errorBody(
             "STORE_CONFIGURATION_COMMAND_INVALID",
-            "请使用门店资料、营业规则、区域或座位专用表单提交。",
+            "请使用门店资料、营业规则、区域、座位、价格或门店商品专用表单提交。",
             requestId,
           ),
           422,
@@ -543,7 +653,8 @@ export function registerManagerStoreConfigurationRoutes(
           await services.sandboxDatabase.executeManagerStoreConfigurationCommand(
             {
               ...body,
-              ...(body.action === "schedule-business-hours"
+              ...(body.action === "schedule-business-hours" ||
+              body.action === "create-price-plan"
                 ? { effectiveFrom: new Date(body.effectiveFrom) }
                 : {}),
               contextVersion: auth.session.contextVersion,

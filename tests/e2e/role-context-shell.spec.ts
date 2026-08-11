@@ -413,6 +413,8 @@ test.beforeEach(async ({ context }) => {
   const draftAreaId = "00000000-0000-4000-8000-000000000113";
   const machineProfileId = "00000000-0000-4000-8000-000000000114";
   const busySeatId = "00000000-0000-4000-8000-000000000115";
+  const pricePlanId = "00000000-0000-4000-8000-000000000116";
+  const storeProductId = "00000000-0000-4000-8000-000000000117";
   let storeConfiguration: ManagerStoreConfigurationResponse = {
     areas: [
       {
@@ -462,6 +464,56 @@ test.beforeEach(async ({ context }) => {
         displayName: "竞技机型",
         experienceDescription: "高刷竞技配置",
         machineProfileId,
+      },
+    ],
+    pricePlans: [
+      {
+        area: {
+          areaId: competitiveAreaId,
+          code: "competitive-a",
+          displayName: "竞技区 A",
+        },
+        configVersion: 1,
+        effectiveFrom: "2026-08-01T22:00:00.000Z",
+        effectiveUntil: null,
+        endsAt: "06:00",
+        endsNextDay: true,
+        machineProfile: {
+          code: "competitive",
+          displayName: "竞技机型",
+          machineProfileId,
+        },
+        pricePlanId,
+        startsAt: "06:00",
+        status: "current",
+        store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+        version: 1,
+        weekdayHalfHourCents: 800,
+        weekendHalfHourCents: 1_000,
+      },
+    ],
+    products: [
+      {
+        alerting: false,
+        archived: false,
+        availableQuantity: 20,
+        businessReferenced: true,
+        headquartersProduct: {
+          archived: false,
+          category: "drink",
+          code: "sparkling-water",
+          description: "总部统一维护的虚构气泡水商品档案。",
+          displayName: "栖光气泡水",
+          productId: "00000000-0000-4000-8000-000000000118",
+        },
+        inventoryItemId: "00000000-0000-4000-8000-000000000119",
+        listed: true,
+        lowStockThreshold: 5,
+        onHandQuantity: 24,
+        reservedQuantity: 4,
+        storeProductId,
+        unitPriceCents: 600,
+        version: 1,
       },
     ],
     seats: [
@@ -1663,6 +1715,97 @@ test.beforeEach(async ({ context }) => {
             version: storeConfiguration.store.version + 1,
           },
         };
+      } else if (body.action === "create-price-plan") {
+        const area = storeConfiguration.areas.find(
+          (candidate) => candidate.areaId === body.areaId,
+        )!;
+        const profile = storeConfiguration.machineProfiles.find(
+          (candidate) => candidate.machineProfileId === body.machineProfileId,
+        )!;
+        storeConfiguration = {
+          ...storeConfiguration,
+          pricePlans: [
+            ...storeConfiguration.pricePlans.map((plan) =>
+              plan.area.areaId === body.areaId &&
+              plan.machineProfile.machineProfileId === body.machineProfileId &&
+              plan.startsAt === body.startsAt &&
+              plan.endsAt === body.endsAt &&
+              plan.endsNextDay === body.endsNextDay
+                ? { ...plan, effectiveUntil: body.effectiveFrom }
+                : plan,
+            ),
+            {
+              area: {
+                areaId: area.areaId,
+                code: area.code,
+                displayName: area.displayName,
+              },
+              configVersion: 1,
+              effectiveFrom: body.effectiveFrom,
+              effectiveUntil: null,
+              endsAt: body.endsAt,
+              endsNextDay: body.endsNextDay,
+              machineProfile: {
+                code: profile.code,
+                displayName: profile.displayName,
+                machineProfileId: profile.machineProfileId,
+              },
+              pricePlanId: crypto.randomUUID(),
+              startsAt: body.startsAt,
+              status: "scheduled",
+              store: {
+                code: storeConfiguration.store.code,
+                displayName: storeConfiguration.store.displayName,
+              },
+              version: 2,
+              weekdayHalfHourCents: body.weekdayHalfHourCents,
+              weekendHalfHourCents: body.weekendHalfHourCents,
+            },
+          ],
+          store: {
+            ...storeConfiguration.store,
+            version: storeConfiguration.store.version + 1,
+          },
+        };
+      } else if (body.action === "archive-price-plan") {
+        storeConfiguration = {
+          ...storeConfiguration,
+          pricePlans: storeConfiguration.pricePlans.map((plan) =>
+            plan.pricePlanId === body.pricePlanId
+              ? { ...plan, status: "archived" }
+              : plan,
+          ),
+        };
+      } else if (body.action === "update-store-product") {
+        storeConfiguration = {
+          ...storeConfiguration,
+          products: storeConfiguration.products.map((product) =>
+            product.storeProductId === body.storeProductId
+              ? {
+                  ...product,
+                  alerting: product.availableQuantity <= body.lowStockThreshold,
+                  listed: body.listed,
+                  lowStockThreshold: body.lowStockThreshold,
+                  unitPriceCents: body.unitPriceCents,
+                  version: product.version + 1,
+                }
+              : product,
+          ),
+        };
+      } else if (body.action === "archive-store-product") {
+        storeConfiguration = {
+          ...storeConfiguration,
+          products: storeConfiguration.products.map((product) =>
+            product.storeProductId === body.storeProductId
+              ? {
+                  ...product,
+                  archived: true,
+                  listed: false,
+                  version: product.version + 1,
+                }
+              : product,
+          ),
+        };
       }
       await route.fulfill({
         json: {
@@ -2175,6 +2318,55 @@ test("manager edits only the owned store through dedicated configuration forms a
   expect(layout.scrollWidth).toBe(layout.clientWidth);
 });
 
+test("manager creates a future price version and maintains only store-level product fields", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterManagerStoreConfiguration(page);
+
+  await page.getByRole("tab", { name: /价格计划/u }).click();
+  await expect(page.getByText("v1 · 当前")).toBeVisible();
+  await page.getByRole("button", { name: "新建未来版本" }).click();
+  const priceDialog = page.getByRole("dialog", {
+    name: "新建未来价格版本",
+  });
+  await expect(priceDialog.getByLabel("价格适用区域")).toBeFocused();
+  await priceDialog.getByLabel("工作日每半小时价格").fill("900");
+  await priceDialog.getByLabel("周末每半小时价格").fill("1100");
+  await expect(priceDialog.getByText("未发现重叠")).toBeVisible();
+  await expect(
+    priceDialog.getByText(/不会改写已有预约价格快照/u),
+  ).toBeVisible();
+  await priceDialog.getByRole("button", { name: "确认创建版本" }).click();
+  await expect(page.getByText("未来价格版本已由服务端确认创建")).toBeVisible();
+  await expect(page.getByText("v2 · 未来")).toBeVisible();
+  await expect(page.getByText("¥9.00")).toBeVisible();
+
+  await page.getByRole("tab", { name: /商品上架/u }).click();
+  await page.getByRole("button", { name: "配置商品 栖光气泡水" }).click();
+  const productDialog = page.getByRole("dialog", {
+    name: "门店商品 · 栖光气泡水",
+  });
+  await expect(
+    productDialog.locator('input[value="sparkling-water"]'),
+  ).toBeDisabled();
+  await productDialog.getByLabel("门店上架").uncheck();
+  await productDialog.getByLabel("门店商品售价").fill("650");
+  await productDialog.getByLabel("低库存预警阈值").fill("21");
+  await productDialog.getByRole("button", { name: "保存门店配置" }).click();
+  await expect(page.getByText("门店商品配置已由服务端确认保存")).toBeVisible();
+  await expect(page.getByText("¥6.50")).toBeVisible();
+  await expect(page.getByText("已下架", { exact: true })).toBeVisible();
+  await expect(page.getByText("已触发预警")).toBeVisible();
+
+  await page.setViewportSize({ width: 1024, height: 768 });
+  const layout = await page.evaluate(() => ({
+    clientWidth: document.body.clientWidth,
+    scrollWidth: document.body.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBe(layout.clientWidth);
+});
+
 test("manager sees current, per-day-set effective, and truly future business-hour rules after the 06:00 boundary", async ({
   page,
 }) => {
@@ -2229,6 +2421,8 @@ test("manager sees current, per-day-set effective, and truly future business-hou
     },
     currentTime: "2026-08-10T22:30:00.000Z",
     machineProfiles: [],
+    pricePlans: [],
+    products: [],
     seats: [],
     status: "ready",
     store: {

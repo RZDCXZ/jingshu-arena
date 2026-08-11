@@ -2,8 +2,19 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-11
-- 已验证契约版本：`product-ui/management-system/prod.md` 1.10
-- 验证范围：[`18 — 不可编辑交接与异常`](../../../.scratch/jingshu-basic-rc/issues/18-handover-exceptions.md)；保留 ticket 17 考勤和更早结论
+- 已验证契约版本：`product-ui/management-system/prod.md` 1.11
+- 验证范围：[`20 — 店长未来价格计划与门店商品配置`](../../../.scratch/jingshu-basic-rc/issues/20-manager-price-store-product.md)；保留 ticket 19 门店配置和更早结论
+
+## Ticket 20 `WEB-M05/WEB-M06` 对照目标与结论
+
+- 应用内浏览器在精确 `1440 × 1024 CSS px` 对照正式价格计划与真实 Web → Hono → 临时 PostgreSQL 生产页：`design/source-ticket20-web-m05-1440x1024.png`、`design/implementation-ticket20-web-m05-1440x1024.png` 保留两侧原始状态，`design/qa-ticket20-web-m05-comparison-2880x1024.png` 将其放入同一比较输入。两侧均展示门店/区域、总部机型、跨午夜时段、工作日/周末半小时金额、有效区间和版本状态。
+- 价格专用表单对照保存在 `design/source-ticket20-web-m05-dialog-1440x1024.png`、`design/implementation-ticket20-web-m05-dialog-1440x1024.png` 与 `design/qa-ticket20-web-m05-dialog-comparison-2880x1024.png`。生产提交前核对明确显示所属范围、工作日/周末整数分价格、上海生效时间、重叠结果和预约价格快照不变说明；`design/implementation-ticket20-web-m05-overlap-1440x1024.png` 记录与已有 `v2` 同范围重叠时主操作禁用。
+- `1024 × 768 CSS px` 商品列表对照保存在 `design/source-ticket20-web-m06-1024x768.png`、`design/implementation-ticket20-web-m06-1024x768.png` 与 `design/qa-ticket20-web-m06-comparison-2048x768.png`；专用表单对照保存在同名 `*-dialog-*` 两侧截图和 `design/qa-ticket20-web-m06-dialog-comparison-2048x768.png`。总部名称、代码、分类和说明只读，本店仅开放上架、整数分售价和独立阈值，在手/预留/可用库存只读，并提供引用配置归档。
+- 真实沙箱完成“创建竞技型未来价格 `900/1100` 分 → 服务端回读 `v2 · 未来` → 创建标准型未来版本 → 再次选择同范围显示与 `v2` 重叠且禁止提交”；商品完成“云端矿泉水下架、售价改为 `650` 分、阈值改为 `11` → 服务端重新读取成功”。两个成功反馈只在命令确认并回读后出现；浏览器 warning/error 均为 0。
+- 第 1 轮 P2 已关闭：生产商品表在 `1024px` 下原有 `940px` 最小宽度，保存后焦点回到末列会造成内部横向偏移并裁掉首列左侧；最小宽度收敛后容器实测 `clientWidth = scrollWidth = 858px`，页面 `bodyClientWidth = bodyScrollWidth = 1024px`，总部商品和操作列同时可见。
+- 第 1 轮 P2 已关闭：正式价格表更新列结构后仍以已移除的 `name` 作为行键，控制台产生重复键告警；正式数据增加稳定版本标识并以 `id` 作为行键，新的浏览器标签复核 warning/error 为 0。
+- 当前没有仍需处理的 P0、P1 或 P2 差异。正式原型使用三条代表性版本/商品行，生产展示完整 10+ 个价格版本与 12 个总部商品，因此生产表格采用受控内部纵向滚动；两侧页面职责、夜间高密度壳层、海军蓝表面、青色反馈、青柠主动作、琥珀未来/重叠提示、正式品牌资产和 Phosphor 图标保持一致。
+- 领域与 PostgreSQL 自动化覆盖最新有效版本选择、排他结束区间重叠、跨午夜与 `06:00` 经营日计价、预约价格快照不变、门店商品下架/改价后历史订单快照不变、归档、跨店掩码拒绝、幂等重放和版本冲突。完整 `pnpm verify` 通过：306 个 Vitest 单元测试、2 个开发启动测试、156 个真实 PostgreSQL/API 集成测试、2 个设计内容基线测试与 52 个 Chromium E2E；全部格式、lint、strict TypeScript、构建、工作区边界和敏感数据扫描通过，high 级依赖审计仅报告 1 个不阻塞门禁的 moderate 漏洞。正式管理端原型构建与 4 个 Sites 包装测试通过。
 
 ## Ticket 18 `WEB-S10/WEB-M09` 对照目标与结论
 

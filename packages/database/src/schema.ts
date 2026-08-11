@@ -227,6 +227,8 @@ export const storeProducts = pgTable(
       .references(() => inventoryItems.id, { onDelete: "restrict" }),
     listed: boolean("listed").default(false).notNull(),
     unitPriceCents: integer("unit_price_cents").notNull(),
+    archived: boolean("archived").default(false).notNull(),
+    configVersion: integer("config_version").default(1).notNull(),
   },
   (table) => [
     unique("store_products_sandbox_store_product_unique").on(
@@ -238,6 +240,10 @@ export const storeProducts = pgTable(
     check(
       "store_products_non_negative_price",
       sql`${table.unitPriceCents} >= 0`,
+    ),
+    check(
+      "store_products_positive_config_version",
+      sql`${table.configVersion} > 0`,
     ),
     pgPolicy("store_products_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
@@ -416,11 +422,22 @@ export const pricePlans = pgTable(
       .references(() => machineProfiles.id, { onDelete: "restrict" }),
     version: integer("version").notNull(),
     baseHourlyCents: integer("base_hourly_cents").notNull(),
+    startsAt: time("starts_at").default("06:00").notNull(),
+    endsAt: time("ends_at").default("06:00").notNull(),
+    endsNextDay: boolean("ends_next_day").default(true).notNull(),
+    weekdayHalfHourCents: integer("weekday_half_hour_cents")
+      .default(0)
+      .notNull(),
+    weekendHalfHourCents: integer("weekend_half_hour_cents")
+      .default(0)
+      .notNull(),
+    pricingModel: text("pricing_model").default("legacy").notNull(),
     effectiveFrom: timestamp("effective_from", {
       withTimezone: true,
     }).notNull(),
     effectiveUntil: timestamp("effective_until", { withTimezone: true }),
     status: text("status").default("active").notNull(),
+    configVersion: integer("config_version").default(1).notNull(),
   },
   (table) => [
     unique("price_plans_scope_version_unique").on(
@@ -436,10 +453,22 @@ export const pricePlans = pgTable(
       sql`${table.baseHourlyCents} >= 0`,
     ),
     check(
+      "price_plans_non_negative_half_hour_prices",
+      sql`${table.weekdayHalfHourCents} >= 0 AND ${table.weekendHalfHourCents} >= 0`,
+    ),
+    check(
       "price_plans_effective_range",
       sql`${table.effectiveUntil} IS NULL OR ${table.effectiveUntil} > ${table.effectiveFrom}`,
     ),
     check("price_plans_status", sql`${table.status} IN ('active', 'archived')`),
+    check(
+      "price_plans_positive_config_version",
+      sql`${table.configVersion} > 0`,
+    ),
+    check(
+      "price_plans_pricing_model",
+      sql`${table.pricingModel} IN ('legacy', 'explicit-half-hour')`,
+    ),
     pgPolicy("price_plans_isolate_by_sandbox", {
       using: sql`${table.sandboxId} = ${sandboxSetting}`,
       withCheck: sql`${table.sandboxId} = ${sandboxSetting}`,

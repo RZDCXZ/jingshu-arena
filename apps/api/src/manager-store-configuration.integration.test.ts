@@ -91,6 +91,85 @@ describe("manager store configuration API", () => {
     });
     expect(payload.areas).toHaveLength(4);
     expect(payload.seats).toHaveLength(96);
+    expect(payload.pricePlans.length).toBeGreaterThan(0);
+    expect(payload.products).toHaveLength(12);
+  });
+
+  it("accepts dedicated price and store-product commands while keeping the manager store authoritative", async () => {
+    const manager = await createRoleSession("manager");
+    const beforeResponse = await app.request(
+      "/api/v1/manager/store-configuration",
+      { headers: { Cookie: manager.cookie } },
+    );
+    const before =
+      (await beforeResponse.json()) as ManagerStoreConfigurationResponse;
+    const plan = before.pricePlans[0]!;
+    const effectiveFrom = "2026-08-10T12:30:00.000Z";
+    const priceResponse = await app.request(
+      "/api/v1/manager/store-configuration/commands",
+      {
+        body: JSON.stringify({
+          action: "create-price-plan",
+          areaId: plan.area.areaId,
+          effectiveFrom,
+          endsAt: plan.endsAt,
+          endsNextDay: plan.endsNextDay,
+          expectedVersion: before.store.version,
+          machineProfileId: plan.machineProfile.machineProfileId,
+          startsAt: plan.startsAt,
+          storeId: before.store.storeId,
+          weekdayHalfHourCents: 980,
+          weekendHalfHourCents: 1_180,
+        }),
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: manager.cookie,
+          "Idempotency-Key": crypto.randomUUID(),
+          Origin: publicOrigin,
+          "X-CSRF-Token": manager.context.csrfToken,
+        },
+        method: "POST",
+      },
+    );
+    expect(priceResponse.status).toBe(200);
+
+    const afterPriceResponse = await app.request(
+      "/api/v1/manager/store-configuration",
+      { headers: { Cookie: manager.cookie } },
+    );
+    const afterPrice =
+      (await afterPriceResponse.json()) as ManagerStoreConfigurationResponse;
+    expect(afterPrice.pricePlans).toContainEqual(
+      expect.objectContaining({
+        effectiveFrom,
+        status: "scheduled",
+        weekdayHalfHourCents: 980,
+      }),
+    );
+    const product = afterPrice.products.find((candidate) => candidate.listed)!;
+    const productResponse = await app.request(
+      "/api/v1/manager/store-configuration/commands",
+      {
+        body: JSON.stringify({
+          action: "update-store-product",
+          expectedVersion: product.version,
+          listed: false,
+          lowStockThreshold: product.lowStockThreshold + 1,
+          storeId: afterPrice.store.storeId,
+          storeProductId: product.storeProductId,
+          unitPriceCents: product.unitPriceCents + 100,
+        }),
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: manager.cookie,
+          "Idempotency-Key": crypto.randomUUID(),
+          Origin: publicOrigin,
+          "X-CSRF-Token": manager.context.csrfToken,
+        },
+        method: "POST",
+      },
+    );
+    expect(productResponse.status).toBe(200);
   });
 
   it("accepts dedicated manager commands, safely replays them, and reads the confirmed result", async () => {

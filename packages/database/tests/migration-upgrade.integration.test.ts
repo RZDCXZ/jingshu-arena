@@ -570,5 +570,50 @@ describe("role-context expand migration", () => {
         introduction: "竞枢固定虚构演示门店。",
       },
     ]);
+    await client.query(
+      "alter table price_plans owner to ticket04_migration_owner",
+    );
+    await client.query(
+      "alter table store_products owner to ticket04_migration_owner",
+    );
+    await client.query(
+      "alter table inventory_items owner to ticket04_migration_owner",
+    );
+    await client.query("set role ticket04_migration_owner");
+    try {
+      await applyMigration("0022_manager_price_store_product.sql");
+    } finally {
+      await client.query("reset role");
+    }
+    const pricingMetadata = await client.query<{ value: string }>(
+      "select value from jingshu_schema_metadata where key = 'schema_version'",
+    );
+    expect(pricingMetadata.rows).toEqual([{ value: "19" }]);
+    const pricingDefaults = await client.query<{
+      column_name: string;
+      default_expression: string;
+    }>(
+      `select attribute.attname as column_name,
+              pg_get_expr(definition.adbin, definition.adrelid) as default_expression
+         from pg_attribute attribute
+         join pg_attrdef definition
+           on definition.adrelid = attribute.attrelid
+          and definition.adnum = attribute.attnum
+        where attribute.attrelid = 'price_plans'::regclass
+          and attribute.attname in (
+            'config_version', 'pricing_model',
+            'weekday_half_hour_cents', 'weekend_half_hour_cents'
+          )
+        order by attribute.attname`,
+    );
+    expect(pricingDefaults.rows).toEqual([
+      { column_name: "config_version", default_expression: "1" },
+      {
+        column_name: "pricing_model",
+        default_expression: "'legacy'::text",
+      },
+      { column_name: "weekday_half_hour_cents", default_expression: "0" },
+      { column_name: "weekend_half_hour_cents", default_expression: "0" },
+    ]);
   });
 });
