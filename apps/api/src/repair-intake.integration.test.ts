@@ -303,17 +303,20 @@ describe("repair intake API", () => {
       headers: { Cookie: session.cookie },
     });
     expect(queue.status, await queue.clone().text()).toBe(200);
-    await expect(queue.json()).resolves.toMatchObject({
-      rows: [
-        {
-          description: "显示器间歇闪烁",
-          seat: { code: "A-18" },
-          status: "new",
-        },
-      ],
+    const queueBody = await queue.json();
+    expect(queueBody).toMatchObject({
       status: "ready",
       store: { code: "prism-flagship" },
     });
+    expect(queueBody.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          description: "显示器间歇闪烁",
+          seat: { code: "A-18" },
+          status: "new",
+        }),
+      ]),
+    );
   });
 
   it("assigns and starts a repair through guarded staff commands while exposing only public impact data to the customer", async () => {

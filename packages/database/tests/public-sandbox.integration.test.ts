@@ -40,7 +40,7 @@ describe("public sandbox creation", () => {
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
       ),
       schemaVersion: "20",
-      seedVersion: "2026-08-11.4",
+      seedVersion: "2026-08-11.5",
       expiresAt: expect.any(Date),
       selectedRole: "customer",
       persona: {
@@ -77,7 +77,7 @@ describe("public sandbox creation", () => {
           /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
         ),
         schemaVersion: "20",
-        seedVersion: "2026-08-11.4",
+        seedVersion: "2026-08-11.5",
         expiresAt: expect.any(Date),
         businessClock: {
           advanceLimitMilliseconds: 86_400_000,

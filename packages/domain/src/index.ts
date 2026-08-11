@@ -1,5 +1,5 @@
 export const PUBLIC_SANDBOX_SCHEMA_VERSION = "20";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-11.4";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-11.5";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -131,6 +131,411 @@ export function businessDayRange(value: Date): {
     endsAt: new Date(startsAt.getTime() + DAY_MS),
     key,
     startsAt,
+  };
+}
+
+export function managerDashboardBusinessDays(value: Date): ReadonlyArray<{
+  readonly endsAt: Date;
+  readonly key: string;
+  readonly startsAt: Date;
+}> {
+  const currentKey = businessDayKey(value);
+  const currentSerial = Math.floor(
+    Date.parse(`${currentKey}T00:00:00.000Z`) / DAY_MS,
+  );
+  return Array.from({ length: 14 }, (_, index) => {
+    const key = dateKeyFromSerial(currentSerial - 13 + index);
+    const startsAt = new Date(`${key}T06:00:00.000+08:00`);
+    return {
+      endsAt: new Date(startsAt.getTime() + DAY_MS),
+      key,
+      startsAt,
+    };
+  });
+}
+
+export type ManagerDashboardOrderStatus = CustomerOrderStatus;
+
+export interface ManagerDashboardMetricsInput {
+  readonly activeSeatCount: number;
+  readonly attendance: ReadonlyArray<{
+    readonly businessOccurredAt: Date;
+    readonly outcome: "absent" | "late" | "on-time";
+  }>;
+  readonly businessDays: ReadonlyArray<{
+    readonly endsAt: Date;
+    readonly key: string;
+    readonly opensAt: Date;
+    readonly startsAt: Date;
+  }>;
+  readonly currentTime: Date;
+  readonly handoverExceptions: ReadonlyArray<{
+    readonly businessOccurredAt: Date;
+  }>;
+  readonly inventory: { readonly lowStockCount: number };
+  readonly orders: ReadonlyArray<{
+    readonly completedAt: Date | null;
+    readonly createdAt: Date;
+    readonly paidCents: number | null;
+    readonly refundCents: number;
+    readonly status: ManagerDashboardOrderStatus;
+    readonly terminalAt: Date | null;
+    readonly wasteCents: number;
+    readonly wasteQuantity: number;
+  }>;
+  readonly repairs: ReadonlyArray<{
+    readonly closedAt: Date | null;
+    readonly createdAt: Date;
+    readonly priority: "high" | "normal" | "urgent";
+    readonly processingAt: Date | null;
+  }>;
+  readonly reservations: ReadonlyArray<{
+    readonly completedAt: Date | null;
+    readonly paidCents: number;
+    readonly priceSegments: ReadonlyArray<{
+      readonly amountCents: number;
+      readonly endsAt: Date;
+      readonly startsAt: Date;
+    }>;
+    readonly refundCents: number;
+    readonly refundFrom: Date | null;
+    readonly startedAt: Date | null;
+    readonly status:
+      | "arrived"
+      | "cancelled"
+      | "completed"
+      | "confirmed"
+      | "expired"
+      | "in-use"
+      | "pending-confirmation";
+  }>;
+}
+
+interface ManagerDashboardRevenueMetrics {
+  readonly orderCents: number;
+  readonly reservationCents: number;
+  readonly totalCents: number;
+}
+
+interface ManagerDashboardSeatMetrics {
+  readonly businessSeatMinutes: number;
+  readonly maintenanceMinutes: number;
+  readonly maintenanceRateBasisPoints: number;
+  readonly normalSeatMinutes: number;
+  readonly operationalUtilizationBasisPoints: number;
+  readonly usedMinutes: number;
+}
+
+function overlapMinutes(
+  firstStartsAt: Date,
+  firstEndsAt: Date,
+  secondStartsAt: Date,
+  secondEndsAt: Date,
+) {
+  const startsAt = Math.max(firstStartsAt.getTime(), secondStartsAt.getTime());
+  const endsAt = Math.min(firstEndsAt.getTime(), secondEndsAt.getTime());
+  return Math.max(0, Math.round((endsAt - startsAt) / 60_000));
+}
+
+function basisPoints(numerator: number, denominator: number) {
+  return denominator <= 0 ? 0 : Math.round((numerator * 10_000) / denominator);
+}
+
+function allocateCentsByWeight(
+  totalCents: number,
+  weights: ReadonlyArray<number>,
+) {
+  const weightTotal = weights.reduce((total, value) => total + value, 0);
+  if (totalCents <= 0 || weightTotal <= 0) return weights.map(() => 0);
+  let allocated = 0;
+  return weights.map((weight, index) => {
+    if (index === weights.length - 1) return totalCents - allocated;
+    const value = Math.floor((totalCents * weight) / weightTotal);
+    allocated += value;
+    return value;
+  });
+}
+
+export function attributeManagerReservationRevenue(reservation: {
+  readonly completedAt: Date | null;
+  readonly paidCents: number;
+  readonly priceSegments: ReadonlyArray<{
+    readonly amountCents: number;
+    readonly endsAt: Date;
+    readonly startsAt: Date;
+  }>;
+  readonly refundCents: number;
+  readonly refundFrom: Date | null;
+  readonly status: ManagerDashboardMetricsInput["reservations"][number]["status"];
+}) {
+  if (reservation.status !== "completed" || !reservation.completedAt) {
+    return [];
+  }
+  const finalCents = Math.max(
+    0,
+    reservation.paidCents - reservation.refundCents,
+  );
+  const retainedSegments = reservation.priceSegments.filter(
+    (segment) =>
+      reservation.refundFrom === null ||
+      segment.startsAt.getTime() < reservation.refundFrom.getTime(),
+  );
+  const allocations = allocateCentsByWeight(
+    finalCents,
+    retainedSegments.map((segment) => segment.amountCents),
+  );
+  return retainedSegments.map((segment, index) => ({
+    amountCents: allocations[index] ?? 0,
+    businessDayKey: businessDayKey(segment.startsAt),
+    endsAt: segment.endsAt,
+    startsAt: segment.startsAt,
+  }));
+}
+
+export function calculateManagerDashboardMetrics(
+  input: ManagerDashboardMetricsInput,
+) {
+  const firstDay = input.businessDays[0];
+  const lastDay = input.businessDays[input.businessDays.length - 1];
+  if (!firstDay || !lastDay) {
+    throw new Error("Manager dashboard metrics require a business-day range.");
+  }
+  const rangeStartsAt = firstDay.startsAt;
+  const rangeEndsAt = new Date(lastDay.startsAt.getTime() + DAY_MS);
+  const effectiveRangeEndsAt = new Date(
+    Math.min(rangeEndsAt.getTime(), input.currentTime.getTime()),
+  );
+  const inRange = (value: Date) =>
+    value.getTime() >= rangeStartsAt.getTime() &&
+    value.getTime() < rangeEndsAt.getTime();
+
+  const revenueByDay = new Map<string, ManagerDashboardRevenueMetrics>(
+    input.businessDays.map((day) => [
+      day.key,
+      { orderCents: 0, reservationCents: 0, totalCents: 0 },
+    ]),
+  );
+  for (const reservation of input.reservations) {
+    attributeManagerReservationRevenue(reservation).forEach((segment) => {
+      const day = revenueByDay.get(segment.businessDayKey);
+      if (!day) return;
+      const reservationCents = day.reservationCents + segment.amountCents;
+      revenueByDay.set(segment.businessDayKey, {
+        ...day,
+        reservationCents,
+        totalCents: reservationCents + day.orderCents,
+      });
+    });
+  }
+  for (const order of input.orders) {
+    if (
+      order.status !== "completed" ||
+      order.paidCents === null ||
+      !order.completedAt
+    ) {
+      continue;
+    }
+    const key = businessDayKey(order.completedAt);
+    const day = revenueByDay.get(key);
+    if (!day) continue;
+    const orderCents =
+      day.orderCents + Math.max(0, order.paidCents - order.refundCents);
+    revenueByDay.set(key, {
+      ...day,
+      orderCents,
+      totalCents: day.reservationCents + orderCents,
+    });
+  }
+
+  const seatMetricsByDay = new Map<string, ManagerDashboardSeatMetrics>();
+  for (const day of input.businessDays) {
+    const businessMinutes = overlapMinutes(
+      day.opensAt,
+      day.endsAt,
+      day.startsAt,
+      new Date(day.startsAt.getTime() + DAY_MS),
+    );
+    const maintenanceMinutes = input.repairs.reduce((total, repair) => {
+      if (!repair.processingAt) return total;
+      const repairEndsAt = repair.closedAt ?? input.currentTime;
+      return (
+        total +
+        overlapMinutes(
+          repair.processingAt,
+          repairEndsAt,
+          day.opensAt,
+          day.endsAt,
+        )
+      );
+    }, 0);
+    const usedMinutes = input.reservations.reduce((total, reservation) => {
+      if (!reservation.startedAt) return total;
+      const reservationEndsAt =
+        reservation.completedAt ??
+        (reservation.status === "in-use" ? input.currentTime : null);
+      if (!reservationEndsAt) return total;
+      return (
+        total +
+        overlapMinutes(
+          reservation.startedAt,
+          reservationEndsAt,
+          day.opensAt,
+          day.endsAt,
+        )
+      );
+    }, 0);
+    const businessSeatMinutes = businessMinutes * input.activeSeatCount;
+    const normalSeatMinutes = Math.max(
+      0,
+      businessSeatMinutes - maintenanceMinutes,
+    );
+    seatMetricsByDay.set(day.key, {
+      businessSeatMinutes,
+      maintenanceMinutes,
+      maintenanceRateBasisPoints: basisPoints(
+        maintenanceMinutes,
+        businessSeatMinutes,
+      ),
+      normalSeatMinutes,
+      operationalUtilizationBasisPoints: basisPoints(
+        usedMinutes,
+        normalSeatMinutes,
+      ),
+      usedMinutes,
+    });
+  }
+
+  const revenue = [...revenueByDay.values()].reduce(
+    (total, day) => ({
+      orderCents: total.orderCents + day.orderCents,
+      reservationCents: total.reservationCents + day.reservationCents,
+      totalCents: total.totalCents + day.totalCents,
+    }),
+    { orderCents: 0, reservationCents: 0, totalCents: 0 },
+  );
+  const seatTotals = [...seatMetricsByDay.values()].reduce(
+    (total, day) => ({
+      businessSeatMinutes: total.businessSeatMinutes + day.businessSeatMinutes,
+      maintenanceMinutes: total.maintenanceMinutes + day.maintenanceMinutes,
+      normalSeatMinutes: total.normalSeatMinutes + day.normalSeatMinutes,
+      usedMinutes: total.usedMinutes + day.usedMinutes,
+    }),
+    {
+      businessSeatMinutes: 0,
+      maintenanceMinutes: 0,
+      normalSeatMinutes: 0,
+      usedMinutes: 0,
+    },
+  );
+  const seats: ManagerDashboardSeatMetrics = {
+    ...seatTotals,
+    maintenanceRateBasisPoints: basisPoints(
+      seatTotals.maintenanceMinutes,
+      seatTotals.businessSeatMinutes,
+    ),
+    operationalUtilizationBasisPoints: basisPoints(
+      seatTotals.usedMinutes,
+      seatTotals.normalSeatMinutes,
+    ),
+  };
+
+  const eligibleOrders = input.orders.filter(
+    (order) =>
+      order.paidCents !== null &&
+      order.terminalAt !== null &&
+      inRange(order.terminalAt) &&
+      (order.status === "cancelled" || order.status === "completed"),
+  );
+  const completedOrders = eligibleOrders.filter(
+    (order) => order.status === "completed",
+  );
+  const openRepairs = input.repairs.filter(
+    (repair) =>
+      repair.createdAt.getTime() < effectiveRangeEndsAt.getTime() &&
+      (repair.closedAt === null ||
+        repair.closedAt.getTime() >= effectiveRangeEndsAt.getTime()),
+  );
+  const resolutionMinutes = input.repairs
+    .flatMap((repair) =>
+      repair.closedAt && inRange(repair.closedAt)
+        ? [
+            Math.round(
+              (repair.closedAt.getTime() - repair.createdAt.getTime()) / 60_000,
+            ),
+          ]
+        : [],
+    )
+    .sort((left, right) => left - right);
+  const medianIndex = Math.floor(resolutionMinutes.length / 2);
+  const medianResolutionMinutes =
+    resolutionMinutes.length === 0
+      ? null
+      : resolutionMinutes.length % 2 === 1
+        ? (resolutionMinutes[medianIndex] ?? 0)
+        : Math.round(
+            ((resolutionMinutes[medianIndex - 1] ?? 0) +
+              (resolutionMinutes[medianIndex] ?? 0)) /
+              2,
+          );
+  const attendance = input.attendance.filter((item) =>
+    inRange(item.businessOccurredAt),
+  );
+
+  return {
+    days: input.businessDays.map((day) => ({
+      key: day.key,
+      revenue: revenueByDay.get(day.key)!,
+      seats: seatMetricsByDay.get(day.key)!,
+    })),
+    summary: {
+      attendance: {
+        absent: attendance.filter((item) => item.outcome === "absent").length,
+        late: attendance.filter((item) => item.outcome === "late").length,
+        onTime: attendance.filter((item) => item.outcome === "on-time").length,
+      },
+      handoverExceptionCount: input.handoverExceptions.filter((item) =>
+        inRange(item.businessOccurredAt),
+      ).length,
+      inventory: input.inventory,
+      orders: {
+        backlogCount: input.orders.filter(
+          (order) =>
+            order.createdAt.getTime() < effectiveRangeEndsAt.getTime() &&
+            (order.status === "preparing" ||
+              order.status === "ready-for-pickup" ||
+              order.status === "simulated-paid"),
+        ).length,
+        completedCount: completedOrders.length,
+        completionRateBasisPoints: basisPoints(
+          completedOrders.length,
+          eligibleOrders.length,
+        ),
+        eligibleTerminalCount: eligibleOrders.length,
+        wasteCents: eligibleOrders.reduce(
+          (total, order) => total + order.wasteCents,
+          0,
+        ),
+        wasteQuantity: eligibleOrders.reduce(
+          (total, order) => total + order.wasteQuantity,
+          0,
+        ),
+      },
+      repairs: {
+        maintenanceMinutes: seats.maintenanceMinutes,
+        medianResolutionMinutes,
+        openByPriority: {
+          high: openRepairs.filter((repair) => repair.priority === "high")
+            .length,
+          normal: openRepairs.filter((repair) => repair.priority === "normal")
+            .length,
+          urgent: openRepairs.filter((repair) => repair.priority === "urgent")
+            .length,
+        },
+        openCount: openRepairs.length,
+      },
+      revenue,
+      seats,
+    },
   };
 }
 

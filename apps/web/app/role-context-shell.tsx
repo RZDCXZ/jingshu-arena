@@ -36,6 +36,7 @@ import {
   HeadquartersPeopleSchedule,
   ManagerPeopleSchedule,
 } from "./manager-people-schedule";
+import { ManagerDashboard } from "./manager-dashboard";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -610,6 +611,19 @@ export function RoleContextShell({
         <section className="role-workspace">
           {context.role.id === "customer" && activePage === "customer-home" ? (
             <CustomerSeatBrowser csrfToken={context.csrfToken} />
+          ) : context.role.id === "manager" &&
+            activePage === "store-dashboard" ? (
+            <ManagerDashboard
+              onNavigateAudit={() => setActivePage("store-audit")}
+              onNavigateInventory={() => setActivePage("manager-inventory")}
+              onNavigatePeople={() => setActivePage("people-schedule")}
+              onNavigateRepairs={() => setActivePage("manager-repairs")}
+              onNavigateReservations={() => {
+                setManagerLiveMode("reservations");
+                setActivePage("live-ops");
+              }}
+              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+            />
           ) : context.role.id === "staff" && activePage === "shift" ? (
             <StaffShiftAttendance
               csrfToken={context.csrfToken}

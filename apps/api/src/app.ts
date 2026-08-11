@@ -17,6 +17,7 @@ import { registerStaffOrderRoutes } from "./staff-order-routes.js";
 import { registerManagerInventoryRoutes } from "./manager-inventory-routes.js";
 import { registerManagerStoreConfigurationRoutes } from "./manager-store-configuration-routes.js";
 import { registerManagerPeopleScheduleRoutes } from "./manager-people-schedule-routes.js";
+import { registerManagerDashboardRoutes } from "./manager-dashboard-routes.js";
 import { registerRepairIntakeRoutes } from "./repair-intake-routes.js";
 import type { RepairImageStorage } from "./repair-image-storage.js";
 
@@ -73,6 +74,7 @@ export function createApp(options: AppOptions = {}) {
   registerManagerInventoryRoutes(app, services);
   registerManagerStoreConfigurationRoutes(app, services);
   registerManagerPeopleScheduleRoutes(app, services);
+  registerManagerDashboardRoutes(app, services);
   registerRepairIntakeRoutes(app, services);
   registerPublicSandboxRoutes(app, services);
 

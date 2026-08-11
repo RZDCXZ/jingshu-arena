@@ -3,7 +3,20 @@
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-11
 - 已验证契约版本：`product-ui/management-system/prod.md` 1.12
-- 验证范围：[`21 — 店长员工管理、排班与考勤`](../../../.scratch/jingshu-basic-rc/issues/21-manager-people-schedule-attendance.md)；保留 ticket 20 价格/商品配置和更早结论
+- 验证范围：[`22 — 单店经营看板与经营日下钻`](../../../.scratch/jingshu-basic-rc/issues/22-manager-dashboard.md)；保留 ticket 21 员工/排班/考勤和更早结论
+
+## Ticket 22 `WEB-M01` 对照目标与结论
+
+- 视觉方向继续使用选定源 `design/reference/selected-night-operations-console.png`，页面状态源为正式原型店长“经营看板”。应用内浏览器以精确 `1440 × 1024 CSS px` 和 `1024 × 768 CSS px` 打开正式原型与真实 Web → Hono → PostgreSQL 生产页；设备像素比为 1。
+- 原始证据保存在 `design/evidence/ticket-22-manager-dashboard/source-formal-manager-dashboard-1440x1024.png`、`source-formal-manager-dashboard-1024x768.png`、`implementation-manager-dashboard-1440x1024-pass2.png` 与 `implementation-manager-dashboard-1024x768.png`。全屏同屏比较分别为 `comparison-full-1440x1024.png`（`2880 × 1024`）和 `comparison-full-1024x768.png`（`2048 × 768`）；主内容重点比较为对应的 `comparison-focused-main-*`。
+- 两侧都保留“经营日标题与范围 → 四张核心指标卡 → 模拟营业额/双座位指标图 → 三块事实与证据面板”的信息层级。生产数据来自当前沙箱，因此数值和曲线与正式原型的代表性样例不同；海军蓝高密度壳层、青色信息反馈、青柠/琥珀状态、边框与圆角、正式品牌资产和 Phosphor 图标保持一致。
+- `1440 × 1024` 下四张指标卡单行呈现，双图并列，下方订单维修、人员库存异常和最近经营记录同屏；`1024 × 768` 下指标卡转为两列、主图转为单列，与正式原型的响应式层级一致。两档生产页均有 `documentScrollWidth = viewportWidth`，没有页面级横向溢出或被裁切的主操作。
+- 真实主路径依次验证当前经营日、最近七日、自定义 `2026-08-09` 至 `2026-08-10`、模拟营业额口径展开，以及最近七日指标卡下钻；下钻标题、行项目和范围均保留“棱镜旗舰店 · 2026-08-05 至 2026-08-11”。无数据状态提供“重新读取/返回当前经营日”，错误状态保留范围并提供“重试当前范围”。
+- 干净生产标签在两档视口以及范围切换、口径展开、下钻和自定义范围之后 warning/error 均为 0。领域固定事实、真实 PostgreSQL 与 API 自动化覆盖 `06:00` 边界、十四日限制、片段退款、订单分母、两个座位分母、维修中位数/维护分钟、当前店长范围和其他角色拒绝。
+- 第 1 轮 P2 已关闭：生产首版把报修和考勤也提升为顶部指标，形成六张过密卡片，同时下半屏在 `1440px` 下过早结束。最终恢复正式源的四卡主层级，把报修与考勤放回事实面板，并增高趋势图与下层密度；修复前后分别保存在 `implementation-manager-dashboard-1440x1024-pass1.png` 与 `implementation-manager-dashboard-1440x1024-pass2.png`。
+- 第 2 轮 P2 已关闭：生产首版在 `1024px` 仍保留四卡单行和双图并列，正式源使用两列卡片和单列主图。最终在 `1180px` 断点切换两列指标与单列图表，合并比较确认结构一致。当前没有仍需处理的 P0、P1 或 P2 差异；P3 仅为权威沙箱数值/七日曲线与正式样例数值不同。
+
+final result: passed
 
 ## Ticket 21 `WEB-M07/WEB-M08/WEB-M09` 对照目标与结论
 

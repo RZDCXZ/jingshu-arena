@@ -55,6 +55,29 @@ async function withSandboxSql<T>(
   }
 }
 
+async function readSandboxOrderCounts(sandboxId: string) {
+  return withSandboxSql(sandboxId, async (client) => {
+    const counts = await client.query<{
+      audits: number;
+      events: number;
+      movements: number;
+      orders: number;
+      reservations: number;
+      reservedQuantity: number;
+    }>(
+      `select
+         (select count(*)::integer from customer_orders where sandbox_id = $1) as orders,
+         (select count(*)::integer from order_inventory_reservations where sandbox_id = $1) as reservations,
+         (select count(*)::integer from order_business_events where sandbox_id = $1) as events,
+         (select count(*)::integer from inventory_movements where sandbox_id = $1) as movements,
+         (select count(*)::integer from audit_events where sandbox_id = $1 and action = 'order.create') as audits,
+         (select sum(reserved_quantity)::integer from inventory_items where sandbox_id = $1) as "reservedQuantity"`,
+      [sandboxId],
+    );
+    return counts.rows[0]!;
+  });
+}
+
 async function createArrivedCustomerReservation() {
   const world = await database.create({
     creationKey: randomUUID(),
@@ -280,6 +303,7 @@ describe("customer order and whole-cart inventory persistence", () => {
       (product) => product.availableQuantity === 3,
     )!;
     const coupon = catalog.coupons[0]!;
+    const baselineCounts = await readSandboxOrderCounts(context.sandboxId);
 
     await expect(
       database.createCustomerPendingOrder({
@@ -296,31 +320,9 @@ describe("customer order and whole-cart inventory persistence", () => {
     ).rejects.toMatchObject({ reason: "insufficient-inventory" });
 
     await withSandboxSql(context.sandboxId, async (client) => {
-      const counts = await client.query<{
-        audits: number;
-        events: number;
-        movements: number;
-        orders: number;
-        reservations: number;
-        reservedQuantity: number;
-      }>(
-        `select
-           (select count(*)::integer from customer_orders where sandbox_id = $1) as orders,
-           (select count(*)::integer from order_inventory_reservations where sandbox_id = $1) as reservations,
-           (select count(*)::integer from order_business_events where sandbox_id = $1) as events,
-           (select count(*)::integer from inventory_movements where sandbox_id = $1) as movements,
-           (select count(*)::integer from audit_events where sandbox_id = $1 and action = 'order.create') as audits,
-           (select sum(reserved_quantity)::integer from inventory_items where sandbox_id = $1) as "reservedQuantity"`,
-        [context.sandboxId],
+      expect(await readSandboxOrderCounts(context.sandboxId)).toEqual(
+        baselineCounts,
       );
-      expect(counts.rows[0]).toEqual({
-        audits: 0,
-        events: 0,
-        movements: 0,
-        orders: 0,
-        reservations: 0,
-        reservedQuantity: 0,
-      });
       const couponRow = await client.query<{ status: string }>(
         `select status from experience_coupons where sandbox_id = $1 and id = $2`,
         [context.sandboxId, coupon.id],
@@ -477,6 +479,9 @@ describe("customer order and whole-cart inventory persistence", () => {
     });
     const replayProduct = replayCatalog.products[0]!;
     const key = randomUUID();
+    const baselineCounts = await readSandboxOrderCounts(
+      replaySetup.context.sandboxId,
+    );
     const replayOutcomes = await Promise.all(
       Array.from({ length: 20 }, () =>
         database.createCustomerPendingOrder({
@@ -492,19 +497,13 @@ describe("customer order and whole-cart inventory persistence", () => {
     expect(
       new Set(replayOutcomes.map((outcome) => outcome.orderId)),
     ).toHaveLength(1);
-    await withSandboxSql(replaySetup.context.sandboxId, async (client) => {
-      const counts = await client.query<{
-        events: number;
-        orders: number;
-        reservations: number;
-      }>(
-        `select
-           (select count(*)::integer from customer_orders where sandbox_id = $1) as orders,
-           (select count(*)::integer from order_inventory_reservations where sandbox_id = $1) as reservations,
-           (select count(*)::integer from order_business_events where sandbox_id = $1) as events`,
-        [replaySetup.context.sandboxId],
-      );
-      expect(counts.rows[0]).toEqual({ events: 1, orders: 1, reservations: 1 });
+    const finalCounts = await readSandboxOrderCounts(
+      replaySetup.context.sandboxId,
+    );
+    expect(finalCounts).toMatchObject({
+      events: baselineCounts.events + 1,
+      orders: baselineCounts.orders + 1,
+      reservations: baselineCounts.reservations + 1,
     });
   });
 });

@@ -87,7 +87,7 @@ describe("POST /api/v1/public/sandboxes", () => {
       },
       world: {
         schemaVersion: "20",
-        seedVersion: "2026-08-11.4",
+        seedVersion: "2026-08-11.5",
         operator: { displayName: "竞枢演示经营方", city: "栖光市" },
         stores: [
           { displayName: "棱镜旗舰店" },
@@ -142,7 +142,7 @@ describe("POST /api/v1/public/sandboxes", () => {
       capabilities: ["customer:manage-own-records"],
       sandbox: {
         schemaVersion: "20",
-        seedVersion: "2026-08-11.4",
+        seedVersion: "2026-08-11.5",
         expiresAt: expect.any(String),
       },
       freshness: {

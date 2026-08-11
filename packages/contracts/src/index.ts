@@ -1821,6 +1821,118 @@ export interface ApiErrorResponse {
   };
 }
 
+export type ManagerDashboardDrilldownKind =
+  | "attendance"
+  | "evidence"
+  | "handover"
+  | "inventory"
+  | "orders"
+  | "repairs"
+  | "revenue"
+  | "seats";
+
+export interface ManagerDashboardRevenueResponse {
+  readonly orderCents: number;
+  readonly reservationCents: number;
+  readonly totalCents: number;
+}
+
+export interface ManagerDashboardSeatResponse {
+  readonly businessSeatMinutes: number;
+  readonly maintenanceMinutes: number;
+  readonly maintenanceRateBasisPoints: number;
+  readonly normalSeatMinutes: number;
+  readonly operationalUtilizationBasisPoints: number;
+  readonly usedMinutes: number;
+}
+
+export interface ManagerDashboardDayResponse {
+  readonly key: string;
+  readonly revenue: ManagerDashboardRevenueResponse;
+  readonly seats: ManagerDashboardSeatResponse;
+}
+
+export interface ManagerDashboardResponse {
+  readonly status: "ready";
+  readonly availableBusinessDays: ReadonlyArray<{
+    readonly endsAt: string;
+    readonly key: string;
+    readonly startsAt: string;
+  }>;
+  readonly currentTime: string;
+  readonly days: ReadonlyArray<ManagerDashboardDayResponse>;
+  readonly drilldown: {
+    readonly fromBusinessDay: string;
+    readonly kind: ManagerDashboardDrilldownKind;
+    readonly rows: ReadonlyArray<{
+      readonly amountCents: number | null;
+      readonly businessDayKey: string;
+      readonly detail: string;
+      readonly objectId: string;
+      readonly objectType:
+        | "attendance"
+        | "handover"
+        | "inventory"
+        | "order"
+        | "repair"
+        | "reservation";
+      readonly occurredAt: string;
+      readonly status: string;
+      readonly title: string;
+    }>;
+    readonly storeCode: string;
+    readonly toBusinessDay: string;
+  } | null;
+  readonly range: {
+    readonly endsAt: string;
+    readonly fromBusinessDay: string;
+    readonly preset: "current" | "custom";
+    readonly startsAt: string;
+    readonly toBusinessDay: string;
+  };
+  readonly recentEvidence: ReadonlyArray<{
+    readonly action: string;
+    readonly businessDayKey: string;
+    readonly detail: string;
+    readonly objectId: string;
+    readonly objectType:
+      "attendance" | "handover" | "order" | "repair" | "reservation";
+    readonly occurredAt: string;
+    readonly title: string;
+  }>;
+  readonly store: { readonly code: string; readonly displayName: string };
+  readonly summary: {
+    readonly attendance: {
+      readonly absent: number;
+      readonly late: number;
+      readonly onTime: number;
+    };
+    readonly handoverExceptionCount: number;
+    readonly inventory: { readonly lowStockCount: number };
+    readonly orders: {
+      readonly backlogCount: number;
+      readonly completedCount: number;
+      readonly completionRateBasisPoints: number;
+      readonly eligibleTerminalCount: number;
+      readonly wasteCents: number;
+      readonly wasteQuantity: number;
+    };
+    readonly repairs: {
+      readonly maintenanceMinutes: number;
+      readonly medianResolutionMinutes: number | null;
+      readonly openByPriority: {
+        readonly high: number;
+        readonly normal: number;
+        readonly urgent: number;
+      };
+      readonly openCount: number;
+    };
+    readonly revenue: ManagerDashboardRevenueResponse;
+    readonly seats: ManagerDashboardSeatResponse;
+  };
+  readonly trend: ReadonlyArray<ManagerDashboardDayResponse>;
+}
+
 export type ManagerPeopleFrontlineRole = "manager" | "staff";
 
 export interface ManagerCoverageWarningResponse {

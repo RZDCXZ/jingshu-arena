@@ -6,6 +6,8 @@ import type {
   HandoverCommandResponse,
   HeadquartersPeopleScheduleResponse,
   ManagerHandoverExceptionsResponse,
+  ManagerDashboardResponse,
+  ManagerDashboardDrilldownKind,
   ManagerPeopleCommandRequest,
   ManagerPeopleScheduleResponse,
   ManagerShiftCoveragePreviewRequest,
@@ -637,6 +639,143 @@ test.beforeEach(async ({ context }) => {
       storeId,
     },
   };
+  const managerDashboardKeys = [
+    "2026-07-27",
+    "2026-07-28",
+    "2026-07-29",
+    "2026-07-30",
+    "2026-07-31",
+    "2026-08-01",
+    "2026-08-02",
+    "2026-08-03",
+    "2026-08-04",
+    "2026-08-05",
+    "2026-08-06",
+    "2026-08-07",
+    "2026-08-08",
+    "2026-08-09",
+  ] as const;
+  const dashboardDay = (key: string, index: number) => ({
+    key,
+    revenue: {
+      orderCents: 2_600 + index * 100,
+      reservationCents: 11_000 + index * 400,
+      totalCents: 13_600 + index * 500,
+    },
+    seats: {
+      businessSeatMinutes: 138_240,
+      maintenanceMinutes: 2_880 + index * 20,
+      maintenanceRateBasisPoints: 208 + index * 2,
+      normalSeatMinutes: 135_360 - index * 20,
+      operationalUtilizationBasisPoints: 7_500 + index * 55,
+      usedMinutes: 101_520 + index * 700,
+    },
+  });
+  function managerDashboardPayload(requestUrl: string) {
+    const url = new URL(requestUrl);
+    const from = url.searchParams.get("from") ?? managerDashboardKeys.at(-1)!;
+    const to = url.searchParams.get("to") ?? managerDashboardKeys.at(-1)!;
+    const drilldown = url.searchParams.get(
+      "drilldown",
+    ) as ManagerDashboardDrilldownKind | null;
+    const selected = managerDashboardKeys
+      .filter((key) => key >= from && key <= to)
+      .map(dashboardDay);
+    const current = selected.at(-1) ?? dashboardDay(to, 13);
+    const objectType = {
+      attendance: "attendance",
+      evidence: "repair",
+      handover: "handover",
+      inventory: "inventory",
+      orders: "order",
+      repairs: "repair",
+      revenue: "reservation",
+      seats: "reservation",
+    }[drilldown ?? "evidence"] as
+      | "attendance"
+      | "handover"
+      | "inventory"
+      | "order"
+      | "repair"
+      | "reservation";
+    return {
+      availableBusinessDays: managerDashboardKeys.map((key) => {
+        const startsAt = new Date(`${key}T06:00:00.000+08:00`);
+        return {
+          endsAt: new Date(startsAt.getTime() + 24 * 60 * 60_000).toISOString(),
+          key,
+          startsAt: startsAt.toISOString(),
+        };
+      }),
+      currentTime: businessTime,
+      days: selected,
+      drilldown: drilldown
+        ? {
+            fromBusinessDay: from,
+            kind: drilldown,
+            rows: [
+              {
+                amountCents: drilldown === "revenue" ? 6_800 : null,
+                businessDayKey: to,
+                detail: "林澈 · A-18 · 服务端业务事实",
+                objectId: "00000000-0000-4000-8000-000000000a22",
+                objectType,
+                occurredAt: businessTime,
+                status: drilldown === "revenue" ? "completed" : "open",
+                title:
+                  drilldown === "revenue"
+                    ? "预约 A-18 · 半小时价格片段"
+                    : "当前范围经营记录",
+              },
+            ],
+            storeCode: "prism-flagship",
+            toBusinessDay: to,
+          }
+        : null,
+      range: {
+        endsAt: new Date(`${to}T06:00:00.000+08:00`).toISOString(),
+        fromBusinessDay: from,
+        preset: url.searchParams.has("from") ? "custom" : "current",
+        startsAt: new Date(`${from}T06:00:00.000+08:00`).toISOString(),
+        toBusinessDay: to,
+      },
+      recentEvidence: [
+        {
+          action: "repair.processing",
+          businessDayKey: to,
+          detail: "A-09 · 显示器间歇黑屏",
+          objectId: "00000000-0000-4000-8000-000000000a23",
+          objectType: "repair",
+          occurredAt: businessTime,
+          title: "报修状态更新",
+        },
+      ],
+      status: "ready",
+      store: { code: "prism-flagship", displayName: "棱镜旗舰店" },
+      summary: {
+        attendance: { absent: 1, late: 2, onTime: 11 },
+        handoverExceptionCount: 1,
+        inventory: { lowStockCount: 3 },
+        orders: {
+          backlogCount: 4,
+          completedCount: 25,
+          completionRateBasisPoints: 9_260,
+          eligibleTerminalCount: 27,
+          wasteCents: 2_600,
+          wasteQuantity: 2,
+        },
+        repairs: {
+          maintenanceMinutes: current.seats.maintenanceMinutes,
+          medianResolutionMinutes: 45,
+          openByPriority: { high: 1, normal: 0, urgent: 0 },
+          openCount: 1,
+        },
+        revenue: current.revenue,
+        seats: current.seats,
+      },
+      trend: managerDashboardKeys.slice(-7).map(dashboardDay),
+    } satisfies ManagerDashboardResponse;
+  }
 
   function staffOrderDetail(
     row: MutableStaffOrderSummary,
@@ -1189,6 +1328,13 @@ test.beforeEach(async ({ context }) => {
         replayed: false,
         status: "ready",
       },
+      status: 200,
+    });
+  });
+  await context.route("**/api/v1/manager/dashboard**", async (route) => {
+    expect(currentRole).toBe("manager");
+    await route.fulfill({
+      json: managerDashboardPayload(route.request().url()),
       status: 200,
     });
   });
@@ -2345,6 +2491,97 @@ async function enterManagerStoreConfiguration(page: Page) {
   await page.getByRole("button", { name: "门店配置" }).click();
   await expect(page.getByRole("heading", { name: "门店配置" })).toBeVisible();
 }
+
+async function enterManagerDashboard(page: Page) {
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "店长 许知远 · 虚构人物 棱镜旗舰店",
+    })
+    .click();
+  await expect(page.getByRole("heading", { name: "经营看板" })).toBeVisible();
+  await expect(page.getByText("模拟营业额", { exact: true })).toBeVisible();
+}
+
+test("manager dashboard keeps real metrics, ranges and drilldowns in one store context", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await enterManagerDashboard(page);
+
+  await expect(page.getByText("运营座位利用率", { exact: true })).toBeVisible();
+  await expect(page.getByText("维护不可用率", { exact: true })).toBeVisible();
+  await expect(page.getByText("订单完成率", { exact: true })).toBeVisible();
+  await expect(page.getByText("3 人次", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "最近 7 日" }).click();
+  await expect(page.getByText(/2026-08-03 至 2026-08-09/u)).toBeVisible();
+
+  await page
+    .getByRole("button")
+    .filter({ hasText: "模拟营业额" })
+    .first()
+    .click();
+  const drilldown = page.getByRole("dialog", { name: "模拟营业额构成" });
+  await expect(drilldown).toBeVisible();
+  await expect(
+    drilldown.getByText("prism-flagship", { exact: false }),
+  ).toHaveCount(0);
+  await expect(drilldown.getByText(/2026-08-03 至 2026-08-09/u)).toBeVisible();
+  await expect(drilldown.getByText("预约 A-18 · 半小时价格片段")).toBeVisible();
+  await drilldown.getByRole("button", { name: "关闭指标下钻" }).click();
+
+  await page.locator(".manager-dashboard-range summary").click();
+  await page.getByLabel("起始经营日").selectOption("2026-08-05");
+  await page.getByLabel("结束经营日").selectOption("2026-08-07");
+  await page.getByRole("button", { name: "应用范围" }).click();
+  await expect(page.getByText(/2026-08-05 至 2026-08-07/u)).toBeVisible();
+
+  const widths = await page.evaluate(() => ({
+    client: document.body.clientWidth,
+    scroll: document.body.scrollWidth,
+  }));
+  expect(widths.scroll).toBe(widths.client);
+});
+
+test("manager dashboard failure stays actionable and retries without fallback data", async ({
+  page,
+}) => {
+  let first = true;
+  await page.route("**/api/v1/manager/dashboard**", async (route) => {
+    if (first) {
+      first = false;
+      await route.fulfill({
+        json: {
+          error: {
+            code: "MANAGER_DASHBOARD_SERVICE_UNAVAILABLE",
+            message: "经营事实服务暂时不可用。",
+            requestId: crypto.randomUUID(),
+          },
+        },
+        status: 503,
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await enterStaffShell(page);
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "店长 许知远 · 虚构人物 棱镜旗舰店",
+    })
+    .click();
+  await expect(
+    page.getByRole("heading", {
+      name: "当前页面没有用预置数字替代服务端结果。",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("经营事实服务暂时不可用。")).toBeVisible();
+  await page.getByRole("button", { name: "重新读取经营看板" }).click();
+  await expect(page.getByRole("heading", { name: "经营看板" })).toBeVisible();
+});
 
 test("staff sees own shift summary, explicit simulation boundary and manual attendance actions", async ({
   page,

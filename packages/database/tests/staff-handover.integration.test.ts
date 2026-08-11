@@ -107,7 +107,35 @@ describe("staff handover persistence", () => {
         [staff.sandboxId],
       );
       await client.query(
-        `update repairs set status = 'closed'
+        `update repairs set
+            status = 'closed',
+            resolution_note = coalesce(resolution_note, '测试快照清理'),
+            resolution_submitted_by_persona_id = coalesce(
+              resolution_submitted_by_persona_id,
+              assigned_to_persona_id,
+              created_by_persona_id
+            ),
+            resolution_business_at = coalesce(
+              resolution_business_at,
+              processing_business_at,
+              created_business_at
+            ),
+            latest_verification_outcome = 'success',
+            verified_by_persona_id = coalesce(
+              verified_by_persona_id,
+              assigned_to_persona_id,
+              created_by_persona_id
+            ),
+            verification_business_at = coalesce(
+              verification_business_at,
+              processing_business_at,
+              created_business_at
+            ),
+            closed_business_at = coalesce(
+              closed_business_at,
+              processing_business_at,
+              created_business_at
+            )
           where sandbox_id = $1 and status <> 'closed'`,
         [staff.sandboxId],
       );

@@ -343,6 +343,20 @@ export class ManagerPeopleConflictError extends Error {
   }
 }
 
+export type ManagerDashboardRangeReason =
+  "incomplete-range" | "outside-seed-range" | "reversed-range";
+
+export class ManagerDashboardRangeError extends Error {
+  readonly code = "MANAGER_DASHBOARD_RANGE_INVALID";
+  readonly reason: ManagerDashboardRangeReason;
+
+  constructor(reason: ManagerDashboardRangeReason) {
+    super(`Manager dashboard range was rejected: ${reason}.`);
+    this.name = "ManagerDashboardRangeError";
+    this.reason = reason;
+  }
+}
+
 export type RepairIntakeConflictReason =
   | "description-invalid"
   | "idempotency-conflict"

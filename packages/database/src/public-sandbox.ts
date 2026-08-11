@@ -4,6 +4,7 @@ import pg from "pg";
 import type { PoolClient } from "pg";
 import type {
   FrontlineReservationAction,
+  ManagerDashboardDrilldownKind,
   PublicRole,
   RepairImageContentType,
   StaffOrderAction,
@@ -11,9 +12,13 @@ import type {
   StaffReservationAnomalyFilter,
   StaffReservationTimeFilter,
 } from "@jingshu/contracts";
+export type { ManagerDashboardDrilldownKind } from "@jingshu/contracts";
 import {
   businessDayRange,
+  businessDayKey,
+  attributeManagerReservationRevenue,
   buildPublicSandboxSeed,
+  calculateManagerDashboardMetrics,
   decideCustomerOrderLifecycle,
   type CustomerReservationMode,
   decideReservationLifecycle,
@@ -33,6 +38,7 @@ import {
   normalizeRepairDescription,
   normalizeHandoverNote,
   memberTierForGrowth,
+  managerDashboardBusinessDays,
   pricePlanClockRangesOverlap,
   pricePlanEffectiveRangesOverlap,
   priceCustomerOrder,
@@ -64,6 +70,7 @@ import {
   FrontlineReservationConflictError,
   ManagerInventoryConflictError,
   type ManagerInventoryConflictReason,
+  ManagerDashboardRangeError,
   ManagerStoreConfigurationConflictError,
   type ManagerStoreConfigurationConflictReason,
   ManagerPeopleConflictError,
@@ -1062,6 +1069,66 @@ export type ReadManagerPeopleScheduleInput =
   ReadStaffReservationWorkbenchInput & {
     readonly role: "manager";
   };
+
+export interface ReadManagerDashboardInput extends ReadStaffReservationWorkbenchInput {
+  readonly drilldown?: ManagerDashboardDrilldownKind;
+  readonly fromBusinessDay?: string;
+  readonly toBusinessDay?: string;
+}
+
+export interface DatabaseManagerDashboard {
+  readonly availableBusinessDays: ReadonlyArray<{
+    readonly endsAt: Date;
+    readonly key: string;
+    readonly startsAt: Date;
+  }>;
+  readonly currentTime: Date;
+  readonly days: ReturnType<typeof calculateManagerDashboardMetrics>["days"];
+  readonly drilldown: {
+    readonly fromBusinessDay: string;
+    readonly kind: ManagerDashboardDrilldownKind;
+    readonly rows: ReadonlyArray<{
+      readonly amountCents: number | null;
+      readonly businessDayKey: string;
+      readonly detail: string;
+      readonly objectId: string;
+      readonly objectType:
+        | "attendance"
+        | "handover"
+        | "inventory"
+        | "order"
+        | "repair"
+        | "reservation";
+      readonly occurredAt: Date;
+      readonly status: string;
+      readonly title: string;
+    }>;
+    readonly storeCode: string;
+    readonly toBusinessDay: string;
+  } | null;
+  readonly range: {
+    readonly endsAt: Date;
+    readonly fromBusinessDay: string;
+    readonly preset: "current" | "custom";
+    readonly startsAt: Date;
+    readonly toBusinessDay: string;
+  };
+  readonly recentEvidence: ReadonlyArray<{
+    readonly action: string;
+    readonly businessDayKey: string;
+    readonly detail: string;
+    readonly objectId: string;
+    readonly objectType:
+      "attendance" | "handover" | "order" | "repair" | "reservation";
+    readonly occurredAt: Date;
+    readonly title: string;
+  }>;
+  readonly store: { readonly code: string; readonly displayName: string };
+  readonly summary: ReturnType<
+    typeof calculateManagerDashboardMetrics
+  >["summary"];
+  readonly trend: ReturnType<typeof calculateManagerDashboardMetrics>["days"];
+}
 
 export interface DatabaseManagerPeopleSchedule {
   readonly attendance: ReadonlyArray<{
@@ -2141,6 +2208,9 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readManagerStoreConfiguration(
     input: ReadManagerStoreConfigurationInput,
   ): Promise<DatabaseManagerStoreConfiguration>;
+  readManagerDashboard(
+    input: ReadManagerDashboardInput,
+  ): Promise<DatabaseManagerDashboard>;
   readManagerPeopleSchedule(
     input: ReadManagerPeopleScheduleInput,
   ): Promise<DatabaseManagerPeopleSchedule>;
@@ -3735,6 +3805,42 @@ async function businessHoursFor(
     [input.sandboxId, input.storeId, input.at],
   );
   return scheduled.rows[0] ?? input.baseline;
+}
+
+function dashboardBusinessClockAt(
+  key: string,
+  clock: string,
+  forceNextDay = false,
+) {
+  const normalizedClock = clock.slice(0, 5);
+  const [hours = 0, minutes = 0] = normalizedClock.split(":").map(Number);
+  const dayOffset = forceNextDay || hours * 60 + minutes < 6 * 60 ? 1 : 0;
+  const serial =
+    Math.floor(Date.parse(`${key}T00:00:00.000Z`) / (24 * 60 * 60 * 1_000)) +
+    dayOffset;
+  const localDate = new Date(serial * 24 * 60 * 60 * 1_000);
+  const localKey = `${localDate.getUTCFullYear()}-${String(
+    localDate.getUTCMonth() + 1,
+  ).padStart(2, "0")}-${String(localDate.getUTCDate()).padStart(2, "0")}`;
+  return new Date(`${localKey}T${normalizedClock}:00.000+08:00`);
+}
+
+function dashboardBusinessWindow(
+  day: ReturnType<typeof managerDashboardBusinessDays>[number],
+  hours: StoreBusinessHoursSelection,
+) {
+  if (hours.is_open_24_hours) {
+    return { ...day, opensAt: day.startsAt };
+  }
+  return {
+    ...day,
+    endsAt: dashboardBusinessClockAt(
+      day.key,
+      hours.closes_at,
+      hours.closes_next_day,
+    ),
+    opensAt: dashboardBusinessClockAt(day.key, hours.opens_at),
+  };
 }
 
 function hash(value: string): string {
@@ -7469,6 +7575,743 @@ async function materializePublicSandbox(input: {
       seededStaffEvents.map((event) => event.type),
       seededStaffEvents.map((event) => JSON.stringify(event.data)),
       seededStaffEvents.map((event) => event.at),
+    ],
+  );
+
+  const dashboardDays = managerDashboardBusinessDays(input.wallTime);
+  const dashboardProduct = seededProductInventory.find(
+    (item) => item.storeId === flagshipStore.id && item.listed,
+  );
+  if (!dashboardProduct) {
+    throw new Error("The dashboard history product seed is incomplete.");
+  }
+  const dashboardReservations = dashboardDays.map((day, index) => {
+    const seat = seatByKey.get(
+      `prism-flagship:A-${String(10 + (index % 8)).padStart(2, "0")}`,
+    );
+    const customer = staffQueueCustomers[index % staffQueueCustomers.length];
+    if (!seat || !customer) {
+      throw new Error("The dashboard reservation history seed is incomplete.");
+    }
+    const area = flagshipAreaById.get(seat.areaId);
+    const profile = machineProfileByCode.get(seat.machineProfileCode);
+    if (!area || !profile) {
+      throw new Error("The dashboard reservation snapshot seed is incomplete.");
+    }
+    const startsAt = new Date(
+      day.startsAt.getTime() +
+        (index === dashboardDays.length - 1 ? 4 : 12) * 60 * 60 * 1_000,
+    );
+    const endsAt = new Date(startsAt.getTime() + 60 * 60 * 1_000);
+    const price = priceReservationWindow({
+      baseHourlyCents: flagshipStore.baseHourlyCents[seat.machineProfileCode],
+      endsAt,
+      startsAt,
+    });
+    const id = randomUUID();
+    const snapshot: ReservationSnapshotRecord = {
+      area: { code: area.code, displayName: area.displayName },
+      coupon: null,
+      machineProfile: {
+        code: profile.code,
+        displayName: profile.displayName,
+        experienceDescription: profile.experienceDescription,
+      },
+      price: {
+        discountCents: 0,
+        payableCents: price.totalCents,
+        segments: price.segments.map((segment) => ({
+          ...segment,
+          endsAt: segment.endsAt.toISOString(),
+          startsAt: segment.startsAt.toISOString(),
+        })),
+        subtotalCents: price.totalCents,
+      },
+      seat: { code: seat.code },
+      store: {
+        code: flagshipStore.code,
+        displayName: flagshipStore.displayName,
+      },
+      window: {
+        endsAt: endsAt.toISOString(),
+        startsAt: startsAt.toISOString(),
+      },
+    };
+    return { customer, endsAt, id, seat, snapshot, startsAt };
+  });
+  await input.client.query(
+    `insert into reservations (
+       id, sandbox_id, store_id, customer_persona_id, seat_id, status,
+       starts_at, ends_at, created_business_at, price_snapshot,
+       simulated_payment_cents, confirmed_business_at, arrived_business_at,
+       started_business_at, completed_business_at, terminal_reason
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
+       $6::text[], $7::timestamptz[], $8::timestamptz[], $9::timestamptz[],
+       $10::jsonb[], $11::integer[], $12::timestamptz[], $13::timestamptz[],
+       $14::timestamptz[], $15::timestamptz[], $16::text[]
+     )`,
+    [
+      dashboardReservations.map((reservation) => reservation.id),
+      dashboardReservations.map(() => input.sandboxId),
+      dashboardReservations.map(() => flagshipStore.id),
+      dashboardReservations.map((reservation) => reservation.customer.id),
+      dashboardReservations.map((reservation) => reservation.seat.id),
+      dashboardReservations.map(() => "completed"),
+      dashboardReservations.map((reservation) => reservation.startsAt),
+      dashboardReservations.map((reservation) => reservation.endsAt),
+      dashboardReservations.map(
+        (reservation) =>
+          new Date(reservation.startsAt.getTime() - 24 * 60 * 60 * 1_000),
+      ),
+      dashboardReservations.map((reservation) =>
+        JSON.stringify(reservation.snapshot),
+      ),
+      dashboardReservations.map(
+        (reservation) => reservation.snapshot.price.payableCents,
+      ),
+      dashboardReservations.map(
+        (reservation) =>
+          new Date(reservation.startsAt.getTime() - 12 * 60 * 60 * 1_000),
+      ),
+      dashboardReservations.map(
+        (reservation) =>
+          new Date(reservation.startsAt.getTime() - 5 * 60 * 1_000),
+      ),
+      dashboardReservations.map((reservation) => reservation.startsAt),
+      dashboardReservations.map((reservation) => reservation.endsAt),
+      dashboardReservations.map(() => "planned-end-auto-completed"),
+    ],
+  );
+  const dashboardReservationEvents = dashboardReservations.flatMap(
+    (reservation) => [
+      {
+        at: new Date(reservation.startsAt.getTime() - 24 * 60 * 60 * 1_000),
+        data: { seeded: true },
+        reservationId: reservation.id,
+        type: "reservation.pending-created",
+      },
+      {
+        at: new Date(reservation.startsAt.getTime() - 12 * 60 * 60 * 1_000),
+        data: {
+          simulatedPaymentCents: reservation.snapshot.price.payableCents,
+        },
+        reservationId: reservation.id,
+        type: "reservation.simulated-payment-succeeded",
+      },
+      {
+        at: new Date(reservation.startsAt.getTime() - 5 * 60 * 1_000),
+        data: { seeded: true },
+        reservationId: reservation.id,
+        type: "reservation.arrived",
+      },
+      {
+        at: reservation.startsAt,
+        data: { seeded: true },
+        reservationId: reservation.id,
+        type: "reservation.started",
+      },
+      {
+        at: reservation.endsAt,
+        data: { reason: "planned-end", seeded: true },
+        reservationId: reservation.id,
+        type: "reservation.auto-completed",
+      },
+    ],
+  );
+  await input.client.query(
+    `insert into reservation_business_events (
+       id, sandbox_id, reservation_id, event_type, event_data,
+       business_occurred_at
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::jsonb[],
+       $6::timestamptz[]
+     )`,
+    [
+      dashboardReservationEvents.map(() => randomUUID()),
+      dashboardReservationEvents.map(() => input.sandboxId),
+      dashboardReservationEvents.map((event) => event.reservationId),
+      dashboardReservationEvents.map((event) => event.type),
+      dashboardReservationEvents.map((event) => JSON.stringify(event.data)),
+      dashboardReservationEvents.map((event) => event.at),
+    ],
+  );
+
+  const dashboardOrders = dashboardReservations.map((reservation, index) => {
+    const createdAt = new Date(reservation.startsAt.getTime() + 5 * 60_000);
+    const paidAt = new Date(createdAt.getTime() + 60_000);
+    const preparingAt = new Date(paidAt.getTime() + 2 * 60_000);
+    const readyAt = new Date(preparingAt.getTime() + 8 * 60_000);
+    const completedAt = new Date(readyAt.getTime() + 5 * 60_000);
+    const id = randomUUID();
+    const snapshot: CustomerOrderSnapshot = {
+      coupon: null,
+      discountCents: 0,
+      lines: [
+        {
+          lineTotalCents: dashboardProduct.unitPriceCents,
+          productId: dashboardProduct.productId,
+          productName: dashboardProduct.displayName,
+          quantity: 1,
+          unitPriceCents: dashboardProduct.unitPriceCents,
+        },
+      ],
+      payableCents: dashboardProduct.unitPriceCents,
+      reservation: {
+        reservationId: reservation.id,
+        seatCode: reservation.seat.code,
+        storeCode: flagshipStore.code,
+        storeDisplayName: flagshipStore.displayName,
+      },
+      subtotalCents: dashboardProduct.unitPriceCents,
+    };
+    return {
+      completedAt,
+      createdAt,
+      id,
+      index,
+      paidAt,
+      preparingAt,
+      readyAt,
+      reservation,
+      snapshot,
+    };
+  });
+  await input.client.query(
+    `update inventory_items set on_hand_quantity = on_hand_quantity + $3
+      where sandbox_id = $1 and id = $2`,
+    [input.sandboxId, dashboardProduct.id, dashboardOrders.length],
+  );
+  await input.client.query(
+    `insert into customer_orders (
+       id, sandbox_id, store_id, customer_persona_id, reservation_id, seat_id,
+       status, hold_expires_at, created_business_at, order_snapshot,
+       simulated_payment_cents, paid_business_at, preparing_business_at,
+       ready_business_at, completed_business_at, terminal_reason
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
+       $6::uuid[], $7::text[], $8::timestamptz[], $9::timestamptz[],
+       $10::jsonb[], $11::integer[], $12::timestamptz[], $13::timestamptz[],
+       $14::timestamptz[], $15::timestamptz[], $16::text[]
+     )`,
+    [
+      dashboardOrders.map((order) => order.id),
+      dashboardOrders.map(() => input.sandboxId),
+      dashboardOrders.map(() => flagshipStore.id),
+      dashboardOrders.map((order) => order.reservation.customer.id),
+      dashboardOrders.map((order) => order.reservation.id),
+      dashboardOrders.map((order) => order.reservation.seat.id),
+      dashboardOrders.map(() => "completed"),
+      dashboardOrders.map(
+        (order) => new Date(order.createdAt.getTime() + 10 * 60_000),
+      ),
+      dashboardOrders.map((order) => order.createdAt),
+      dashboardOrders.map((order) => JSON.stringify(order.snapshot)),
+      dashboardOrders.map((order) => order.snapshot.payableCents),
+      dashboardOrders.map((order) => order.paidAt),
+      dashboardOrders.map((order) => order.preparingAt),
+      dashboardOrders.map((order) => order.readyAt),
+      dashboardOrders.map((order) => order.completedAt),
+      dashboardOrders.map(() => "fulfilled"),
+    ],
+  );
+  await input.client.query(
+    `insert into order_inventory_reservations (
+       id, sandbox_id, order_id, inventory_item_id, quantity, status,
+       released_business_at
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::integer[],
+       $6::text[], $7::timestamptz[]
+     )`,
+    [
+      dashboardOrders.map(() => randomUUID()),
+      dashboardOrders.map(() => input.sandboxId),
+      dashboardOrders.map((order) => order.id),
+      dashboardOrders.map(() => dashboardProduct.id),
+      dashboardOrders.map(() => 1),
+      dashboardOrders.map(() => "sold"),
+      dashboardOrders.map((order) => order.completedAt),
+    ],
+  );
+  await input.client.query(
+    `insert into inventory_movements (
+       id, sandbox_id, store_id, inventory_item_id, order_id, movement_kind,
+       reason, on_hand_delta, on_hand_after, business_occurred_at
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
+       $6::text[], $7::text[], $8::integer[], $9::integer[],
+       $10::timestamptz[]
+     )`,
+    [
+      dashboardOrders.map(() => randomUUID()),
+      dashboardOrders.map(() => input.sandboxId),
+      dashboardOrders.map(() => flagshipStore.id),
+      dashboardOrders.map(() => dashboardProduct.id),
+      dashboardOrders.map((order) => order.id),
+      dashboardOrders.map(() => "sale"),
+      dashboardOrders.map(() => "order-completed"),
+      dashboardOrders.map(() => -1),
+      dashboardOrders.map(
+        (order) =>
+          dashboardProduct.onHandQuantity +
+          dashboardOrders.length -
+          order.index -
+          1,
+      ),
+      dashboardOrders.map((order) => order.completedAt),
+    ],
+  );
+  await input.client.query(
+    `update inventory_items set on_hand_quantity = on_hand_quantity - $3
+      where sandbox_id = $1 and id = $2`,
+    [input.sandboxId, dashboardProduct.id, dashboardOrders.length],
+  );
+  const dashboardOrderEvents = dashboardOrders.flatMap((order) => [
+    {
+      at: order.createdAt,
+      data: { seeded: true },
+      orderId: order.id,
+      type: "order.pending-created",
+    },
+    {
+      at: order.paidAt,
+      data: { simulatedPaymentCents: order.snapshot.payableCents },
+      orderId: order.id,
+      type: "order.simulated-payment-succeeded",
+    },
+    {
+      at: order.preparingAt,
+      data: { seeded: true },
+      orderId: order.id,
+      type: "order.preparing",
+    },
+    {
+      at: order.readyAt,
+      data: { seeded: true },
+      orderId: order.id,
+      type: "order.ready-for-pickup",
+    },
+    {
+      at: order.completedAt,
+      data: { seeded: true },
+      orderId: order.id,
+      type: "order.completed",
+    },
+  ]);
+  await input.client.query(
+    `insert into order_business_events (
+       id, sandbox_id, order_id, event_type, event_data, business_occurred_at
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::jsonb[],
+       $6::timestamptz[]
+     )`,
+    [
+      dashboardOrderEvents.map(() => randomUUID()),
+      dashboardOrderEvents.map(() => input.sandboxId),
+      dashboardOrderEvents.map((event) => event.orderId),
+      dashboardOrderEvents.map((event) => event.type),
+      dashboardOrderEvents.map((event) => JSON.stringify(event.data)),
+      dashboardOrderEvents.map((event) => event.at),
+    ],
+  );
+
+  for (const reservation of dashboardReservations) {
+    const profile = seededMemberProfiles.find(
+      (item) => item.customerPersonaId === reservation.customer.id,
+    );
+    const order = dashboardOrders.find(
+      (item) => item.reservation.id === reservation.id,
+    );
+    if (!profile || !order) {
+      throw new Error("The dashboard growth history seed is incomplete.");
+    }
+    const reservationGrowth = Math.floor(
+      reservation.snapshot.price.payableCents / 100,
+    );
+    const orderGrowth = Math.floor(order.snapshot.payableCents / 100);
+    await input.client.query(
+      `insert into member_growth_events (
+         id, sandbox_id, member_profile_id, customer_persona_id, source_kind,
+         source_id, final_simulated_amount_cents, growth_points,
+         business_occurred_at
+       ) values
+         ($1, $2, $3, $4, 'reservation', $5, $6, $7, $8),
+         ($9, $2, $3, $4, 'order', $10, $11, $12, $13)`,
+      [
+        randomUUID(),
+        input.sandboxId,
+        profile.id,
+        reservation.customer.id,
+        reservation.id,
+        reservation.snapshot.price.payableCents,
+        reservationGrowth,
+        reservation.endsAt,
+        randomUUID(),
+        order.id,
+        order.snapshot.payableCents,
+        orderGrowth,
+        order.completedAt,
+      ],
+    );
+    await input.client.query(
+      `update member_profiles set growth_points = growth_points + $3
+        where sandbox_id = $1 and id = $2`,
+      [input.sandboxId, profile.id, reservationGrowth + orderGrowth],
+    );
+  }
+
+  const dashboardStaff = seededEmployees.filter(
+    (employee) =>
+      employee.storeId === flagshipStore.id && employee.role === "staff",
+  );
+  const dashboardManager = seededEmployees.find(
+    (employee) =>
+      employee.storeId === flagshipStore.id && employee.role === "manager",
+  );
+  if (dashboardStaff.length === 0 || !dashboardManager) {
+    throw new Error("The dashboard workforce history seed is incomplete.");
+  }
+  const dashboardShifts = dashboardDays.map((day, index) => {
+    const employee = dashboardStaff[index % dashboardStaff.length];
+    if (!employee) {
+      throw new Error("The dashboard shift history seed is incomplete.");
+    }
+    const isCurrentBusinessDay = index === dashboardDays.length - 1;
+    const startsAt = new Date(
+      day.startsAt.getTime() + (isCurrentBusinessDay ? 2 : 4) * 60 * 60 * 1_000,
+    );
+    const endsAt = new Date(
+      startsAt.getTime() + (isCurrentBusinessDay ? 4 : 8) * 60 * 60 * 1_000,
+    );
+    const outcome = (["on-time", "late", "absent"] as const)[index % 3]!;
+    return {
+      employee,
+      endsAt,
+      id: randomUUID(),
+      outcome,
+      startsAt,
+    };
+  });
+  await input.client.query(
+    `insert into shifts (
+       id, sandbox_id, store_id, employee_id, starts_at, ends_at
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[],
+       $5::timestamptz[], $6::timestamptz[]
+     )`,
+    [
+      dashboardShifts.map((shift) => shift.id),
+      dashboardShifts.map(() => input.sandboxId),
+      dashboardShifts.map(() => flagshipStore.id),
+      dashboardShifts.map((shift) => shift.employee.id),
+      dashboardShifts.map((shift) => shift.startsAt),
+      dashboardShifts.map((shift) => shift.endsAt),
+    ],
+  );
+  const dashboardAttendance = dashboardShifts.map((shift) => {
+    const absent = shift.outcome === "absent";
+    const checkInAt = absent
+      ? null
+      : new Date(
+          shift.startsAt.getTime() +
+            (shift.outcome === "late" ? 10 * 60 * 1_000 : 0),
+        );
+    return {
+      absentAt: absent ? shift.endsAt : null,
+      checkInAt,
+      checkOutAt: absent
+        ? null
+        : new Date(shift.endsAt.getTime() - 5 * 60 * 1_000),
+      id: randomUUID(),
+      shift,
+      status: absent ? ("absent" as const) : ("checked-out" as const),
+    };
+  });
+  await input.client.query(
+    `insert into attendance_records (
+       id, sandbox_id, store_id, employee_id, shift_id, status,
+       check_in_outcome, check_in_business_at, check_in_recorded_at,
+       check_out_business_at, check_out_recorded_at,
+       absence_business_at, absence_recorded_at
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
+       $6::text[], $7::text[], $8::timestamptz[], $9::timestamptz[],
+       $10::timestamptz[], $11::timestamptz[], $12::timestamptz[],
+       $13::timestamptz[]
+     )`,
+    [
+      dashboardAttendance.map((attendance) => attendance.id),
+      dashboardAttendance.map(() => input.sandboxId),
+      dashboardAttendance.map(() => flagshipStore.id),
+      dashboardAttendance.map((attendance) => attendance.shift.employee.id),
+      dashboardAttendance.map((attendance) => attendance.shift.id),
+      dashboardAttendance.map((attendance) => attendance.status),
+      dashboardAttendance.map((attendance) =>
+        attendance.status === "absent" ? null : attendance.shift.outcome,
+      ),
+      dashboardAttendance.map((attendance) => attendance.checkInAt),
+      dashboardAttendance.map((attendance) => attendance.checkInAt),
+      dashboardAttendance.map((attendance) => attendance.checkOutAt),
+      dashboardAttendance.map((attendance) => attendance.checkOutAt),
+      dashboardAttendance.map((attendance) => attendance.absentAt),
+      dashboardAttendance.map((attendance) => attendance.absentAt),
+    ],
+  );
+  const dashboardAttendanceEvents = dashboardAttendance.flatMap(
+    (attendance) => {
+      if (attendance.status === "absent") {
+        return [
+          {
+            at: attendance.absentAt!,
+            attendance,
+            data: { reason: "seeded-shift-absence" },
+            type: "attendance.absence-recorded",
+          },
+        ];
+      }
+      return [
+        {
+          at: attendance.checkInAt!,
+          attendance,
+          data: { outcome: attendance.shift.outcome },
+          type: "attendance.simulated-check-in",
+        },
+        {
+          at: attendance.checkOutAt!,
+          attendance,
+          data: { reason: "seeded-shift-complete" },
+          type: "attendance.manual-check-out",
+        },
+      ];
+    },
+  );
+  await input.client.query(
+    `insert into attendance_events (
+       id, sandbox_id, store_id, employee_id, shift_id,
+       attendance_record_id, event_type, event_data,
+       business_occurred_at, recorded_at
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
+       $6::uuid[], $7::text[], $8::jsonb[], $9::timestamptz[],
+       $10::timestamptz[]
+     )`,
+    [
+      dashboardAttendanceEvents.map(() => randomUUID()),
+      dashboardAttendanceEvents.map(() => input.sandboxId),
+      dashboardAttendanceEvents.map(() => flagshipStore.id),
+      dashboardAttendanceEvents.map(
+        (event) => event.attendance.shift.employee.id,
+      ),
+      dashboardAttendanceEvents.map((event) => event.attendance.shift.id),
+      dashboardAttendanceEvents.map((event) => event.attendance.id),
+      dashboardAttendanceEvents.map((event) => event.type),
+      dashboardAttendanceEvents.map((event) => JSON.stringify(event.data)),
+      dashboardAttendanceEvents.map((event) => event.at),
+      dashboardAttendanceEvents.map(() => input.wallTime),
+    ],
+  );
+  const dashboardHandoverExceptions = dashboardAttendance
+    .filter((attendance) => attendance.status !== "absent")
+    .map((attendance) => attendance.shift);
+  await input.client.query(
+    `insert into handover_exceptions (
+       id, sandbox_id, store_id, shift_id, handover_id, kind,
+       business_occurred_at, recorded_at
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
+       $6::text[], $7::timestamptz[], $8::timestamptz[]
+     )`,
+    [
+      dashboardHandoverExceptions.map(() => randomUUID()),
+      dashboardHandoverExceptions.map(() => input.sandboxId),
+      dashboardHandoverExceptions.map(() => flagshipStore.id),
+      dashboardHandoverExceptions.map((shift) => shift.id),
+      dashboardHandoverExceptions.map(() => null),
+      dashboardHandoverExceptions.map(() => "submission-overdue"),
+      dashboardHandoverExceptions.map(
+        (shift) => new Date(shift.endsAt.getTime() + 30 * 60 * 1_000),
+      ),
+      dashboardHandoverExceptions.map(() => input.wallTime),
+    ],
+  );
+
+  const dashboardClosedRepairs = dashboardReservations.map(
+    (reservation, index) => {
+      const profileId = machineProfileIds.get(
+        reservation.seat.machineProfileCode,
+      );
+      if (!profileId) {
+        throw new Error("The dashboard repair profile seed is incomplete.");
+      }
+      const createdAt = new Date(
+        dashboardDays[index]!.startsAt.getTime() + 2 * 60 * 60 * 1_000,
+      );
+      return {
+        assignedAt: new Date(createdAt.getTime() + 5 * 60 * 1_000),
+        closedAt: new Date(createdAt.getTime() + 45 * 60 * 1_000),
+        createdAt,
+        id: randomUUID(),
+        priority: (["normal", "high", "urgent"] as const)[index % 3]!,
+        processingAt: new Date(createdAt.getTime() + 10 * 60 * 1_000),
+        profileId,
+        reservation,
+        resolvedAt: new Date(createdAt.getTime() + 35 * 60 * 1_000),
+      };
+    },
+  );
+  await input.client.query(
+    `insert into repairs (
+       id, sandbox_id, store_id, seat_id, machine_profile_id,
+       reservation_id, customer_persona_id, created_by_persona_id,
+       assigned_to_persona_id, source, description, priority, status,
+       created_business_at, assigned_business_at, processing_business_at,
+       resolution_note, resolution_submitted_by_persona_id,
+       resolution_business_at, latest_verification_outcome,
+       latest_verification_reason, verified_by_persona_id,
+       verification_business_at, closed_business_at, created_at
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], $5::uuid[],
+       $6::uuid[], $7::uuid[], $8::uuid[], $9::uuid[], $10::text[],
+       $11::text[], $12::text[], $13::text[], $14::timestamptz[],
+       $15::timestamptz[], $16::timestamptz[], $17::text[], $18::uuid[],
+       $19::timestamptz[], $20::text[], $21::text[], $22::uuid[],
+       $23::timestamptz[], $24::timestamptz[], $25::timestamptz[]
+     )`,
+    [
+      dashboardClosedRepairs.map((repair) => repair.id),
+      dashboardClosedRepairs.map(() => input.sandboxId),
+      dashboardClosedRepairs.map(() => flagshipStore.id),
+      dashboardClosedRepairs.map((repair) => repair.reservation.seat.id),
+      dashboardClosedRepairs.map((repair) => repair.profileId),
+      dashboardClosedRepairs.map(() => null),
+      dashboardClosedRepairs.map(() => null),
+      dashboardClosedRepairs.map(
+        (repair, index) =>
+          dashboardStaff[index % dashboardStaff.length]!.personaId,
+      ),
+      dashboardClosedRepairs.map(
+        (repair, index) =>
+          dashboardStaff[index % dashboardStaff.length]!.personaId,
+      ),
+      dashboardClosedRepairs.map(() => "staff"),
+      dashboardClosedRepairs.map(
+        (repair) => `设备例行维修 · ${repair.reservation.seat.code}`,
+      ),
+      dashboardClosedRepairs.map((repair) => repair.priority),
+      dashboardClosedRepairs.map(() => "closed"),
+      dashboardClosedRepairs.map((repair) => repair.createdAt),
+      dashboardClosedRepairs.map((repair) => repair.assignedAt),
+      dashboardClosedRepairs.map((repair) => repair.processingAt),
+      dashboardClosedRepairs.map(() => "完成例行检测并恢复可用"),
+      dashboardClosedRepairs.map(
+        (repair, index) =>
+          dashboardStaff[index % dashboardStaff.length]!.personaId,
+      ),
+      dashboardClosedRepairs.map((repair) => repair.resolvedAt),
+      dashboardClosedRepairs.map(() => "success"),
+      dashboardClosedRepairs.map(() => "经理复核通过"),
+      dashboardClosedRepairs.map(() => dashboardManager.personaId),
+      dashboardClosedRepairs.map((repair) => repair.closedAt),
+      dashboardClosedRepairs.map((repair) => repair.closedAt),
+      dashboardClosedRepairs.map(() => input.wallTime),
+    ],
+  );
+  const dashboardOpenRepairSeat = seatByKey.get("prism-flagship:A-20");
+  const dashboardOpenRepairProfileId = dashboardOpenRepairSeat
+    ? machineProfileIds.get(dashboardOpenRepairSeat.machineProfileCode)
+    : null;
+  const dashboardOpenRepairStaff = dashboardStaff[0];
+  if (
+    !dashboardOpenRepairSeat ||
+    !dashboardOpenRepairProfileId ||
+    !dashboardOpenRepairStaff
+  ) {
+    throw new Error("The dashboard open repair seed is incomplete.");
+  }
+  const dashboardOpenRepair = {
+    assignedAt: new Date(input.wallTime.getTime() - 80 * 60 * 1_000),
+    createdAt: new Date(input.wallTime.getTime() - 90 * 60 * 1_000),
+    id: randomUUID(),
+    processingAt: new Date(input.wallTime.getTime() - 60 * 60 * 1_000),
+  };
+  await input.client.query(
+    `update seats set operational_status = 'maintenance'
+      where sandbox_id = $1 and id = $2`,
+    [input.sandboxId, dashboardOpenRepairSeat.id],
+  );
+  await input.client.query(
+    `insert into repairs (
+       id, sandbox_id, store_id, seat_id, machine_profile_id,
+       reservation_id, customer_persona_id, created_by_persona_id,
+       assigned_to_persona_id, source, description, priority, status,
+       created_business_at, assigned_business_at, processing_business_at,
+       created_at
+     ) values ($1, $2, $3, $4, $5, null, null, $6, $6, 'staff', $7,
+       'high', 'processing', $8, $9, $10, $11)`,
+    [
+      dashboardOpenRepair.id,
+      input.sandboxId,
+      flagshipStore.id,
+      dashboardOpenRepairSeat.id,
+      dashboardOpenRepairProfileId,
+      dashboardOpenRepairStaff.personaId,
+      "显示器间歇黑屏，正在排查信号链路",
+      dashboardOpenRepair.createdAt,
+      dashboardOpenRepair.assignedAt,
+      dashboardOpenRepair.processingAt,
+      input.wallTime,
+    ],
+  );
+  const dashboardRepairEvents = [
+    ...dashboardClosedRepairs.flatMap((repair) => [
+      {
+        at: repair.createdAt,
+        data: { source: "staff" },
+        repairId: repair.id,
+        type: "repair.created",
+      },
+      {
+        at: repair.processingAt,
+        data: { priority: repair.priority },
+        repairId: repair.id,
+        type: "repair.processing-started",
+      },
+      {
+        at: repair.closedAt,
+        data: { outcome: "success" },
+        repairId: repair.id,
+        type: "repair.closed",
+      },
+    ]),
+    {
+      at: dashboardOpenRepair.createdAt,
+      data: { source: "staff" },
+      repairId: dashboardOpenRepair.id,
+      type: "repair.created",
+    },
+    {
+      at: dashboardOpenRepair.processingAt,
+      data: { priority: "high" },
+      repairId: dashboardOpenRepair.id,
+      type: "repair.processing-started",
+    },
+  ];
+  await input.client.query(
+    `insert into repair_business_events (
+       id, sandbox_id, repair_id, event_type, event_data,
+       business_occurred_at, recorded_at
+     ) select * from unnest(
+       $1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::jsonb[],
+       $6::timestamptz[], $7::timestamptz[]
+     )`,
+    [
+      dashboardRepairEvents.map(() => randomUUID()),
+      dashboardRepairEvents.map(() => input.sandboxId),
+      dashboardRepairEvents.map((event) => event.repairId),
+      dashboardRepairEvents.map((event) => event.type),
+      dashboardRepairEvents.map((event) => JSON.stringify(event.data)),
+      dashboardRepairEvents.map((event) => event.at),
+      dashboardRepairEvents.map(() => input.wallTime),
     ],
   );
 
@@ -12493,6 +13336,605 @@ export function createPublicSandboxDatabase(
             spareCount: items.filter((item) => item.kind === "spare").length,
           },
         };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readManagerDashboard(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const context = await assertFrontlineContext(client, input, wallTime);
+        if (input.role !== "manager") throw new RoleContextStaleError();
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await processFrontlineReservationDeadlines(client, {
+          currentTime,
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+        });
+        await processDueAttendanceAbsences(client, {
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+        await processDueHandoverExceptions(client, {
+          recordedAt: wallTime,
+          sandboxId: input.sandboxId,
+          targetBusinessTime: currentTime,
+        });
+
+        const store = await client.query<{
+          closes_at: string;
+          closes_next_day: boolean;
+          code: string;
+          display_name: string;
+          id: string;
+          is_open_24_hours: boolean;
+          opens_at: string;
+        }>(
+          `select id, code, display_name, opens_at, closes_at,
+                  closes_next_day, is_open_24_hours
+             from stores where sandbox_id = $1 and id = $2`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const storeRow = store.rows[0];
+        if (!storeRow) throw new RoleContextUnavailableError();
+
+        const availableBusinessDays = managerDashboardBusinessDays(currentTime);
+        if (
+          (input.fromBusinessDay && !input.toBusinessDay) ||
+          (!input.fromBusinessDay && input.toBusinessDay)
+        ) {
+          throw new ManagerDashboardRangeError("incomplete-range");
+        }
+        const fromBusinessDay =
+          input.fromBusinessDay ?? availableBusinessDays.at(-1)!.key;
+        const toBusinessDay =
+          input.toBusinessDay ?? availableBusinessDays.at(-1)!.key;
+        const fromIndex = availableBusinessDays.findIndex(
+          (day) => day.key === fromBusinessDay,
+        );
+        const toIndex = availableBusinessDays.findIndex(
+          (day) => day.key === toBusinessDay,
+        );
+        if (fromIndex < 0 || toIndex < 0) {
+          throw new ManagerDashboardRangeError("outside-seed-range");
+        }
+        if (fromIndex > toIndex) {
+          throw new ManagerDashboardRangeError("reversed-range");
+        }
+
+        const baselineHours: StoreBusinessHoursSelection = storeRow;
+        const businessWindows = [];
+        for (const day of availableBusinessDays) {
+          const hours = await businessHoursFor(client, {
+            at: day.startsAt,
+            baseline: baselineHours,
+            sandboxId: input.sandboxId,
+            storeId: context.actorStoreId,
+          });
+          businessWindows.push(dashboardBusinessWindow(day, hours));
+        }
+        const selectedWindows = businessWindows.slice(fromIndex, toIndex + 1);
+        const trendWindows = businessWindows.slice(-7);
+        const selectedKeys = new Set(selectedWindows.map((day) => day.key));
+        const currentBusinessDay = businessDayKey(currentTime);
+
+        const activeSeats = await client.query<{ count: number }>(
+          `select count(*)::integer as count from seats
+            where sandbox_id = $1 and store_id = $2
+              and lifecycle_status = 'active'`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const reservations = await client.query<{
+          completed_business_at: Date | null;
+          customer_display_name: string;
+          id: string;
+          price_snapshot: ReservationSnapshotRecord | null;
+          refund_cents: number;
+          seat_code: string;
+          simulated_payment_cents: number | null;
+          started_business_at: Date | null;
+          starts_at: Date;
+          status: ReservationStatus;
+          terminal_reason: string | null;
+        }>(
+          `select reservation.id, reservation.status, reservation.starts_at,
+                  reservation.started_business_at,
+                  reservation.completed_business_at,
+                  reservation.simulated_payment_cents,
+                  reservation.price_snapshot, reservation.terminal_reason,
+                  seat.code as seat_code,
+                  customer.display_name as customer_display_name,
+                  coalesce((
+                    select sum(refund.amount_cents)::integer
+                      from reservation_simulated_refunds refund
+                     where refund.sandbox_id = reservation.sandbox_id
+                       and refund.reservation_id = reservation.id
+                  ), 0) as refund_cents
+             from reservations reservation
+             join seats seat on seat.id = reservation.seat_id
+             join demo_personas customer
+               on customer.id = reservation.customer_persona_id
+            where reservation.sandbox_id = $1 and reservation.store_id = $2
+            order by reservation.starts_at, reservation.id`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const orders = await client.query<{
+          cancelled_business_at: Date | null;
+          completed_business_at: Date | null;
+          created_business_at: Date;
+          customer_display_name: string;
+          id: string;
+          order_snapshot: CustomerOrderSnapshot;
+          refund_cents: number;
+          seat_code: string;
+          simulated_payment_cents: number | null;
+          status: CustomerOrderStatus;
+          wasted_quantity: number;
+        }>(
+          `select orders.id, orders.status, orders.created_business_at,
+                  orders.completed_business_at, orders.cancelled_business_at,
+                  orders.simulated_payment_cents, orders.order_snapshot,
+                  seat.code as seat_code,
+                  customer.display_name as customer_display_name,
+                  coalesce((
+                    select sum(refund.amount_cents)::integer
+                      from order_simulated_refunds refund
+                     where refund.sandbox_id = orders.sandbox_id
+                       and refund.order_id = orders.id
+                  ), 0) as refund_cents,
+                  coalesce((
+                    select sum(item.quantity)::integer
+                      from order_inventory_reservations item
+                     where item.sandbox_id = orders.sandbox_id
+                       and item.order_id = orders.id and item.status = 'wasted'
+                  ), 0) as wasted_quantity
+             from customer_orders orders
+             join seats seat on seat.id = orders.seat_id
+             join demo_personas customer
+               on customer.id = orders.customer_persona_id
+            where orders.sandbox_id = $1 and orders.store_id = $2
+            order by orders.created_business_at, orders.id`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const repairs = await client.query<{
+          closed_business_at: Date | null;
+          created_business_at: Date;
+          description: string;
+          id: string;
+          priority: "high" | "normal" | "urgent";
+          processing_business_at: Date | null;
+          seat_code: string;
+          status: "assigned" | "closed" | "new" | "processing" | "verification";
+        }>(
+          `select repair.id, repair.description, repair.priority,
+                  repair.status, repair.created_business_at,
+                  repair.processing_business_at, repair.closed_business_at,
+                  seat.code as seat_code
+             from repairs repair
+             join seats seat on seat.id = repair.seat_id
+            where repair.sandbox_id = $1 and repair.store_id = $2
+            order by repair.created_business_at, repair.id`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const attendance = await client.query<{
+          business_occurred_at: Date;
+          display_name: string;
+          employee_code: string;
+          id: string;
+          outcome: "absent" | "late" | "on-time";
+          status: AttendanceStatus;
+        }>(
+          `select attendance.id, attendance.status,
+                  employee.display_name, employee.employee_code,
+                  case
+                    when attendance.status = 'absent' then 'absent'
+                    when coalesce(latest_late.corrected_business_at,
+                                       attendance.check_in_business_at)
+                         > shift.starts_at then 'late'
+                    else 'on-time'
+                  end as outcome,
+                  coalesce(latest_late.corrected_business_at,
+                           attendance.check_in_business_at,
+                           attendance.absence_business_at) as business_occurred_at
+             from attendance_records attendance
+             join employees employee on employee.id = attendance.employee_id
+             join shifts shift on shift.id = attendance.shift_id
+             left join lateral (
+               select correction.corrected_business_at
+                 from attendance_corrections correction
+                where correction.sandbox_id = attendance.sandbox_id
+                  and correction.attendance_record_id = attendance.id
+                  and correction.correction_kind = 'late'
+                order by correction.business_occurred_at desc,
+                         correction.recorded_at desc, correction.id desc
+                limit 1
+             ) latest_late on true
+            where attendance.sandbox_id = $1 and attendance.store_id = $2
+            order by business_occurred_at, attendance.id`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const handoverExceptions = await client.query<{
+          business_occurred_at: Date;
+          display_name: string;
+          id: string;
+          kind: HandoverExceptionKind;
+        }>(
+          `select exception.id, exception.kind,
+                  exception.business_occurred_at, employee.display_name
+             from handover_exceptions exception
+             join shifts shift on shift.id = exception.shift_id
+             join employees employee on employee.id = shift.employee_id
+            where exception.sandbox_id = $1 and exception.store_id = $2
+            order by exception.business_occurred_at, exception.id`,
+          [input.sandboxId, context.actorStoreId],
+        );
+        const inventory = await client.query<{
+          available_quantity: number;
+          code: string;
+          display_name: string;
+          id: string;
+          low_stock_threshold: number;
+        }>(
+          `select id, code, display_name, low_stock_threshold,
+                  on_hand_quantity - reserved_quantity as available_quantity
+             from inventory_items
+            where sandbox_id = $1 and store_id = $2
+              and on_hand_quantity - reserved_quantity <= low_stock_threshold
+            order by display_name, id`,
+          [input.sandboxId, context.actorStoreId],
+        );
+
+        const reservationFacts = reservations.rows
+          .filter(
+            (reservation) =>
+              reservation.price_snapshot !== null &&
+              reservation.simulated_payment_cents !== null,
+          )
+          .map((reservation) => ({
+            completedAt: reservation.completed_business_at,
+            id: reservation.id,
+            paidCents: reservation.simulated_payment_cents!,
+            priceSegments: reservation.price_snapshot!.price.segments.map(
+              (segment) => ({
+                amountCents: segment.amountCents,
+                endsAt: new Date(segment.endsAt),
+                startsAt: new Date(segment.startsAt),
+              }),
+            ),
+            refundCents: reservation.refund_cents,
+            refundFrom:
+              reservation.status === "completed" &&
+              reservation.refund_cents > 0 &&
+              reservation.terminal_reason === "repair-device-failure"
+                ? reservation.completed_business_at
+                : null,
+            startedAt: reservation.started_business_at,
+            status: reservation.status,
+          }));
+        const reservationFactsById = new Map(
+          reservationFacts.map((fact) => [fact.id, fact]),
+        );
+        const orderFacts = orders.rows.map((order) => ({
+          completedAt: order.completed_business_at,
+          createdAt: order.created_business_at,
+          paidCents: order.simulated_payment_cents,
+          refundCents: order.refund_cents,
+          status: order.status,
+          terminalAt:
+            order.completed_business_at ?? order.cancelled_business_at,
+          wasteCents:
+            order.wasted_quantity > 0 ? order.order_snapshot.subtotalCents : 0,
+          wasteQuantity: order.wasted_quantity,
+        }));
+        const repairFacts = repairs.rows.map((repair) => ({
+          closedAt: repair.closed_business_at,
+          createdAt: repair.created_business_at,
+          priority: repair.priority,
+          processingAt: repair.processing_business_at,
+        }));
+        const metricInput = {
+          activeSeatCount: activeSeats.rows[0]?.count ?? 0,
+          attendance: attendance.rows.map((item) => ({
+            businessOccurredAt: item.business_occurred_at,
+            outcome: item.outcome,
+          })),
+          currentTime,
+          handoverExceptions: handoverExceptions.rows.map((item) => ({
+            businessOccurredAt: item.business_occurred_at,
+          })),
+          inventory: {
+            lowStockCount: selectedKeys.has(currentBusinessDay)
+              ? inventory.rows.length
+              : 0,
+          },
+          orders: orderFacts,
+          repairs: repairFacts,
+          reservations: reservationFacts,
+        } as const;
+        const selectedMetrics = calculateManagerDashboardMetrics({
+          ...metricInput,
+          businessDays: selectedWindows,
+        });
+        const trendMetrics = calculateManagerDashboardMetrics({
+          ...metricInput,
+          businessDays: trendWindows,
+        });
+
+        const recentEvidence: DatabaseManagerDashboard["recentEvidence"] = [
+          ...reservations.rows.flatMap((reservation) => {
+            const occurredAt =
+              reservation.completed_business_at ??
+              reservation.started_business_at ??
+              reservation.starts_at;
+            return [
+              {
+                action: `reservation.${reservation.status}`,
+                businessDayKey: businessDayKey(occurredAt),
+                detail: `${reservation.customer_display_name} · ${reservation.seat_code}`,
+                objectId: reservation.id,
+                objectType: "reservation" as const,
+                occurredAt,
+                title: `预约${reservation.status === "completed" ? "已完成" : "状态更新"}`,
+              },
+            ];
+          }),
+          ...orders.rows.map((order) => {
+            const occurredAt =
+              order.completed_business_at ??
+              order.cancelled_business_at ??
+              order.created_business_at;
+            return {
+              action: `order.${order.status}`,
+              businessDayKey: businessDayKey(occurredAt),
+              detail: `${order.customer_display_name} · ${order.seat_code}`,
+              objectId: order.id,
+              objectType: "order" as const,
+              occurredAt,
+              title: `商品订单${order.status === "completed" ? "已完成" : "状态更新"}`,
+            };
+          }),
+          ...repairs.rows.map((repair) => {
+            const occurredAt =
+              repair.closed_business_at ??
+              repair.processing_business_at ??
+              repair.created_business_at;
+            return {
+              action: `repair.${repair.status}`,
+              businessDayKey: businessDayKey(occurredAt),
+              detail: `${repair.seat_code} · ${repair.description}`,
+              objectId: repair.id,
+              objectType: "repair" as const,
+              occurredAt,
+              title: `报修${repair.status === "closed" ? "已关闭" : "状态更新"}`,
+            };
+          }),
+          ...attendance.rows.map((item) => ({
+            action: `attendance.${item.outcome}`,
+            businessDayKey: businessDayKey(item.business_occurred_at),
+            detail: `${item.display_name} · ${item.employee_code}`,
+            objectId: item.id,
+            objectType: "attendance" as const,
+            occurredAt: item.business_occurred_at,
+            title:
+              item.outcome === "absent"
+                ? "考勤缺勤"
+                : item.outcome === "late"
+                  ? "考勤迟到"
+                  : "考勤准时",
+          })),
+          ...handoverExceptions.rows.map((item) => ({
+            action: `handover.${item.kind}`,
+            businessDayKey: businessDayKey(item.business_occurred_at),
+            detail: item.display_name,
+            objectId: item.id,
+            objectType: "handover" as const,
+            occurredAt: item.business_occurred_at,
+            title: "交接异常",
+          })),
+        ]
+          .filter((item) => selectedKeys.has(item.businessDayKey))
+          .sort(
+            (left, right) =>
+              right.occurredAt.getTime() - left.occurredAt.getTime(),
+          )
+          .slice(0, 6);
+
+        const rangeRows: Array<
+          NonNullable<DatabaseManagerDashboard["drilldown"]>["rows"][number]
+        > = [];
+        for (const reservation of reservations.rows) {
+          if (
+            !reservation.price_snapshot ||
+            reservation.simulated_payment_cents === null
+          ) {
+            continue;
+          }
+          const fact = reservationFactsById.get(reservation.id);
+          if (!fact) continue;
+          for (const segment of attributeManagerReservationRevenue(fact)) {
+            if (!selectedKeys.has(segment.businessDayKey)) continue;
+            rangeRows.push({
+              amountCents: segment.amountCents,
+              businessDayKey: segment.businessDayKey,
+              detail: `${reservation.customer_display_name} · ${segment.startsAt.toISOString()}–${segment.endsAt.toISOString()}`,
+              objectId: reservation.id,
+              objectType: "reservation",
+              occurredAt: segment.startsAt,
+              status: reservation.status,
+              title: `预约 ${reservation.seat_code} · 半小时价格片段`,
+            });
+          }
+        }
+        for (const order of orders.rows) {
+          const occurredAt =
+            order.completed_business_at ??
+            order.cancelled_business_at ??
+            order.created_business_at;
+          const key = businessDayKey(occurredAt);
+          if (!selectedKeys.has(key)) continue;
+          rangeRows.push({
+            amountCents:
+              order.status === "completed" &&
+              order.simulated_payment_cents !== null
+                ? Math.max(
+                    0,
+                    order.simulated_payment_cents - order.refund_cents,
+                  )
+                : null,
+            businessDayKey: key,
+            detail: `${order.customer_display_name} · ${order.order_snapshot.lines.map((line) => `${line.productName}×${line.quantity}`).join("、")}`,
+            objectId: order.id,
+            objectType: "order",
+            occurredAt,
+            status: order.status,
+            title: `商品订单 ${order.seat_code}`,
+          });
+        }
+        for (const repair of repairs.rows) {
+          const occurredAt =
+            repair.closed_business_at ??
+            repair.processing_business_at ??
+            repair.created_business_at;
+          const key = businessDayKey(occurredAt);
+          if (!selectedKeys.has(key)) continue;
+          rangeRows.push({
+            amountCents: null,
+            businessDayKey: key,
+            detail: repair.description,
+            objectId: repair.id,
+            objectType: "repair",
+            occurredAt,
+            status: repair.status,
+            title: `报修 ${repair.seat_code}`,
+          });
+        }
+        for (const item of attendance.rows) {
+          const key = businessDayKey(item.business_occurred_at);
+          if (!selectedKeys.has(key)) continue;
+          rangeRows.push({
+            amountCents: null,
+            businessDayKey: key,
+            detail: `${item.display_name} · ${item.employee_code}`,
+            objectId: item.id,
+            objectType: "attendance",
+            occurredAt: item.business_occurred_at,
+            status: item.outcome,
+            title: "考勤事实",
+          });
+        }
+        for (const item of handoverExceptions.rows) {
+          const key = businessDayKey(item.business_occurred_at);
+          if (!selectedKeys.has(key)) continue;
+          rangeRows.push({
+            amountCents: null,
+            businessDayKey: key,
+            detail: item.display_name,
+            objectId: item.id,
+            objectType: "handover",
+            occurredAt: item.business_occurred_at,
+            status: item.kind,
+            title: "交接异常",
+          });
+        }
+        if (selectedKeys.has(currentBusinessDay)) {
+          for (const item of inventory.rows) {
+            rangeRows.push({
+              amountCents: null,
+              businessDayKey: currentBusinessDay,
+              detail: `可用 ${item.available_quantity} · 阈值 ${item.low_stock_threshold}`,
+              objectId: item.id,
+              objectType: "inventory",
+              occurredAt: currentTime,
+              status: "low-stock",
+              title: item.display_name,
+            });
+          }
+        }
+        const drilldownRows =
+          input.drilldown === "revenue"
+            ? rangeRows.filter(
+                (row) =>
+                  row.amountCents !== null &&
+                  (row.objectType === "order" ||
+                    row.objectType === "reservation"),
+              )
+            : input.drilldown === "orders"
+              ? rangeRows.filter((row) => row.objectType === "order")
+              : input.drilldown === "repairs"
+                ? rangeRows.filter((row) => row.objectType === "repair")
+                : input.drilldown === "inventory"
+                  ? rangeRows.filter((row) => row.objectType === "inventory")
+                  : input.drilldown === "attendance"
+                    ? rangeRows.filter((row) => row.objectType === "attendance")
+                    : input.drilldown === "handover"
+                      ? rangeRows.filter((row) => row.objectType === "handover")
+                      : input.drilldown === "seats"
+                        ? rangeRows.filter(
+                            (row) =>
+                              row.objectType === "reservation" ||
+                              row.objectType === "repair",
+                          )
+                        : input.drilldown === "evidence"
+                          ? recentEvidence.map((item) => ({
+                              amountCents: null,
+                              businessDayKey: item.businessDayKey,
+                              detail: item.detail,
+                              objectId: item.objectId,
+                              objectType: item.objectType,
+                              occurredAt: item.occurredAt,
+                              status: item.action,
+                              title: item.title,
+                            }))
+                          : [];
+
+        const result: DatabaseManagerDashboard = {
+          availableBusinessDays,
+          currentTime,
+          days: selectedMetrics.days,
+          drilldown: input.drilldown
+            ? {
+                fromBusinessDay,
+                kind: input.drilldown,
+                rows: drilldownRows.sort(
+                  (left, right) =>
+                    right.occurredAt.getTime() - left.occurredAt.getTime(),
+                ),
+                storeCode: storeRow.code,
+                toBusinessDay,
+              }
+            : null,
+          range: {
+            endsAt: new Date(
+              selectedWindows.at(-1)!.startsAt.getTime() + 24 * 60 * 60 * 1_000,
+            ),
+            fromBusinessDay,
+            preset:
+              input.fromBusinessDay || input.toBusinessDay
+                ? "custom"
+                : "current",
+            startsAt: selectedWindows[0]!.startsAt,
+            toBusinessDay,
+          },
+          recentEvidence,
+          store: {
+            code: storeRow.code,
+            displayName: storeRow.display_name,
+          },
+          summary: selectedMetrics.summary,
+          trend: trendMetrics.days,
+        };
+        await client.query("commit");
+        return result;
       } catch (error) {
         await client.query("rollback").catch(() => undefined);
         throw error;
