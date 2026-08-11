@@ -27,6 +27,7 @@ const app = createApp({
   sandboxDatabase: database,
   sessionSecret: "ticket-18-staff-handover-session-secret-32-bytes",
   secureCookies: true,
+  wallClock: { now: () => wallTime },
 });
 
 beforeAll(async () => {

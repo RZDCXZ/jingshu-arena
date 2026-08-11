@@ -38,7 +38,10 @@ function signLegacySessionPayload(payload: string, secret: string): Buffer {
   return createHmac("sha256", secret).update(payload).digest();
 }
 
-function isRoleSessionPayload(value: unknown): value is RoleSessionPayload {
+function isRoleSessionPayload(
+  value: unknown,
+  now: number,
+): value is RoleSessionPayload {
   if (typeof value !== "object" || value === null) return false;
   const payload = value as Record<string, unknown>;
   const expiresAt =
@@ -65,12 +68,13 @@ function isRoleSessionPayload(value: unknown): value is RoleSessionPayload {
     typeof payload.csrfToken === "string" &&
     CSRF_TOKEN_PATTERN.test(payload.csrfToken) &&
     Number.isFinite(expiresAt) &&
-    expiresAt > Date.now()
+    expiresAt > now
   );
 }
 
 function isLegacyRoleSessionPayload(
   value: unknown,
+  now: number,
 ): value is LegacyRoleSessionPayload {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -88,7 +92,7 @@ function isLegacyRoleSessionPayload(
     typeof payload.role === "string" &&
     publicRoles.has(payload.role as PublicRole) &&
     Number.isFinite(expiresAt) &&
-    expiresAt > Date.now()
+    expiresAt > now
   );
 }
 
@@ -147,17 +151,19 @@ export function issueRoleSession(
 export function readRoleSession(
   token: string | undefined,
   secret: string,
+  now = Date.now(),
 ): RoleSessionPayload | null {
   const parsed = readSignedPayload(token, secret, signSessionPayload);
-  return isRoleSessionPayload(parsed) ? parsed : null;
+  return isRoleSessionPayload(parsed, now) ? parsed : null;
 }
 
 export function readRoleSessionWithLegacyFallback(
   token: string | undefined,
   secret: string,
+  now = Date.now(),
 ): RoleSessionPayload | LegacyRoleSessionPayload | null {
-  const current = readRoleSession(token, secret);
+  const current = readRoleSession(token, secret, now);
   if (current) return current;
   const legacy = readSignedPayload(token, secret, signLegacySessionPayload);
-  return isLegacyRoleSessionPayload(legacy) ? legacy : null;
+  return isLegacyRoleSessionPayload(legacy, now) ? legacy : null;
 }

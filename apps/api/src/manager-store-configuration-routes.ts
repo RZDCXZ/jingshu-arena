@@ -232,7 +232,11 @@ async function configurationSession(
   const token = getCookie(context, SESSION_COOKIE);
   const session =
     token && services.sessionSecret
-      ? readRoleSession(token, services.sessionSecret)
+      ? readRoleSession(
+          token,
+          services.sessionSecret,
+          services.wallClock.now().getTime(),
+        )
       : null;
   if (!session) {
     return {
@@ -588,6 +592,7 @@ export function registerManagerStoreConfigurationRoutes(
           await services.sandboxDatabase.readManagerStoreConfiguration({
             contextVersion: auth.session.contextVersion,
             personaId: auth.session.personaId,
+            requestId,
             role,
             sandboxId: auth.session.sandboxId,
             ...(storeId ? { storeId } : {}),
@@ -719,6 +724,7 @@ export function registerManagerStoreConfigurationRoutes(
           await services.sandboxDatabase.readManagerStoreConfiguration({
             contextVersion: auth.session.contextVersion,
             personaId: auth.session.personaId,
+            requestId,
             role,
             sandboxId: auth.session.sandboxId,
             ...(storeId ? { storeId } : {}),

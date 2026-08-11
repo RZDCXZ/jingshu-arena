@@ -246,6 +246,7 @@ export function registerCustomerSeatBrowseRoutes(
     const session = readRoleSession(
       getCookie(context, SESSION_COOKIE),
       services.sessionSecret,
+      services.wallClock.now().getTime(),
     );
     if (!session) {
       return context.json(
@@ -316,6 +317,7 @@ export function registerCustomerSeatBrowseRoutes(
     const session = readRoleSession(
       getCookie(context, SESSION_COOKIE),
       services.sessionSecret,
+      services.wallClock.now().getTime(),
     );
     if (!session) {
       return context.json(
@@ -439,6 +441,7 @@ export function registerCustomerSeatBrowseRoutes(
     const session = readRoleSession(
       getCookie(context, SESSION_COOKIE),
       services.sessionSecret,
+      services.wallClock.now().getTime(),
     );
     if (!session) {
       return context.json(
@@ -679,6 +682,7 @@ export function registerCustomerSeatBrowseRoutes(
     const session = readRoleSession(
       getCookie(context, SESSION_COOKIE),
       services.sessionSecret,
+      services.wallClock.now().getTime(),
     );
     if (!session) {
       return context.json(
@@ -800,6 +804,7 @@ export function registerCustomerSeatBrowseRoutes(
       const session = readRoleSession(
         getCookie(context, SESSION_COOKIE),
         services.sessionSecret,
+        services.wallClock.now().getTime(),
       );
       if (!session) {
         return context.json(
@@ -966,6 +971,7 @@ export function registerCustomerSeatBrowseRoutes(
       const session = readRoleSession(
         getCookie(context, SESSION_COOKIE),
         services.sessionSecret,
+        services.wallClock.now().getTime(),
       );
       if (!session) {
         return context.json(

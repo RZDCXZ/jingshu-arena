@@ -85,12 +85,67 @@ describe("manager store configuration", () => {
       "starbridge-standard",
       "apex-new",
     ]);
+    const readRequestId = randomUUID();
     await expect(
       database.readManagerStoreConfiguration({
         ...context,
+        requestId: readRequestId,
         storeId: unknownStoreId,
       }),
     ).rejects.toMatchObject({ reason: "cross-store" });
+    const readDenial = await sql.query<{
+      reason: string;
+      role: string;
+      store_id: string | null;
+    }>(
+      `select store_id, role, reason from audit_events
+        where sandbox_id = $1 and request_id = $2`,
+      [context.sandboxId, readRequestId],
+    );
+    expect(readDenial.rows).toEqual([
+      { reason: "cross-store", role: "hq", store_id: null },
+    ]);
+
+    const prismStore = catalogs.stores.find(
+      (store) => store.code === "prism-flagship",
+    )!;
+    const configuration = await database.readManagerStoreConfiguration({
+      ...context,
+      storeId: prismStore.storeId,
+    });
+    const product = configuration.products[0]!;
+    const productRequestId = randomUUID();
+    await expect(
+      database.executeManagerStoreConfigurationCommand({
+        ...context,
+        action: "update-store-product",
+        expectedVersion: product.version,
+        idempotencyKey: randomUUID(),
+        listed: product.listed,
+        lowStockThreshold: product.lowStockThreshold + 1,
+        requestId: productRequestId,
+        storeId: prismStore.storeId,
+        storeProductId: product.storeProductId,
+        unitPriceCents: product.unitPriceCents,
+      }),
+    ).rejects.toMatchObject({ reason: "invalid-store-product" });
+    const unchanged = await database.readManagerStoreConfiguration({
+      ...context,
+      storeId: prismStore.storeId,
+    });
+    expect(
+      unchanged.products.find(
+        (candidate) => candidate.storeProductId === product.storeProductId,
+      )?.lowStockThreshold,
+    ).toBe(product.lowStockThreshold);
+    const productDenial = await sql.query<{ reason: string; role: string }>(
+      `select role, reason from audit_events
+        where sandbox_id = $1 and request_id = $2`,
+      [context.sandboxId, productRequestId],
+    );
+    expect(productDenial.rows).toEqual([
+      { reason: "invalid-store-product", role: "hq" },
+    ]);
 
     const requestId = randomUUID();
     await expect(

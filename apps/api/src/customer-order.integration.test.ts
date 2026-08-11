@@ -25,6 +25,7 @@ const app = createApp({
   sandboxDatabase: database,
   sessionSecret,
   secureCookies: true,
+  wallClock: { now: () => wallTime },
 });
 const { Client } = pg;
 
@@ -61,7 +62,7 @@ async function createCustomerContext() {
   });
   const body = (await context.json()) as { csrfToken: string };
   const token = decodeURIComponent(cookie.slice(cookie.indexOf("=") + 1));
-  const session = readRoleSession(token, sessionSecret);
+  const session = readRoleSession(token, sessionSecret, wallTime.getTime());
   expect(session).not.toBeNull();
   return {
     cookie,

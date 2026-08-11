@@ -67,6 +67,25 @@ describe("signed role session", () => {
     expect(readRoleSession(expired.token, secret)).toBeNull();
   });
 
+  it("evaluates expiry against the caller's application clock", () => {
+    const applicationTime = new Date("2026-08-10T11:47:23.000Z");
+    const issued = issueRoleSession(
+      roleContext(new Date("2026-08-11T11:47:23.000Z")),
+      secret,
+    );
+
+    expect(
+      readRoleSession(issued.token, secret, applicationTime.getTime()),
+    ).toEqual(issued.payload);
+    expect(
+      readRoleSession(
+        issued.token,
+        secret,
+        new Date("2026-08-11T11:47:23.001Z").getTime(),
+      ),
+    ).toBeNull();
+  });
+
   it("accepts the restricted legacy v1 shape only through the upgrade fallback", () => {
     const payload = Buffer.from(
       JSON.stringify({

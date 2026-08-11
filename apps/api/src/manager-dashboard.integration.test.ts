@@ -14,14 +14,16 @@ import { createApp } from "./app.js";
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required.");
 
+const fixedTime = new Date("2026-08-10T11:47:23.000Z");
 const database = createPublicSandboxDatabase(databaseUrl, {
-  wallClock: { now: () => new Date("2026-08-10T11:47:23.000Z") },
+  wallClock: { now: () => fixedTime },
 });
 const app = createApp({
   allowedOrigins: ["https://arena.example"],
   sandboxDatabase: database,
   secureCookies: true,
   sessionSecret: "ticket-22-manager-dashboard-secret",
+  wallClock: { now: () => fixedTime },
 });
 
 beforeAll(async () => migrateEmptyDatabase(databaseUrl));

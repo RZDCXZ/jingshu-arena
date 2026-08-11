@@ -411,7 +411,7 @@ describe("manager people, schedule and attendance persistence", () => {
     });
     expect(summary.stores).toHaveLength(3);
     expect(summary.stores.map((store) => store.employeeCount)).toEqual([
-      7, 16, 10,
+      16, 10, 7,
     ]);
     expect(
       summary.stores.every(

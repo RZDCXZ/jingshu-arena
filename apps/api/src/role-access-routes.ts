@@ -92,6 +92,7 @@ export function registerRoleAccessRoutes(app: Hono, services: AppServices) {
     const session = readRoleSession(
       getCookie(context, SESSION_COOKIE),
       services.sessionSecret,
+      services.wallClock.now().getTime(),
     );
     if (!session) {
       return context.json(

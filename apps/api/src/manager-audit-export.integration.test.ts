@@ -29,6 +29,7 @@ const app = createApp({
   sandboxDatabase: database,
   secureCookies: true,
   sessionSecret: "ticket-23-manager-audit-export-secret",
+  wallClock: { now: () => fixedTime },
 });
 
 beforeAll(async () => migrateEmptyDatabase(databaseUrl));

@@ -168,6 +168,7 @@ async function customerSession(
     ? readRoleSession(
         getCookie(context, SESSION_COOKIE),
         services.sessionSecret,
+        services.wallClock.now().getTime(),
       )
     : null;
   if (!session) {

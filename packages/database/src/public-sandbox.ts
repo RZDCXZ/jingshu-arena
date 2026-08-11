@@ -1070,6 +1070,7 @@ export interface ExecuteStaffOrderCommandInput extends ReadStaffOrderDetailInput
 export type ReadStoreInventoryInput = ReadStaffReservationWorkbenchInput;
 
 export interface ReadManagerStoreConfigurationInput extends ReadRoleContextInput {
+  readonly requestId?: string;
   readonly role: "hq" | "manager";
   readonly storeId?: string;
 }
@@ -6688,9 +6689,9 @@ async function materializePublicSandbox(input: {
   const operatorId = randomUUID();
   await input.client.query(
     `insert into sandboxes (
-       id, schema_version, seed_version, expires_at, role_context_role,
+       id, schema_version, seed_version, created_at, expires_at, role_context_role,
        business_time_anchor_at, business_time_anchor_wall_at
-     ) values ($1, $2, $3, $4, $5, $6, $6)`,
+     ) values ($1, $2, $3, $6, $4, $5, $6, $6)`,
     [
       input.sandboxId,
       publicSandboxSeed.schemaVersion,
@@ -16834,6 +16835,7 @@ export function createPublicSandboxDatabase(
     async readManagerStoreConfiguration(input) {
       const client = await pool.connect();
       const wallTime = wallClock.now();
+      let denialCommitted = false;
       try {
         await client.query("begin");
         await client.query("set local role jingshu_runtime");
@@ -16845,10 +16847,34 @@ export function createPublicSandboxDatabase(
           input,
           wallTime,
         );
+        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
         if (!context.actorStoreId) {
+          if (input.role === "hq") {
+            await client.query(
+              `insert into audit_events (
+                 id, sandbox_id, store_id, persona_id, role, action,
+                 object_type, object_id, result, reason, request_id,
+                 before_data, after_data, business_occurred_at, recorded_at
+               ) values ($1, $2, null, $3, $4, 'store-configuration.read',
+                 'store', $5, 'denied', 'cross-store', $6, null,
+                 $7::jsonb, $8, $9)`,
+              [
+                randomUUID(),
+                input.sandboxId,
+                input.personaId,
+                input.role,
+                input.storeId ?? null,
+                input.requestId ?? randomUUID(),
+                JSON.stringify({ storeId: input.storeId ?? null }),
+                currentTime,
+                wallTime,
+              ],
+            );
+            await client.query("commit");
+            denialCommitted = true;
+          }
           throw new ManagerStoreConfigurationConflictError("cross-store");
         }
-        const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
         await processFrontlineReservationDeadlines(client, {
           currentTime,
           recordedAt: wallTime,
@@ -17241,7 +17267,9 @@ export function createPublicSandboxDatabase(
           },
         } satisfies DatabaseManagerStoreConfiguration;
       } catch (error) {
-        await client.query("rollback").catch(() => undefined);
+        if (!denialCommitted) {
+          await client.query("rollback").catch(() => undefined);
+        }
         throw error;
       } finally {
         client.release();
@@ -17273,6 +17301,9 @@ export function createPublicSandboxDatabase(
           wallTime,
         );
         const currentTime = businessTimeForSandbox(context.sandbox, wallTime);
+        await client.query("select set_config('app.actor_role', $1, true)", [
+          input.role,
+        ]);
         const idempotencyKeyHash = hash(input.idempotencyKey);
         const commandPayload = (() => {
           switch (input.action) {
@@ -17440,6 +17471,15 @@ export function createPublicSandboxDatabase(
         if (!context.actorStoreId || context.actorStoreId !== input.storeId) {
           throw new ManagerStoreConfigurationConflictError("cross-store");
         }
+        if (
+          input.role === "hq" &&
+          (input.action === "update-store-product" ||
+            input.action === "archive-store-product")
+        ) {
+          throw new ManagerStoreConfigurationConflictError(
+            "invalid-store-product",
+          );
+        }
         await processFrontlineReservationDeadlines(client, {
           currentTime,
           recordedAt: wallTime,
@@ -17538,7 +17578,7 @@ export function createPublicSandboxDatabase(
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
              ) values ($1, $2, $3, $4,
-               (select role_context_role from sandboxes where id = $2),
+               current_setting('app.actor_role'),
                'store-area.create',
                'store_area', $5, 'allowed', null, $6, null, $7::jsonb, $8, $9)`,
             [
@@ -17670,7 +17710,7 @@ export function createPublicSandboxDatabase(
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
              ) values ($1, $2, $3, $4,
-               (select role_context_role from sandboxes where id = $2),
+               current_setting('app.actor_role'),
                'store-area.update',
                'store_area', $5, 'allowed', null, $6, $7::jsonb, $8::jsonb,
                $9, $10)`,
@@ -17749,7 +17789,7 @@ export function createPublicSandboxDatabase(
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
              ) values ($1, $2, $3, $4,
-               (select role_context_role from sandboxes where id = $2),
+               current_setting('app.actor_role'),
                'store-area.delete-draft',
                'store_area', $5, 'allowed', null, $6, $7::jsonb, null, $8, $9)`,
             [
@@ -17860,7 +17900,7 @@ export function createPublicSandboxDatabase(
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
              ) values ($1, $2, $3, $4,
-               (select role_context_role from sandboxes where id = $2),
+               current_setting('app.actor_role'),
                'seat.create', 'seat', $5,
                'allowed', null, $6, null, $7::jsonb, $8, $9)`,
             [
@@ -18061,7 +18101,7 @@ export function createPublicSandboxDatabase(
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
              ) values ($1, $2, $3, $4,
-               (select role_context_role from sandboxes where id = $2),
+               current_setting('app.actor_role'),
                'seat.update', 'seat', $5,
                'allowed', null, $6, $7::jsonb, $8::jsonb, $9, $10)`,
             [
@@ -18144,7 +18184,7 @@ export function createPublicSandboxDatabase(
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
              ) values ($1, $2, $3, $4,
-               (select role_context_role from sandboxes where id = $2),
+               current_setting('app.actor_role'),
                'seat.delete-draft', 'seat',
                $5, 'allowed', null, $6, $7::jsonb, null, $8, $9)`,
             [
@@ -18345,7 +18385,7 @@ export function createPublicSandboxDatabase(
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
              ) values ($1, $2, $3, $4,
-               (select role_context_role from sandboxes where id = $2),
+               current_setting('app.actor_role'),
                'price-plan.create-version',
                'price_plan', $5, 'allowed', null, $6, $7::jsonb, $8::jsonb,
                $9, $10)`,
@@ -18459,7 +18499,7 @@ export function createPublicSandboxDatabase(
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
              ) values ($1, $2, $3, $4,
-               (select role_context_role from sandboxes where id = $2),
+               current_setting('app.actor_role'),
                'price-plan.archive',
                'price_plan', $5, 'allowed', null, $6, $7::jsonb, $8::jsonb,
                $9, $10)`,
@@ -18585,7 +18625,7 @@ export function createPublicSandboxDatabase(
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
              ) values ($1, $2, $3, $4,
-               (select role_context_role from sandboxes where id = $2),
+               current_setting('app.actor_role'),
                $5, 'store_product', $6,
                'allowed', null, $7, $8::jsonb, $9::jsonb, $10, $11)`,
             [
@@ -18678,7 +18718,7 @@ export function createPublicSandboxDatabase(
                object_type, object_id, result, reason, request_id,
                before_data, after_data, business_occurred_at, recorded_at
              ) values ($1, $2, $3, $4,
-               (select role_context_role from sandboxes where id = $2),
+               current_setting('app.actor_role'),
                'store.business-hours.schedule', 'store_business_hours', $5,
                'allowed', null, $6, null, $7::jsonb, $8, $9)`,
             [
@@ -18791,7 +18831,7 @@ export function createPublicSandboxDatabase(
              object_id, result, reason, request_id, before_data, after_data,
              business_occurred_at, recorded_at
            ) values ($1, $2, $3, $4,
-             (select role_context_role from sandboxes where id = $2),
+             current_setting('app.actor_role'),
              'store.profile.update',
              'store', $3, 'allowed', null, $5, $6::jsonb, $7::jsonb, $8, $9)`,
           [
@@ -18885,7 +18925,7 @@ export function createPublicSandboxDatabase(
                  object_type, object_id, result, reason, request_id,
                  before_data, after_data, business_occurred_at, recorded_at
                ) values ($1, $2, $3, $4,
-                 (select role_context_role from sandboxes where id = $2),
+                 current_setting('app.actor_role'),
                  $5, $6, $7, 'denied',
                  $8, $9, null, $10::jsonb, $11, $12)`,
               [

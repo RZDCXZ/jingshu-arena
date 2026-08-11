@@ -124,6 +124,7 @@ async function staffSession(
     ? readRoleSession(
         getCookie(context, SESSION_COOKIE),
         services.sessionSecret,
+        services.wallClock.now().getTime(),
       )
     : null;
   if (!session) {

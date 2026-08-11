@@ -28,6 +28,7 @@ const app = createApp({
   sandboxDatabase: database,
   sessionSecret: "ticket-13-manager-inventory-secret-32-bytes",
   secureCookies: true,
+  wallClock: { now: () => fixedTime },
 });
 
 beforeAll(async () => {
@@ -193,6 +194,7 @@ describe("store inventory API", () => {
         } as unknown as PublicSandboxDatabase,
         sessionSecret: "ticket-13-manager-inventory-secret-32-bytes",
         secureCookies: true,
+        wallClock: { now: () => fixedTime },
       });
       return mappingApp.request("/api/v1/store/inventory/commands", {
         body: JSON.stringify({

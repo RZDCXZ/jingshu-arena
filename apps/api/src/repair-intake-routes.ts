@@ -305,6 +305,7 @@ function repairSession(context: Context, services: AppServices) {
     ? readRoleSession(
         getCookie(context, SESSION_COOKIE),
         services.sessionSecret,
+        services.wallClock.now().getTime(),
       )
     : null;
 }
@@ -389,7 +390,7 @@ async function cleanOrQueueRepairImageObject(
   }
   await services.sandboxDatabase
     ?.enqueueRepairImageCleanup({
-      availableAt: new Date(),
+      availableAt: services.wallClock.now(),
       objectKey: input.key,
       reason: input.reason,
       sandboxId: input.sandboxId,
@@ -474,6 +475,7 @@ async function customerSession(
     ? readRoleSession(
         getCookie(context, SESSION_COOKIE),
         services.sessionSecret,
+        services.wallClock.now().getTime(),
       )
     : null;
   if (!session) {
@@ -577,6 +579,7 @@ async function staffSession(
     ? readRoleSession(
         getCookie(context, SESSION_COOKIE),
         services.sessionSecret,
+        services.wallClock.now().getTime(),
       )
     : null;
   if (!session) {

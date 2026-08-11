@@ -63,6 +63,7 @@ export function registerCustomerMembershipRoutes(
       ? readRoleSession(
           getCookie(context, SESSION_COOKIE),
           services.sessionSecret,
+          services.wallClock.now().getTime(),
         )
       : null;
     if (!session) {

@@ -653,10 +653,23 @@ export function HqStoreConfigPage({ onAction, readonly }) {
             },
           ]
         : [
-            { name: "脉冲能量饮料", detail: "三店可用" },
-            { name: "折线薯片", detail: "三店可用" },
-            { name: "零点气泡水", detail: "三店可用" },
             {
+              code: "pulse-energy-drink",
+              name: "脉冲能量饮料",
+              detail: "三店可用",
+            },
+            {
+              code: "vector-crisps",
+              name: "折线薯片",
+              detail: "三店可用",
+            },
+            {
+              code: "zero-sparkling-water",
+              name: "零点气泡水",
+              detail: "三店可用",
+            },
+            {
+              code: "peripheral-cleaning-kit",
               name: "外设清洁套装",
               detail: "仅旗舰店、新店",
               attention: true,

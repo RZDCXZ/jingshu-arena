@@ -30,6 +30,7 @@ const app = createApp({
   sandboxDatabase: database,
   sessionSecret: "ticket-19-manager-store-config-secret-32-bytes",
   secureCookies: true,
+  wallClock: { now: () => fixedTime },
 });
 
 beforeAll(async () => {

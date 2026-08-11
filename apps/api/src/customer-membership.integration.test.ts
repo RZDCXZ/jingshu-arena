@@ -29,6 +29,7 @@ const app = createApp({
   sandboxDatabase: database,
   sessionSecret: "ticket-10-membership-session-secret-32-bytes",
   secureCookies: true,
+  wallClock: { now: () => apiWallTime },
 });
 
 beforeAll(async () => {

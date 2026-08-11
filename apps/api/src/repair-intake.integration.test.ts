@@ -80,7 +80,7 @@ async function createCustomerSession() {
   });
   const context = (await contextResponse.json()) as RoleContextReadyResponse;
   const token = decodeURIComponent(cookie.slice(cookie.indexOf("=") + 1));
-  const session = readRoleSession(token, sessionSecret);
+  const session = readRoleSession(token, sessionSecret, wallTime.getTime());
   expect(session).not.toBeNull();
   return { context, cookie, sandboxId: session!.sandboxId };
 }
@@ -104,7 +104,7 @@ async function createStaffSession() {
     headers: { Cookie: cookie },
   });
   const token = decodeURIComponent(cookie.slice(cookie.indexOf("=") + 1));
-  const roleSession = readRoleSession(token, sessionSecret);
+  const roleSession = readRoleSession(token, sessionSecret, wallTime.getTime());
   expect(roleSession).not.toBeNull();
   return {
     context: (await contextResponse.json()) as RoleContextReadyResponse,
@@ -585,7 +585,7 @@ describe("repair intake API", () => {
     expect(metadata.exif).toBeUndefined();
     expect(sanitized.includes(Buffer.from("Private Person"))).toBe(false);
 
-    wallTime = new Date(Date.now() + 1_000);
+    wallTime = new Date(fixedTime.getTime() + 10 * 60_000 + 1_000);
     const cleanupJobs = await database.readDueRepairImageCleanupJobs(10);
     expect(cleanupJobs).toEqual([
       expect.objectContaining({

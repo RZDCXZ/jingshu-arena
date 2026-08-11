@@ -19,8 +19,9 @@ const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("DATABASE_URL is required.");
 
 const publicOrigin = "https://arena.example";
+const fixedTime = new Date("2026-08-10T11:47:23.000Z");
 const database = createPublicSandboxDatabase(databaseUrl, {
-  wallClock: { now: () => new Date("2026-08-10T11:47:23.000Z") },
+  wallClock: { now: () => fixedTime },
 });
 const sql = new Pool({ connectionString: databaseUrl });
 const app = createApp({
@@ -28,6 +29,7 @@ const app = createApp({
   sandboxDatabase: database,
   secureCookies: true,
   sessionSecret: "ticket-21-manager-people-secret-32-bytes",
+  wallClock: { now: () => fixedTime },
 });
 
 beforeAll(async () => migrateEmptyDatabase(databaseUrl));

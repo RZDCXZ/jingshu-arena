@@ -163,6 +163,7 @@ export function registerStaffHandoverRoutes(app: Hono, services: AppServices) {
       ? readRoleSession(
           getCookie(context, SESSION_COOKIE),
           services.sessionSecret,
+          services.wallClock.now().getTime(),
         )
       : null;
 

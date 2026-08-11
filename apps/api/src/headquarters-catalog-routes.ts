@@ -264,7 +264,11 @@ async function headquartersSession(
   const token = getCookie(context, SESSION_COOKIE);
   const session =
     token && services.sessionSecret
-      ? readRoleSession(token, services.sessionSecret)
+      ? readRoleSession(
+          token,
+          services.sessionSecret,
+          services.wallClock.now().getTime(),
+        )
       : null;
   if (!session) {
     return {

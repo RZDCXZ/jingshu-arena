@@ -1552,7 +1552,7 @@ function resolveActionModal(action) {
       fields: [
         {
           label: "商品代码",
-          value: "pulse-energy-drink",
+          value: item.code || "unselected-product",
           readOnly: true,
         },
         {

@@ -208,6 +208,7 @@ export function registerPublicSandboxRoutes(app: Hono, services: AppServices) {
       const existingSession = readRoleSession(
         getCookie(context, SESSION_COOKIE),
         services.sessionSecret,
+        services.wallClock.now().getTime(),
       );
       const preservesSameSandboxSession =
         result.replayed && existingSession?.sandboxId === result.sandboxId;
