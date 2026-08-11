@@ -730,6 +730,12 @@ export function DataStatusModal({ current, onClose, onChange }) {
       "SSE 正常，收到失效通知后重新获取相关资源。",
       "success",
     ],
+    [
+      "reconnecting",
+      "正在重新连接",
+      "短连接正常结束或尚未确认时，不把旧缓存视为新数据。",
+      "warning",
+    ],
     ["polling", "轮询更新", "实时连接不可用，使用短轮询作为正式降级。", "info"],
     ["manual", "需手动刷新", "自动更新暂不可用，保留手动刷新入口。", "warning"],
     ["readonly", "只读降级", "标准种子快照可读，所有写操作禁用。", "warning"],

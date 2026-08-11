@@ -148,7 +148,7 @@ test("public entry explains every boundary without creating a sandbox", async ({
   expect(creationRequests).toEqual([]);
 });
 
-test("a transient context-check failure blocks sandbox creation until retry", async ({
+test("an unavailable context check serves the bundled seed snapshot until retry", async ({
   page,
 }) => {
   let contextEnded = false;
@@ -190,15 +190,21 @@ test("a transient context-check failure blocks sandbox creation until retry", as
 
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: "暂时无法确认已有角色上下文" }),
+    page.getByRole("heading", {
+      name: "服务暂时不可用，当前展示只读标准种子快照",
+    }),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: /进入顾客演示/u })).toHaveCount(
-    0,
-  );
+  await expect(page.getByTestId("readonly-seed-snapshot")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "创建预约（只读）" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "推进业务时间（只读）" }),
+  ).toBeDisabled();
   expect(creationRequests).toEqual([]);
 
   contextEnded = true;
-  await page.getByRole("button", { name: "重试确认" }).click();
+  await page.getByRole("button", { name: "重新连接服务" }).click();
   await expect(
     page.getByRole("heading", {
       name: "从一次预约，看见四个角色如何共同经营。",
@@ -306,6 +312,52 @@ test("failed creation keeps the same key for a safe retry", async ({
   ).toBeVisible();
 
   await page.getByRole("button", { name: "使用原请求安全重试" }).click();
+  await expect(
+    page.getByRole("heading", { name: "沙箱已准备完成" }),
+  ).toBeVisible();
+  expect(creationKeys).toHaveLength(2);
+  expect(creationKeys[1]).toBe(creationKeys[0]);
+});
+
+test("rate-limited creation waits for Retry-After and retains its original key", async ({
+  page,
+}) => {
+  await page.clock.install({ time: new Date("2026-08-09T11:30:00.000Z") });
+  const creationKeys: string[] = [];
+  let attempt = 0;
+  await page.route("**/api/v1/public/sandboxes", async (route) => {
+    attempt += 1;
+    creationKeys.push(route.request().headers()["idempotency-key"] ?? "");
+    if (attempt === 1) {
+      await route.fulfill({
+        headers: { "Retry-After": "2" },
+        json: {
+          error: {
+            code: "SANDBOX_CREATION_RATE_LIMITED",
+            message: "请求过于频繁，请在倒计时结束后安全重试。",
+            requestId: "00000000-0000-4000-8000-000000000014",
+          },
+        },
+        status: 429,
+      });
+      return;
+    }
+    await route.fulfill({ json: readyWorld, status: 201 });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /进入顾客演示/u }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "请求过于频繁，暂不重复提交" }),
+  ).toBeVisible();
+  const retry = page.getByRole("button", { name: "使用原请求安全重试" });
+  await expect(retry).toBeDisabled();
+  await expect(page.getByText("2 秒后可重试")).toBeVisible();
+
+  await page.clock.fastForward(2_000);
+  await expect(retry).toBeEnabled();
+  await retry.click();
   await expect(
     page.getByRole("heading", { name: "沙箱已准备完成" }),
   ).toBeVisible();

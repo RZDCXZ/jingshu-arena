@@ -24,12 +24,21 @@ import { registerHeadquartersCatalogRoutes } from "./headquarters-catalog-routes
 import { registerHeadquartersComparisonRoutes } from "./headquarters-comparison-routes.js";
 import { registerHeadquartersAuditExportRoutes } from "./headquarters-audit-export-routes.js";
 import type { RepairImageStorage } from "./repair-image-storage.js";
+import {
+  SandboxInvalidationHub,
+  normalizeRealtimeConnectionLifetime,
+  registerSandboxRealtimeInvalidationPublishing,
+  registerSandboxRealtimeRoutes,
+} from "./sandbox-realtime.js";
+import type { SandboxRealtimeHub } from "./sandbox-realtime.js";
 
 interface AppOptions {
   allowedOrigins?: ReadonlyArray<string>;
   sandboxDatabase?: PublicSandboxDatabase;
   repairImageSigningSecret?: string;
   repairImageStorage?: RepairImageStorage;
+  realtimeConnectionLifetimeMilliseconds?: number;
+  realtimeHub?: SandboxRealtimeHub;
   sessionSecret?: string;
   secureCookies?: boolean;
   wallClock?: { now(): Date };
@@ -55,6 +64,10 @@ export function createApp(options: AppOptions = {}) {
     ...(options.repairImageStorage
       ? { repairImageStorage: options.repairImageStorage }
       : {}),
+    realtimeConnectionLifetimeMilliseconds: normalizeRealtimeConnectionLifetime(
+      options.realtimeConnectionLifetimeMilliseconds,
+    ),
+    realtimeHub: options.realtimeHub ?? new SandboxInvalidationHub(),
     ...(options.sessionSecret ? { sessionSecret: options.sessionSecret } : {}),
     wallClock: options.wallClock ?? { now: () => new Date() },
   };
@@ -65,6 +78,17 @@ export function createApp(options: AppOptions = {}) {
       status: "ready",
     } satisfies ApiHealth),
   );
+  app.get("/api/v1/health/realtime", (context) =>
+    context.json(
+      {
+        service: "jingshu-realtime",
+        status: services.realtimeHub.isAvailable() ? "ready" : "degraded",
+      },
+      services.realtimeHub.isAvailable() ? 200 : 503,
+    ),
+  );
+  registerSandboxRealtimeInvalidationPublishing(app, services);
+  registerSandboxRealtimeRoutes(app, services);
   registerRoleContextRoutes(app, services);
   registerRoleAccessRoutes(app, services);
   registerDemoToolsRoutes(app, services);

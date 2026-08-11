@@ -1096,6 +1096,17 @@ button.metric-card:hover {
   background: var(--surface);
   color: var(--text);
 }
+.topbar-tools button:disabled,
+.profile-menu:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+.topbar-tools button:disabled:hover,
+.profile-menu:disabled:hover {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
 .topbar-tools button svg {
   width: 18px;
   height: 18px;

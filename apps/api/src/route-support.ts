@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 import type { Context } from "hono";
 import { setCookie } from "hono/cookie";
@@ -17,6 +17,7 @@ import type {
 import { listRoleCapabilities } from "./role-authorization.js";
 import type { readRoleSession } from "./role-session.js";
 import type { RepairImageStorage } from "./repair-image-storage.js";
+import type { SandboxRealtimeHub } from "./sandbox-realtime.js";
 
 export const SESSION_COOKIE = "jingshu_session";
 export const SESSION_MAX_AGE_SECONDS = 24 * 60 * 60;
@@ -31,6 +32,8 @@ export interface AppServices {
   secureCookies: boolean;
   repairImageSigningSecret?: string;
   repairImageStorage?: RepairImageStorage;
+  realtimeConnectionLifetimeMilliseconds: number;
+  realtimeHub: SandboxRealtimeHub;
   sessionSecret?: string;
   wallClock: { now(): Date };
 }
@@ -123,6 +126,10 @@ export function roleContextBody(
       storeIds: context.storeScope.stores.map((store) => store.id),
     }),
     sandbox: {
+      fingerprint: createHash("sha256")
+        .update(context.sandboxId)
+        .digest("base64url")
+        .slice(0, 24),
       schemaVersion: context.schemaVersion,
       seedVersion: context.seedVersion,
       expiresAt: context.expiresAt.toISOString(),

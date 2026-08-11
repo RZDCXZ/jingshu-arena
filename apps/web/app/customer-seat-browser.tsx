@@ -416,8 +416,15 @@ function JourneyReservationCard({
 
 const LIFECYCLE_REQUEST_TIMEOUT_MS = 8_000;
 
-export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
+export function CustomerSeatBrowser({
+  csrfToken,
+  refreshKey,
+}: {
+  csrfToken: string;
+  refreshKey: string;
+}) {
   const customerRootRef = useRef<HTMLElement>(null);
+  const lastRefreshKeyRef = useRef(refreshKey);
   const [catalog, setCatalog] = useState<CustomerStoreCatalogResponse | null>(
     null,
   );
@@ -535,6 +542,24 @@ export function CustomerSeatBrowser({ csrfToken }: { csrfToken: string }) {
     orderPaymentKeyRef.current = null;
     orderCancelKeyRef.current = null;
   }, [activeOrderId]);
+
+  useEffect(() => {
+    if (lastRefreshKeyRef.current === refreshKey) return;
+    lastRefreshKeyRef.current = refreshKey;
+    setCatalogAttempt((attempt) => attempt + 1);
+    setAvailabilityAttempt((attempt) => attempt + 1);
+    setMembershipAttempt((attempt) => attempt + 1);
+    setJourneyAttempt((attempt) => attempt + 1);
+    if (activeReservationId) void readReservationDetail(activeReservationId);
+    if (activeOrderId) void readOrderDetail(activeOrderId);
+    if (createdRepair && view === "repair-detail") {
+      void readRepairPublicDetail(createdRepair.repairId).catch((error) =>
+        setRepairDetailFailure(
+          error instanceof Error ? error.message : "公开处理动态暂时无法读取。",
+        ),
+      );
+    }
+  }, [refreshKey]);
 
   useEffect(() => {
     if (

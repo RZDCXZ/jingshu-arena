@@ -188,6 +188,64 @@ function sandboxReady(role: PublicRole): PublicSandboxReadyResponse {
 }
 
 test.beforeEach(async ({ context }) => {
+  await context.addInitScript(() => {
+    type RealtimeListener = (event: MessageEvent<string>) => void;
+
+    class TestEventSource {
+      static instances: TestEventSource[] = [];
+      static autoConnect = true;
+
+      onerror: ((event: Event) => void) | null = null;
+      onopen: ((event: Event) => void) | null = null;
+      listeners = new Map<string, Set<RealtimeListener>>();
+
+      constructor() {
+        TestEventSource.instances.push(this);
+        queueMicrotask(() => {
+          this.onopen?.(new Event("open"));
+          if (TestEventSource.autoConnect) this.emit("connected");
+        });
+      }
+
+      addEventListener(type: string, listener: RealtimeListener) {
+        const listeners = this.listeners.get(type) ?? new Set();
+        listeners.add(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      close() {}
+
+      emit(type: string, data = "") {
+        const event = new MessageEvent<string>(type, { data });
+        for (const listener of this.listeners.get(type) ?? []) listener(event);
+      }
+
+      fail() {
+        this.onerror?.(new Event("error"));
+      }
+    }
+
+    Object.defineProperty(window, "EventSource", {
+      configurable: true,
+      value: TestEventSource,
+      writable: true,
+    });
+    Object.defineProperty(window, "__jingshuRealtimeTest", {
+      configurable: true,
+      value: {
+        emit(type: string, data = "") {
+          TestEventSource.instances.at(-1)?.emit(type, data);
+        },
+        fail() {
+          TestEventSource.instances.at(-1)?.fail();
+        },
+        setAutoConnect(value: boolean) {
+          TestEventSource.autoConnect = value;
+        },
+      },
+      writable: false,
+    });
+  });
   let hasSession = false;
   let currentRole: PublicRole = "staff";
   let contextVersion = 1;
@@ -4637,6 +4695,198 @@ test("shared shell exposes the signed persona, role, scope, lifecycle, and fresh
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(roleTrigger).toBeFocused();
+});
+
+test("shared shell re-reads authoritative state after a sandbox SSE invalidation", async ({
+  page,
+}) => {
+  await enterStaffShell(page);
+  let refreshes = 0;
+  let resourceRefreshes = 0;
+  await page.route("**/api/v1/demo/context", async (route) => {
+    refreshes += 1;
+    await route.fallback();
+  });
+  await page.route("**/api/v1/staff/workbench", async (route) => {
+    resourceRefreshes += 1;
+    await route.fallback();
+  });
+
+  await page.evaluate(() => {
+    (
+      window as typeof window & {
+        __jingshuRealtimeTest: {
+          emit(type: string, data?: string): void;
+        };
+      }
+    ).__jingshuRealtimeTest.emit(
+      "invalidated",
+      JSON.stringify({ resource: "sandbox" }),
+    );
+  });
+
+  await expect.poll(() => refreshes, { timeout: 1_000 }).toBe(1);
+  await expect.poll(() => resourceRefreshes, { timeout: 1_000 }).toBe(1);
+  await expect(
+    page.getByRole("status", { name: /数据更新状态：实时更新/u }),
+  ).toBeVisible();
+});
+
+test("an SSE invalidation blocks an old role before its stale shell can write", async ({
+  page,
+}) => {
+  await enterStaffShell(page);
+  let releaseAuthoritativeRead: () => void = () => undefined;
+  const authoritativeRead = new Promise<void>((resolve) => {
+    releaseAuthoritativeRead = resolve;
+  });
+  await page.route("**/api/v1/demo/context", async (route) => {
+    await authoritativeRead;
+    await route.fulfill({
+      json: roleContext("manager", 2, "csrf-context-version-2-token-value"),
+      status: 200,
+    });
+  });
+
+  await page.evaluate(() => {
+    (
+      window as typeof window & {
+        __jingshuRealtimeTest: {
+          emit(type: string, data?: string): void;
+        };
+      }
+    ).__jingshuRealtimeTest.emit(
+      "invalidated",
+      JSON.stringify({ resource: "sandbox" }),
+    );
+  });
+
+  await expect(
+    page.getByText("正在确认服务端当前上下文；暂时停止写操作。"),
+  ).toBeVisible();
+  await expect(page.locator(".role-shell-body")).toHaveAttribute("inert", "");
+
+  releaseAuthoritativeRead();
+  const staleBlock = page.getByRole("alertdialog", {
+    name: "当前标签的角色上下文已失效",
+  });
+  await expect(staleBlock).toBeVisible();
+  await expect(
+    staleBlock.getByText("旧角色写操作已停止，不能使用缓存继续提交。"),
+  ).toBeVisible();
+  await expect(
+    staleBlock.getByRole("button", { name: "刷新到当前角色" }),
+  ).toBeVisible();
+});
+
+test("shared shell falls back from an early SSE close to polling and then manual refresh", async ({
+  page,
+}) => {
+  await page.clock.install({ time: new Date("2026-08-09T11:30:00.000Z") });
+  let failPollingRefreshes = false;
+  await page.route("**/api/v1/demo/context", async (route) => {
+    if (!failPollingRefreshes) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      json: {
+        error: {
+          code: "ROLE_CONTEXT_REFRESH_REJECTED",
+          message: "本次重新读取未完成，请手动刷新。",
+          requestId: "00000000-0000-4000-8000-000000000335",
+        },
+      },
+      status: 400,
+    });
+  });
+  await enterStaffShell(page);
+
+  await page.evaluate(() => {
+    (
+      window as typeof window & {
+        __jingshuRealtimeTest: {
+          emit(type: string, data?: string): void;
+          setAutoConnect(value: boolean): void;
+        };
+      }
+    ).__jingshuRealtimeTest.setAutoConnect(false);
+    (
+      window as typeof window & {
+        __jingshuRealtimeTest: { emit(type: string, data?: string): void };
+      }
+    ).__jingshuRealtimeTest.emit("reconnect");
+  });
+  await expect(
+    page.getByRole("status", { name: /数据更新状态：正在重新连接/u }),
+  ).toBeVisible();
+
+  await page.clock.fastForward(750);
+  await page.evaluate(() => {
+    (
+      window as typeof window & {
+        __jingshuRealtimeTest: { fail(): void };
+      }
+    ).__jingshuRealtimeTest.fail();
+  });
+  await page.clock.fastForward(750);
+
+  failPollingRefreshes = true;
+  await page.evaluate(() => {
+    (
+      window as typeof window & {
+        __jingshuRealtimeTest: { fail(): void };
+      }
+    ).__jingshuRealtimeTest.fail();
+  });
+  await expect(
+    page.getByRole("status", { name: /数据更新状态：轮询更新/u }),
+  ).toBeVisible();
+
+  await page.clock.fastForward(8_000);
+  await expect(
+    page.getByRole("status", { name: /数据更新状态：需手动刷新/u }),
+  ).toBeVisible();
+
+  failPollingRefreshes = false;
+  await page.getByRole("button", { name: "手动刷新角色上下文" }).click();
+  await expect(
+    page.getByRole("status", { name: /数据更新状态：正在重新连接/u }),
+  ).toBeVisible();
+});
+
+test("a runtime API outage replaces the writable shell with the bundled read-only snapshot", async ({
+  page,
+}) => {
+  await enterStaffShell(page);
+  let unavailable = false;
+  await page.route("**/api/v1/demo/context", async (route) => {
+    if (!unavailable) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      json: {
+        error: {
+          code: "ROLE_CONTEXT_SERVICE_UNAVAILABLE",
+          message: "角色上下文暂时无法读取，请稍后安全重试。",
+          requestId: "00000000-0000-4000-8000-000000000336",
+        },
+      },
+      status: 503,
+    });
+  });
+
+  unavailable = true;
+  await page.getByRole("button", { name: "手动刷新角色上下文" }).click();
+
+  await expect(page.getByTestId("readonly-seed-snapshot")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "办理到店（只读）" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText("请求关联 ID 00000000-0000-4000-8000-000000000336"),
+  ).toBeVisible();
 });
 
 test("staff fulfills paid orders one observable stage at a time and safely retries cancellation", async ({

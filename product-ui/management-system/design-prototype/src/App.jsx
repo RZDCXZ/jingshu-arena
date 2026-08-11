@@ -84,12 +84,13 @@ const navIcons = {
 
 const freshnessMeta = {
   live: ["实时更新", "success"],
+  reconnecting: ["正在重新连接", "warning"],
   polling: ["轮询更新", "info"],
   manual: ["需手动刷新", "warning"],
   readonly: ["只读降级", "warning"],
   stale: ["旧标签失效", "danger"],
   expired: ["沙箱已到期", "danger"],
-  rate: ["限流恢复 00:18", "warning"],
+  rate: ["限流恢复", "warning"],
 };
 
 export function App() {
@@ -120,6 +121,7 @@ export function App() {
     new URLSearchParams(window.location.search).get("businessTime") || "19:30",
   );
   const [dataMode, setDataMode] = useState("live");
+  const [rateRetrySeconds, setRateRetrySeconds] = useState(0);
   const [toast, setToast] = useState(null);
   const [timeLoading, setTimeLoading] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
@@ -134,7 +136,11 @@ export function App() {
   const meta = roleMeta[role];
   const readonly = dataMode === "readonly";
   const blocking = dataMode === "stale" || dataMode === "expired";
-  const [freshnessLabel, freshnessTone] = freshnessMeta[dataMode];
+  const [defaultFreshnessLabel, freshnessTone] = freshnessMeta[dataMode];
+  const freshnessLabel =
+    dataMode === "rate"
+      ? `限流恢复 00:${String(rateRetrySeconds).padStart(2, "0")}`
+      : defaultFreshnessLabel;
   const blockedBackgroundProps = blocking
     ? { "aria-hidden": true, inert: true }
     : {};
@@ -144,6 +150,14 @@ export function App() {
     const timer = window.setTimeout(() => setToast(null), 4200);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (dataMode !== "rate" || rateRetrySeconds <= 0) return undefined;
+    const timer = window.setTimeout(() => {
+      setRateRetrySeconds((seconds) => Math.max(0, seconds - 1));
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [dataMode, rateRetrySeconds]);
 
   function navigate(nextPage) {
     setPage(nextPage);
@@ -352,16 +366,26 @@ export function App() {
   function selectDataMode(mode) {
     setDataMode(mode);
     setOverlay(null);
-    if (mode === "rate")
+    if (mode === "rate") {
+      setRateRetrySeconds(18);
       setToast({
         tone: "warning",
         text: "请求过于频繁，请在 18 秒后重试 · req_7f…a2",
       });
-    else
+    } else
       setToast({
         tone: mode === "stale" || mode === "expired" ? "danger" : "info",
         text: `已切换到“${freshnessMeta[mode][0]}”状态预览`,
       });
+  }
+
+  function recoverAuthoritativeState({ pendingText, successText, wait = 550 }) {
+    setDataMode("reconnecting");
+    setToast({ tone: "info", text: pendingText });
+    window.setTimeout(() => {
+      setDataMode("live");
+      setToast({ tone: "success", text: successText });
+    }, wait);
   }
 
   const renderedPage = useMemo(() => {
@@ -568,6 +592,7 @@ export function App() {
           <button
             aria-label={`业务时间 ${businessTime}`}
             data-tooltip="业务时间"
+            disabled={readonly}
             onClick={() => {
               setTimeResult(null);
               setOverlay("time");
@@ -580,6 +605,7 @@ export function App() {
           <button
             aria-label="切换角色"
             data-tooltip="切换角色"
+            disabled={readonly}
             onClick={() => setOverlay("role")}
           >
             <Repeat />
@@ -588,6 +614,7 @@ export function App() {
           <button
             aria-label="重置演示数据"
             data-tooltip="重置演示数据"
+            disabled={readonly}
             onClick={() => {
               setResetResult(false);
               setOverlay("reset");
@@ -609,7 +636,11 @@ export function App() {
             <span>{freshnessLabel}</span>
           </button>
         </nav>
-        <button className="profile-menu" onClick={() => setOverlay("role")}>
+        <button
+          className="profile-menu"
+          disabled={readonly}
+          onClick={() => setOverlay("role")}
+        >
           <span className="profile-avatar">
             <User weight="fill" />
           </span>
@@ -623,6 +654,15 @@ export function App() {
         </button>
       </header>
 
+      {dataMode === "reconnecting" && (
+        <div
+          className="system-banner banner-warning"
+          {...blockedBackgroundProps}
+        >
+          <Pulse className="spin" />
+          正在重新连接实时服务；当前不会把缓存包装成已更新的数据。
+        </div>
+      )}
       {dataMode === "polling" && (
         <div
           className="system-banner banner-info"
@@ -640,12 +680,37 @@ export function App() {
           <WarningCircle />
           自动更新暂不可用。
           <button
-            onClick={() => {
-              setDataMode("live");
-              setToast({ tone: "success", text: "数据已手动刷新" });
-            }}
+            onClick={() =>
+              recoverAuthoritativeState({
+                pendingText: "已发起手动刷新，正在重新读取服务端状态",
+                successText: "服务端当前状态已重新确认",
+              })
+            }
           >
             立即刷新
+          </button>
+        </div>
+      )}
+      {dataMode === "rate" && (
+        <div
+          className="system-banner banner-warning"
+          {...blockedBackgroundProps}
+        >
+          <WarningCircle />
+          请求过于频繁。请求关联 ID req_7f…a2；
+          {rateRetrySeconds > 0
+            ? `请在 ${rateRetrySeconds} 秒后重试。`
+            : "现在可安全重试。"}
+          <button
+            disabled={rateRetrySeconds > 0}
+            onClick={() =>
+              recoverAuthoritativeState({
+                pendingText: "正在使用原请求安全重试，并重新读取服务端状态",
+                successText: "服务端当前状态已重新确认",
+              })
+            }
+          >
+            使用原请求安全重试
           </button>
         </div>
       )}
@@ -656,7 +721,17 @@ export function App() {
         >
           <WarningCircle />
           当前为只读标准快照，所有写操作均已禁用。
-          <button onClick={() => setDataMode("live")}>重试创建可写沙箱</button>
+          <button
+            onClick={() =>
+              recoverAuthoritativeState({
+                pendingText: "正在重新连接服务，写入仍保持禁用",
+                successText: "已重新读取服务端权威状态",
+                wait: 650,
+              })
+            }
+          >
+            重新连接服务
+          </button>
         </div>
       )}
 

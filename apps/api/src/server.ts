@@ -5,6 +5,7 @@ import { createPublicSandboxDatabase } from "@jingshu/database";
 
 import { createApp } from "./app.js";
 import { FileRepairImageStorage } from "./repair-image-storage.js";
+import { PostgresSandboxInvalidationHub } from "./sandbox-realtime.js";
 
 const port = Number.parseInt(process.env.PORT ?? "3001", 10);
 const databaseUrl = process.env.DATABASE_URL;
@@ -30,6 +31,17 @@ if (
 }
 
 const database = createPublicSandboxDatabase(databaseUrl);
+const realtimeHub = new PostgresSandboxInvalidationHub(databaseUrl);
+function triggerRealtimeProbe() {
+  void realtimeHub.start().catch(() => {
+    console.warn(
+      "Sandbox realtime probe is unavailable; clients will use polling fallback.",
+    );
+  });
+}
+triggerRealtimeProbe();
+const realtimeProbeTimer = setInterval(triggerRealtimeProbe, 10_000);
+realtimeProbeTimer.unref();
 const repairImageStorage = new FileRepairImageStorage(
   configuredRepairImageStorageDirectory ??
     join(tmpdir(), "jingshu-arena-private-repair-images"),
@@ -78,6 +90,7 @@ const app = createApp({
   sandboxDatabase: database,
   repairImageSigningSecret: sessionSecret,
   repairImageStorage,
+  realtimeHub,
   sessionSecret,
 });
 const server = serve({
@@ -90,8 +103,11 @@ console.log(`Jingshu API listening on http://localhost:${port}`);
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
     clearInterval(repairImageCleanupTimer);
+    clearInterval(realtimeProbeTimer);
     server.close(() => {
-      void database.close().finally(() => process.exit(0));
+      void Promise.all([database.close(), realtimeHub.close()]).finally(() =>
+        process.exit(0),
+      );
     });
   });
 }

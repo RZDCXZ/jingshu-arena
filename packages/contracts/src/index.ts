@@ -1768,6 +1768,8 @@ export interface RoleContextReadyResponse {
   };
   readonly capabilities: ReadonlyArray<RoleCapability>;
   readonly sandbox: {
+    /** Opaque, one-way fingerprint used only to detect a rotated sandbox. */
+    readonly fingerprint?: string;
     readonly schemaVersion: string;
     readonly seedVersion: string;
     readonly expiresAt: string;

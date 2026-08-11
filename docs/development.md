@@ -76,6 +76,10 @@ packages/domain
 - 报修隔离区、未被数据库采用的成品以及沙箱重置清理由 Postgres 持久化清理任务驱动；失败会指数退避重试，避免进程退出或单次对象删除故障遗留私有文件。
 - API 或 Web 任一进程启动失败时，另一进程会一并退出，避免只剩 Web 运行并把后端未启动误呈现为角色上下文故障。
 
+### 部署实时能力探针
+
+部署平台的就绪探针必须请求 `GET /api/v1/health/realtime`，而不是只请求通用健康端点。只有响应 `200` 且 `status` 为 `ready` 时，实例才可声明 SSE 可用；`503` / `degraded` 表示 PostgreSQL `LISTEN/NOTIFY` 桥接尚不可用，Web 会以轮询和手动刷新作为正式退路。该探针须运行在将承接公开 API 流量的同一运行时与数据库配置上；具体云平台接线仍遵循 ADR-0001 的部署阶段验证。
+
 `pnpm test:postgres` 不使用 SQLite 或内存数据库：
 
 - 未设置 `DATABASE_URL` 时，命令通过 Docker 创建专用 `postgres:17-alpine` 容器，测试完成后自动销毁。

@@ -43,8 +43,49 @@ import { ManagerDashboard } from "./manager-dashboard";
 import { ManagerAuditExport } from "./manager-audit-export";
 import { HeadquartersCatalogs } from "./headquarters-catalogs";
 import { HeadquartersComparison } from "./headquarters-comparison";
+import {
+  type AuthoritativeRefreshResult,
+  type RealtimeConnectionMode,
+  useSandboxRealtime,
+} from "./sandbox-realtime";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
+
+const realtimeStatusCopy = {
+  manual: {
+    detail: "自动更新暂不可用；请手动从服务端重新读取。",
+    label: "需手动刷新",
+  },
+  polling: {
+    detail: "实时连接不可用，当前使用短轮询重新读取权威状态。",
+    label: "轮询更新",
+  },
+  realtime: {
+    detail: "连接正常；收到失效通知后会从服务端重新读取。",
+    label: "实时更新",
+  },
+  reconnecting: {
+    detail: "正在重新连接；当前不会把缓存包装成新数据。",
+    label: "正在重新连接",
+  },
+} as const satisfies Record<
+  RealtimeConnectionMode,
+  { readonly detail: string; readonly label: string }
+>;
+
+type ContextRefreshSource =
+  "business-time" | "manual" | "polling" | "realtime" | "replay";
+
+function sandboxWasRotated(
+  current: RoleContextReadyResponse,
+  next: RoleContextReadyResponse,
+) {
+  return Boolean(
+    current.sandbox.fingerprint &&
+    next.sandbox.fingerprint &&
+    current.sandbox.fingerprint !== next.sandbox.fingerprint,
+  );
+}
 
 function Brand() {
   return (
@@ -179,10 +220,15 @@ export function RoleContextShell({
   context,
   onContextChange,
   onContextUnavailable,
+  onServiceUnavailable,
 }: {
   context: RoleContextReadyResponse;
   onContextChange: (context: RoleContextReadyResponse) => void;
   onContextUnavailable: () => void;
+  onServiceUnavailable: (failure: {
+    message: string;
+    requestId?: string;
+  }) => void;
 }) {
   const [activePage, setActivePage] = useState<RolePageId>(
     roleMeta[context.role.id].defaultPage,
@@ -204,6 +250,10 @@ export function RoleContextShell({
   const [staleReason, setStaleReason] = useState<"reset" | "role">("role");
   const [toolPanel, setToolPanel] = useState<"life" | "story" | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [authoritativeRefreshPending, setAuthoritativeRefreshPending] =
+    useState(false);
+  const [authoritativeRefreshVersion, setAuthoritativeRefreshVersion] =
+    useState(0);
   const [toast, setToast] = useState("");
   const roleTriggerRef = useRef<HTMLButtonElement>(null);
   const profileTriggerRef = useRef<HTMLButtonElement>(null);
@@ -212,7 +262,23 @@ export function RoleContextShell({
   const resetTriggerRef = useRef<HTMLButtonElement>(null);
   const broadcastRef = useRef<BroadcastChannel | null>(null);
   const recoveryFenceRef = useRef(false);
+  const realtimeRefreshCountRef = useRef(0);
   const meta = roleMeta[context.role.id];
+
+  const beginAuthoritativeRefresh = useCallback(() => {
+    realtimeRefreshCountRef.current += 1;
+    setAuthoritativeRefreshPending(true);
+  }, []);
+
+  const finishAuthoritativeRefresh = useCallback(() => {
+    realtimeRefreshCountRef.current = Math.max(
+      0,
+      realtimeRefreshCountRef.current - 1,
+    );
+    if (realtimeRefreshCountRef.current === 0) {
+      setAuthoritativeRefreshPending(false);
+    }
+  }, []);
 
   useEffect(() => {
     setActivePage(roleMeta[context.role.id].defaultPage);
@@ -254,7 +320,9 @@ export function RoleContextShell({
   }, [toast]);
 
   const refreshContext = useCallback(
-    async (source: "business-time" | "manual" | "replay" = "manual") => {
+    async (
+      source: ContextRefreshSource = "manual",
+    ): Promise<AuthoritativeRefreshResult> => {
       setRefreshing(true);
       try {
         const response = await fetch("/api/v1/demo/context", {
@@ -264,41 +332,84 @@ export function RoleContextShell({
         const payload: unknown = await response.json();
         if (!response.ok) {
           const failure = payload as {
-            error?: { code?: string; message?: string };
+            error?: { code?: string; message?: string; requestId?: string };
           };
           if (failure.error?.code === "ROLE_CONTEXT_STALE") {
             recoveryFenceRef.current = false;
             setStaleReason("role");
             setStale(true);
+            return "stale";
           } else if (
             failure.error?.code === "ROLE_CONTEXT_UNAVAILABLE" ||
             failure.error?.code === "ROLE_CONTEXT_REQUIRED"
           ) {
             onContextUnavailable();
+            return "unavailable";
+          } else if (response.status >= 500) {
+            onServiceUnavailable({
+              message:
+                failure.error?.message ??
+                "服务暂时不可用，已切换到只读标准种子快照。",
+              ...(failure.error?.requestId
+                ? { requestId: failure.error.requestId }
+                : {}),
+            });
+            return "unavailable";
           } else {
-            setToast(failure.error?.message ?? "数据刷新失败，请稍后重试。");
+            if (source !== "polling") {
+              setToast(failure.error?.message ?? "数据刷新失败，请稍后重试。");
+            }
+            return "failed";
           }
-          return;
         }
-        onContextChange(payload as RoleContextReadyResponse);
+        const nextContext = payload as RoleContextReadyResponse;
+        const reset = sandboxWasRotated(context, nextContext);
+        if (reset || nextContext.contextVersion !== context.contextVersion) {
+          recoveryFenceRef.current = false;
+          setStaleReason(reset ? "reset" : "role");
+          setStale(true);
+          return "stale";
+        }
+        onContextChange(nextContext);
+        setAuthoritativeRefreshVersion((version) => version + 1);
         if (source === "manual") setFilter("");
         setStale(false);
         setStaleReason("role");
-        setToast(
-          source === "business-time"
-            ? "其他标签已推进业务时间，当前视图已从服务端刷新"
-            : source === "replay"
-              ? "同一请求已安全重放，当前业务时间已从服务端确认"
-              : "角色上下文已由服务端手动确认",
-        );
+        if (source !== "polling" && source !== "realtime") {
+          setToast(
+            source === "business-time"
+              ? "其他标签已推进业务时间，当前视图已从服务端刷新"
+              : source === "replay"
+                ? "同一请求已安全重放，当前业务时间已从服务端确认"
+                : "角色上下文已由服务端手动确认",
+          );
+        }
+        return "updated";
       } catch {
-        setToast("数据刷新失败，当前页面不会伪造成功。");
+        if (source !== "polling") {
+          setToast("数据刷新失败，当前页面不会伪造成功。");
+        }
+        return "failed";
       } finally {
+        if (source === "realtime") finishAuthoritativeRefresh();
         setRefreshing(false);
       }
     },
-    [onContextChange, onContextUnavailable],
+    [
+      context,
+      finishAuthoritativeRefresh,
+      onContextChange,
+      onContextUnavailable,
+      onServiceUnavailable,
+    ],
   );
+
+  const realtime = useSandboxRealtime({
+    contextVersion: context.contextVersion,
+    onInvalidationStart: beginAuthoritativeRefresh,
+    observedAt: context.freshness.observedAt,
+    refreshAuthoritativeState: refreshContext,
+  });
 
   useEffect(() => {
     if (!("BroadcastChannel" in window)) return undefined;
@@ -356,13 +467,22 @@ export function RoleContextShell({
       const payload: unknown = await response.json();
       if (!response.ok) {
         const failure = payload as {
-          error?: { code?: string; message?: string };
+          error?: { code?: string; message?: string; requestId?: string };
         };
         if (
           failure.error?.code === "ROLE_CONTEXT_UNAVAILABLE" ||
           failure.error?.code === "ROLE_CONTEXT_REQUIRED"
         ) {
           onContextUnavailable();
+        } else if (response.status >= 500) {
+          onServiceUnavailable({
+            message:
+              failure.error?.message ??
+              "服务暂时不可用，已切换到只读标准种子快照。",
+            ...(failure.error?.requestId
+              ? { requestId: failure.error.requestId }
+              : {}),
+          });
         } else if (failure.error?.code === "ROLE_CONTEXT_STALE") {
           recoveryFenceRef.current = false;
           setToast("会话凭据已变化，请再次刷新到服务端当前角色。");
@@ -433,6 +553,7 @@ export function RoleContextShell({
           },
         },
       });
+      setAuthoritativeRefreshVersion((version) => version + 1);
       setToast(
         `业务时间已推进到 ${formatShanghaiTime(result.afterTime)}；沙箱寿命未延长`,
       );
@@ -442,6 +563,7 @@ export function RoleContextShell({
 
   function acceptResetSandbox(result: SandboxResetReadyResponse) {
     onContextChange(result.context);
+    setAuthoritativeRefreshVersion((version) => version + 1);
     setActivePage(roleMeta[result.context.role.id].defaultPage);
     setFilter("");
     setStale(false);
@@ -460,11 +582,14 @@ export function RoleContextShell({
 
   const activePageLabel =
     meta.navigation.find(([id]) => id === activePage)?.[1] ?? meta.label;
+  const resourceRefreshKey = `${context.contextVersion}-${context.sandbox.businessClock.currentTime}-${authoritativeRefreshVersion}`;
   const expirationLabel = formatShanghaiTimestamp(context.sandbox.expiresAt);
   const observedAtLabel = formatShanghaiTimestamp(context.freshness.observedAt);
   const modalOpen = roleDialogOpen || demoToolDialog !== null;
   const backgroundProps =
-    stale || modalOpen ? ({ "aria-hidden": true, inert: true } as const) : {};
+    stale || modalOpen || authoritativeRefreshPending
+      ? ({ "aria-hidden": true, inert: true } as const)
+      : {};
 
   return (
     <div
@@ -509,12 +634,23 @@ export function RoleContextShell({
           <button
             aria-label="手动刷新角色上下文"
             disabled={refreshing}
-            onClick={() => void refreshContext()}
+            onClick={() => {
+              realtime.reconnect();
+              void refreshContext();
+            }}
             type="button"
           >
             <ArrowClockwise />
             <span>{refreshing ? "刷新中" : "手动刷新"}</span>
           </button>
+          <span
+            aria-label={`数据更新状态：${realtimeStatusCopy[realtime.state.mode].label}。${realtimeStatusCopy[realtime.state.mode].detail}`}
+            className={`role-realtime-status is-${realtime.state.mode}`}
+            role="status"
+          >
+            <Pulse weight="duotone" />
+            <span>{realtimeStatusCopy[realtime.state.mode].label}</span>
+          </span>
         </nav>
         <button
           aria-label={`${context.persona.displayName} ${context.role.label} ${context.storeScope.label}，打开角色切换`}
@@ -616,7 +752,10 @@ export function RoleContextShell({
         </aside>
         <section className="role-workspace">
           {context.role.id === "customer" && activePage === "customer-home" ? (
-            <CustomerSeatBrowser csrfToken={context.csrfToken} />
+            <CustomerSeatBrowser
+              csrfToken={context.csrfToken}
+              refreshKey={resourceRefreshKey}
+            />
           ) : context.role.id === "manager" &&
             activePage === "store-dashboard" ? (
             <ManagerDashboard
@@ -628,13 +767,13 @@ export function RoleContextShell({
                 setManagerLiveMode("reservations");
                 setActivePage("live-ops");
               }}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
             />
           ) : context.role.id === "staff" && activePage === "shift" ? (
             <StaffShiftAttendance
               csrfToken={context.csrfToken}
               onToast={setToast}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
             />
           ) : context.role.id === "staff" && activePage === "orders" ? (
             <StaffOrderFulfillment
@@ -645,7 +784,7 @@ export function RoleContextShell({
               onFilterDirty={setReservationFiltersDirty}
               onInspector={setInspectorOpen}
               onToast={setToast}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
             />
           ) : (context.role.id === "staff" && activePage === "repairs") ||
             (context.role.id === "manager" &&
@@ -653,7 +792,7 @@ export function RoleContextShell({
             <StaffRepairQueue
               csrfToken={context.csrfToken}
               onToast={setToast}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
               role={context.role.id}
             />
           ) : context.role.id === "manager" &&
@@ -661,13 +800,13 @@ export function RoleContextShell({
             <ManagerPeopleSchedule
               csrfToken={context.csrfToken}
               onToast={setToast}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
             />
           ) : context.role.id === "manager" && activePage === "store-audit" ? (
             <ManagerAuditExport
               csrfToken={context.csrfToken}
               onToast={setToast}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
             />
           ) : context.role.id === "hq" &&
             (activePage === "chain-dashboard" ||
@@ -676,30 +815,28 @@ export function RoleContextShell({
               onNavigateAudit={() => setActivePage("hq-audit")}
               onNavigateCompare={() => setActivePage("store-compare")}
               page={activePage === "chain-dashboard" ? "chain" : "compare"}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
             />
           ) : context.role.id === "hq" && activePage === "hq-audit" ? (
             <ManagerAuditExport
               csrfToken={context.csrfToken}
               onToast={setToast}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
               scope="headquarters"
             />
           ) : context.role.id === "hq" && activePage === "chain-config" ? (
             <HeadquartersCatalogs
               csrfToken={context.csrfToken}
               onToast={setToast}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
             />
           ) : context.role.id === "hq" && activePage === "hq-people" ? (
-            <HeadquartersPeopleSchedule
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
-            />
+            <HeadquartersPeopleSchedule refreshKey={resourceRefreshKey} />
           ) : context.role.id === "hq" && activePage === "hq-store-config" ? (
             <HeadquartersStoreConfiguration
               csrfToken={context.csrfToken}
               onToast={setToast}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
             />
           ) : (context.role.id === "staff" && activePage === "inventory") ||
             (context.role.id === "manager" &&
@@ -707,7 +844,7 @@ export function RoleContextShell({
             <StoreInventory
               csrfToken={context.csrfToken}
               onToast={setToast}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
               role={context.role.id}
             />
           ) : context.role.id === "manager" && activePage === "store-config" ? (
@@ -719,7 +856,7 @@ export function RoleContextShell({
                 setActivePage("live-ops");
               }}
               onToast={setToast}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
             />
           ) : (context.role.id === "staff" &&
               (activePage === "workbench" || activePage === "reservations")) ||
@@ -761,7 +898,7 @@ export function RoleContextShell({
                     : "workbench"
               }
               preset={reservationPreset}
-              refreshKey={`${context.contextVersion}-${context.sandbox.businessClock.currentTime}`}
+              refreshKey={resourceRefreshKey}
             />
           ) : (
             <ContextPage context={context} pageLabel={activePageLabel} />
@@ -771,15 +908,26 @@ export function RoleContextShell({
       <footer className="role-shell-statusbar" {...backgroundProps}>
         <span>
           <Pulse />
-          <strong>服务端角色上下文</strong>
+          <strong>{realtimeStatusCopy[realtime.state.mode].label}</strong>
         </span>
         <span>
           第 {context.contextVersion} 版 · {context.storeScope.label}
         </span>
-        <span>手动确认于 {observedAtLabel}</span>
+        <span>服务器确认于 {observedAtLabel}</span>
       </footer>
 
-      {roleDialogOpen && !stale ? (
+      {authoritativeRefreshPending && !stale ? (
+        <div
+          aria-live="assertive"
+          className="role-authority-refresh-fence"
+          role="status"
+        >
+          <Pulse weight="duotone" />
+          正在确认服务端当前上下文；暂时停止写操作。
+        </div>
+      ) : null}
+
+      {roleDialogOpen && !stale && !authoritativeRefreshPending ? (
         <RoleSwitchDialog
           context={context}
           dirty={filter.length > 0 || reservationFiltersDirty}
@@ -795,7 +943,7 @@ export function RoleContextShell({
         />
       ) : null}
 
-      {demoToolDialog === "time" && !stale ? (
+      {demoToolDialog === "time" && !stale && !authoritativeRefreshPending ? (
         <DemoTimeDialog
           context={context}
           onAdvanced={acceptAdvancedTime}
@@ -809,7 +957,7 @@ export function RoleContextShell({
         />
       ) : null}
 
-      {demoToolDialog === "reset" && !stale ? (
+      {demoToolDialog === "reset" && !stale && !authoritativeRefreshPending ? (
         <SandboxResetDialog
           context={context}
           onClose={() => setDemoToolDialog(null)}

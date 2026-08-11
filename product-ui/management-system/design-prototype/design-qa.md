@@ -1,9 +1,20 @@
 # 竞枢管理端设计 QA
 
 - 状态：`current`（当前有效）
-- 检查日期：2026-08-11
-- 已验证契约版本：`product-ui/management-system/prod.md` 1.14
-- 验证范围：[`25 — 总部固定三店配置与人员排班汇总`](../../../.scratch/jingshu-basic-rc/issues/25-hq-store-people.md)；保留 ticket 24 总部商品资料与机型档案和更早结论
+- 检查日期：2026-08-12
+- 已验证契约版本：`product-ui/management-system/prod.md` 1.16
+- 验证范围：[`27 — 实时失效通知、轮询与只读降级`](../../../.scratch/jingshu-basic-rc/issues/27-realtime-readonly-fallback.md)；保留 ticket 25 总部固定三店配置与人员排班汇总和更早结论
+
+## Ticket 27 `WEB-G02/WEB-G07/WEB-G08` 对照目标与结论
+
+- 视觉方向继续使用选定源 `design/reference/selected-night-operations-console.png`。正式管理端原型和生产共享壳均保留深色高密度顶栏、青色信息状态、琥珀降级状态、青柠主操作和紧凑底部状态栏；新增状态不另起视觉体系，也不把缓存表述为权威数据。
+- 应用内浏览器在正式原型 `1440 × 1024` 逐项打开实时、正在重新连接、轮询、手动、只读和限流恢复状态；“需手动刷新”可进入重新连接后返回实时更新。`documentElement.clientWidth = documentElement.scrollWidth = 1440`。在 `1024 × 768` 的只读状态可见“当前为只读标准快照”横幅和 `6` 个禁用按钮，页面宽度同样无溢出；限流状态显示缩短请求关联 ID、18 秒倒计时和禁用的原请求安全重试。
+- 生产共享壳与顾客 H5 在 `360 × 800` 实测 `documentElement.clientWidth = documentElement.scrollWidth = 360`，本地 SSE 缓冲环境如实显示“轮询更新”，而非声称已实时同步。
+- `503` 生产 E2E 强制进入随构建发布的 `readonly-seed-snapshot`，确认创建预约、办理到店、推进业务时间和重置沙箱按钮均为禁用，重试只重新请求服务端；测试没有建立浏览器可写 Mock。生产 `429` E2E 注入 `Retry-After: 2`，按钮在倒计时期间禁用，结束后使用原创建幂等键重试。SSE 失效、多标签旧角色阻断、早期关闭到轮询再到手动刷新，以及写入超时的原幂等键重试均使用真实页面交互覆盖；新增回归会在失效事件抵达、服务端上下文尚未返回时确认共享壳与业务区已进入不可交互围栏。
+- PostgreSQL 集成测试使用两个独立 API 实例，验证角色切换、业务时间推进与沙箱重置都会使另一实例的 SSE 流收到静态失效帧；实时能力探针不可用时端点返回 `503`，客户端走正式降级路径。当前没有仍需处理的 P0、P1 或 P2 差异；正式原型使用代表性状态切换，生产页以服务端权威响应、SSE 失效和失败注入到达相同状态。
+- `pnpm verify` 已通过：337 项单元测试、完整 PostgreSQL 空库迁移与 API 集成、2 项设计内容基线和 64 项 Chromium E2E 均为绿色；三端生产构建、敏感数据扫描与 high 级依赖审计门禁通过（审计仍报告 1 项不阻塞的 moderate）。正式管理端原型构建与 4 项 Sites 包装测试也通过。
+
+final result: passed
 
 ## Ticket 25 `WEB-H05/WEB-H06` 对照目标与结论
 

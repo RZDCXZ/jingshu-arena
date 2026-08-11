@@ -1,9 +1,10 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import {
+  ArrowClockwise,
   ArrowRight,
   Check,
   ClockClockwise,
@@ -36,6 +37,8 @@ type CreationStage =
   | "entry"
   | "creating"
   | "ready"
+  | "rate-limited"
+  | "readonly"
   | "shell"
   | "error"
   | "timeout";
@@ -43,13 +46,45 @@ type CreationStage =
 interface FailureState {
   message: string;
   requestId?: string;
+  retryAfterSeconds?: number;
 }
+
+const readonlySeedSnapshot = {
+  businessTime: "上海业务时间 19:30",
+  seedVersion: "2026-08-11.1",
+  stores: [
+    ["棱镜旗舰店", "96 座 · 24 小时营业", "到店窗口 3"],
+    ["星桥标准店", "64 座 · 10:00–次日 02:00", "低库存 1"],
+    ["极点新店", "40 座 · 12:00–24:00", "待验证报修 1"],
+  ],
+} as const;
 
 function isEndedRoleContext(error: ApiErrorResponse | null) {
   return (
     error?.error?.code === "ROLE_CONTEXT_REQUIRED" ||
     error?.error?.code === "ROLE_CONTEXT_UNAVAILABLE"
   );
+}
+
+function isInfrastructureUnavailable(
+  response: Response,
+  error: ApiErrorResponse | null,
+) {
+  return (
+    response.status >= 500 &&
+    (error?.error?.code?.includes("SERVICE_UNAVAILABLE") ?? true)
+  );
+}
+
+function retryAfterSeconds(response: Response) {
+  const retryAfter = response.headers.get("Retry-After");
+  const value = Number(retryAfter);
+  if (Number.isFinite(value))
+    return Math.min(300, Math.max(1, Math.ceil(value)));
+
+  const retryAt = retryAfter ? Date.parse(retryAfter) : Number.NaN;
+  if (!Number.isFinite(retryAt)) return 15;
+  return Math.min(300, Math.max(1, Math.ceil((retryAt - Date.now()) / 1_000)));
 }
 
 async function requestExistingRoleContext(signal?: AbortSignal) {
@@ -575,6 +610,171 @@ function ContextCheckFailureView({
   );
 }
 
+function RateLimitedView({
+  failure,
+  onRetry,
+}: {
+  failure: FailureState;
+  onRetry: () => void;
+}) {
+  const [remainingSeconds, setRemainingSeconds] = useState(
+    failure.retryAfterSeconds ?? 15,
+  );
+
+  useEffect(() => {
+    setRemainingSeconds(failure.retryAfterSeconds ?? 15);
+  }, [failure.retryAfterSeconds]);
+
+  useEffect(() => {
+    if (remainingSeconds <= 0) return undefined;
+    const timer = window.setTimeout(
+      () => setRemainingSeconds((seconds) => Math.max(0, seconds - 1)),
+      1_000,
+    );
+    return () => window.clearTimeout(timer);
+  }, [remainingSeconds]);
+
+  return (
+    <main className="state-page">
+      <PublicHeader />
+      <section className="state-card failure-card" role="alert">
+        <div className="state-icon is-warning">
+          <ClockClockwise weight="duotone" />
+        </div>
+        <span className="eyebrow">WEB-G08 · 请求节流保护</span>
+        <h1>请求过于频繁，暂不重复提交</h1>
+        <p>{failure.message}</p>
+        <div className="failure-proof">
+          <strong>
+            {remainingSeconds > 0
+              ? `${remainingSeconds} 秒后可重试`
+              : "现在可使用原请求安全重试"}
+          </strong>
+          <span>
+            倒计时结束前不会重复发送请求；超时或未知结果仍会保留原幂等键，直到服务端确认最终状态。
+          </span>
+          {failure.requestId ? (
+            <code>请求关联 ID {failure.requestId}</code>
+          ) : null}
+        </div>
+        <div className="state-actions">
+          <button
+            className="button primary-button"
+            disabled={remainingSeconds > 0}
+            onClick={onRetry}
+            type="button"
+          >
+            使用原请求安全重试
+            <ArrowRight weight="bold" />
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function ReadonlySeedSnapshot({
+  failure,
+  onRetry,
+}: {
+  failure: FailureState;
+  onRetry: () => void;
+}) {
+  return (
+    <main
+      className="readonly-snapshot-page"
+      data-testid="readonly-seed-snapshot"
+    >
+      <PublicHeader />
+      <section
+        aria-labelledby="readonly-snapshot-title"
+        className="readonly-snapshot"
+      >
+        <div className="readonly-snapshot-intro" role="alert">
+          <span className="eyebrow">WEB-G07 · 随构建发布的标准种子快照</span>
+          <div className="state-icon is-warning">
+            <Database weight="duotone" />
+          </div>
+          <h1 id="readonly-snapshot-title">
+            服务暂时不可用，当前展示只读标准种子快照
+          </h1>
+          <p>
+            这是一份随当前构建发布的固定合成故事，不是浏览器可写
+            Mock。所有预约、模拟支付、角色切换、时间推进和重置操作均已禁用；恢复后会重新读取服务端权威状态。
+          </p>
+          <div className="readonly-snapshot-notice">
+            <LockKey weight="duotone" />
+            <span>
+              <strong>写入已停止</strong>
+              不会把本地修改当作已保存，也不会生成新的业务副作用。
+            </span>
+          </div>
+          {failure.requestId ? (
+            <code>请求关联 ID {failure.requestId}</code>
+          ) : null}
+          <button
+            className="button primary-button"
+            onClick={onRetry}
+            type="button"
+          >
+            <ArrowClockwise weight="bold" />
+            重新连接服务
+          </button>
+        </div>
+
+        <div className="readonly-snapshot-content">
+          <header>
+            <div>
+              <span className="eyebrow">演示数据 · 只读</span>
+              <h2>标准三店运营快照</h2>
+              <p>
+                {readonlySeedSnapshot.businessTime} · 种子{" "}
+                {readonlySeedSnapshot.seedVersion}
+              </p>
+            </div>
+            <span className="readonly-status-chip">只读模式</span>
+          </header>
+          <div className="readonly-store-grid">
+            {readonlySeedSnapshot.stores.map(([name, hours, signal]) => (
+              <article key={name}>
+                <span>{hours}</span>
+                <h3>{name}</h3>
+                <p>{signal}</p>
+              </article>
+            ))}
+          </div>
+          <section className="readonly-actions" aria-label="已禁用的业务操作">
+            <div>
+              <strong>顾客预约</strong>
+              <span>固定座位、价格与体验券仅供查看</span>
+              <button disabled type="button">
+                创建预约（只读）
+              </button>
+            </div>
+            <div>
+              <strong>门店履约</strong>
+              <span>到店、订单和报修状态不会被本地改写</span>
+              <button disabled type="button">
+                办理到店（只读）
+              </button>
+            </div>
+            <div>
+              <strong>共享演示壳</strong>
+              <span>业务时间和沙箱生命周期保持服务端只读</span>
+              <button disabled type="button">
+                推进业务时间（只读）
+              </button>
+              <button disabled type="button">
+                重置沙箱（只读）
+              </button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 export default function PublicEntryPage() {
   const [stage, setStage] = useState<CreationStage>("checking");
   const [selectedRole, setSelectedRole] = useState<PublicRole>("customer");
@@ -585,6 +785,29 @@ export default function PublicEntryPage() {
   const [failure, setFailure] = useState<FailureState>({
     message: "演示世界暂时无法创建，请稍后安全重试。",
   });
+  const [rateLimitRetryTarget, setRateLimitRetryTarget] = useState<
+    "context" | "sandbox"
+  >("context");
+
+  const showRateLimited = useCallback(
+    (
+      response: Response,
+      error: ApiErrorResponse | null,
+      retryTarget: "context" | "sandbox",
+    ) => {
+      setFailure({
+        message:
+          error?.error?.message ?? "请求过于频繁，请在倒计时结束后安全重试。",
+        ...(error?.error?.requestId
+          ? { requestId: error.error.requestId }
+          : {}),
+        retryAfterSeconds: retryAfterSeconds(response),
+      });
+      setRateLimitRetryTarget(retryTarget);
+      setStage("rate-limited");
+    },
+    [],
+  );
 
   useEffect(() => {
     let active = true;
@@ -599,6 +822,10 @@ export default function PublicEntryPage() {
             setStage("entry");
             return;
           }
+          if (response.status === 429) {
+            showRateLimited(response, apiError, "context");
+            return;
+          }
           setFailure({
             message:
               apiError?.error?.message ??
@@ -607,7 +834,11 @@ export default function PublicEntryPage() {
               ? { requestId: apiError.error.requestId }
               : {}),
           });
-          setStage("context-error");
+          setStage(
+            isInfrastructureUnavailable(response, apiError)
+              ? "readonly"
+              : "context-error",
+          );
           return;
         }
         const context = payload as RoleContextReadyResponse;
@@ -620,14 +851,14 @@ export default function PublicEntryPage() {
       .catch(() => {
         if (!active) return;
         setFailure({ message: "角色上下文暂时无法确认，请稍后安全重试。" });
-        setStage("context-error");
+        setStage("readonly");
       });
 
     return () => {
       active = false;
       controller.abort();
     };
-  }, []);
+  }, [showRateLimited]);
 
   async function enterRoleContext() {
     setStage("checking");
@@ -639,6 +870,10 @@ export default function PublicEntryPage() {
           returnToEntry();
           return;
         }
+        if (response.status === 429) {
+          showRateLimited(response, apiError, "context");
+          return;
+        }
         setFailure({
           message:
             apiError.error?.message ??
@@ -647,7 +882,11 @@ export default function PublicEntryPage() {
             ? { requestId: apiError.error.requestId }
             : {}),
         });
-        setStage("context-error");
+        setStage(
+          isInfrastructureUnavailable(response, apiError)
+            ? "readonly"
+            : "context-error",
+        );
         return;
       }
       const context = payload as RoleContextReadyResponse;
@@ -658,7 +897,7 @@ export default function PublicEntryPage() {
       setStage("shell");
     } catch {
       setFailure({ message: "角色上下文暂时无法确认，请稍后安全重试。" });
-      setStage("context-error");
+      setStage("readonly");
     }
   }
 
@@ -690,7 +929,15 @@ export default function PublicEntryPage() {
             ? { requestId: visitorError.error.requestId }
             : {}),
         });
-        setStage("error");
+        if (visitorResponse.status === 429) {
+          showRateLimited(visitorResponse, visitorError, "sandbox");
+        } else {
+          setStage(
+            isInfrastructureUnavailable(visitorResponse, visitorError)
+              ? "readonly"
+              : "error",
+          );
+        }
         return;
       }
 
@@ -707,6 +954,10 @@ export default function PublicEntryPage() {
       const payload: unknown = await response.json();
       if (!response.ok) {
         const apiError = payload as ApiErrorResponse;
+        if (response.status === 429) {
+          showRateLimited(response, apiError, "sandbox");
+          return;
+        }
         setFailure({
           message:
             apiError.error?.message ??
@@ -717,7 +968,9 @@ export default function PublicEntryPage() {
           response.status === 504 ||
             apiError.error?.code === "SANDBOX_CREATION_TIMEOUT"
             ? "timeout"
-            : "error",
+            : isInfrastructureUnavailable(response, apiError)
+              ? "readonly"
+              : "error",
         );
         return;
       }
@@ -736,7 +989,7 @@ export default function PublicEntryPage() {
           ? "创建结果仍在确认中，请使用原请求重试。"
           : "演示世界创建失败，未保存部分数据；你可以安全重试。",
       });
-      setStage(timedOut ? "timeout" : "error");
+      setStage(timedOut ? "timeout" : "readonly");
     } finally {
       window.clearTimeout(timeout);
     }
@@ -763,6 +1016,26 @@ export default function PublicEntryPage() {
         onRetry={() => void enterRoleContext()}
       />
     );
+  if (stage === "rate-limited")
+    return (
+      <RateLimitedView
+        failure={failure}
+        onRetry={() => {
+          if (rateLimitRetryTarget === "sandbox") {
+            void createSandbox(selectedRole, creationKey);
+            return;
+          }
+          void enterRoleContext();
+        }}
+      />
+    );
+  if (stage === "readonly")
+    return (
+      <ReadonlySeedSnapshot
+        failure={failure}
+        onRetry={() => void enterRoleContext()}
+      />
+    );
   if (stage === "creating") return <CreationProgress role={selectedRole} />;
   if (stage === "ready" && result)
     return (
@@ -778,6 +1051,10 @@ export default function PublicEntryPage() {
         context={roleContext}
         onContextChange={setRoleContext}
         onContextUnavailable={returnToEntry}
+        onServiceUnavailable={(nextFailure) => {
+          setFailure(nextFailure);
+          setStage("readonly");
+        }}
       />
     );
   if (stage === "error" || stage === "timeout")

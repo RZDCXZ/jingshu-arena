@@ -523,6 +523,26 @@ async function openCustomerH5(
     ) => CustomerSeatAvailabilityResponse;
   } = {},
 ) {
+  await page.addInitScript(() => {
+    class StableRealtimeEventSource extends EventTarget {
+      readyState = 1;
+
+      constructor() {
+        super();
+        queueMicrotask(() => this.dispatchEvent(new Event("connected")));
+      }
+
+      close() {
+        this.readyState = 2;
+      }
+    }
+
+    Object.defineProperty(window, "EventSource", {
+      configurable: true,
+      value: StableRealtimeEventSource,
+      writable: true,
+    });
+  });
   let lifecycleStatus: CustomerReservationStatus =
     options.detailStatuses?.[0] ?? "pending-confirmation";
   let detailStatusIndex = 0;
