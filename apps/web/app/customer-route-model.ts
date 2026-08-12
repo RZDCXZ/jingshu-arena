@@ -6,6 +6,16 @@ export type CustomerRefundFilter = "all" | "only";
 
 export type CustomerRouteState =
   | { readonly kind: "reservations" }
+  | { readonly kind: "reservation-seats" }
+  | { readonly kind: "reservation-confirm" }
+  | {
+      readonly kind: "reservation-detail";
+      readonly reservationId: string;
+    }
+  | {
+      readonly kind: "reservation-payment";
+      readonly reservationId: string;
+    }
   | { readonly kind: "stores" }
   | {
       readonly kind: "journeys";
@@ -32,6 +42,14 @@ export function customerJourneyPath(
   }
   const search = query.toString();
   return `/customer/journeys/${tab}${search ? `?${search}` : ""}`;
+}
+
+export function customerReservationPath(reservationId: string) {
+  return `/customer/reservations/${encodeURIComponent(reservationId)}`;
+}
+
+export function customerReservationPaymentPath(reservationId: string) {
+  return `${customerReservationPath(reservationId)}/payment`;
 }
 
 export function customerPagePath(page: string) {

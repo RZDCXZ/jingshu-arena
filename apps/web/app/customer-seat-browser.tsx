@@ -77,6 +77,8 @@ import repairSample from "../../../product-ui/miniprogram/design-prototype/publi
 import { createBrowserUuid } from "./browser-uuid";
 import {
   customerJourneyPath,
+  customerReservationPath,
+  customerReservationPaymentPath,
   type CustomerJourneyType,
   type CustomerRouteState,
 } from "./customer-route-model";
@@ -446,6 +448,7 @@ export function CustomerSeatBrowser({
   const lastRefreshKeyRef = useRef(refreshKey);
   const lastEntryPageRef = useRef<CustomerEntryPage | null>(null);
   const pendingEntryIntentRef = useRef<"order" | "repair" | null>(null);
+  const reservationDraftActiveRef = useRef(false);
   const [catalog, setCatalog] = useState<CustomerStoreCatalogResponse | null>(
     null,
   );
@@ -466,6 +469,7 @@ export function CustomerSeatBrowser({
   const [availabilityAttempt, setAvailabilityAttempt] = useState(0);
   const [selectedSeat, setSelectedSeat] = useState("");
   const [selectionNotice, setSelectionNotice] = useState("");
+  const [routeRecoveryNotice, setRouteRecoveryNotice] = useState("");
   const [selectedCouponId, setSelectedCouponId] = useState<string | null>(null);
   const [priceExpanded, setPriceExpanded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -474,17 +478,16 @@ export function CustomerSeatBrowser({
   const reservationKeyRef = useRef<string | null>(null);
   const [createdReservation, setCreatedReservation] =
     useState<CustomerPendingReservationResponse | null>(null);
+  const creationFeedbackReservationIdRef = useRef<string | null>(null);
   const [activeReservationId, setActiveReservationId] = useState<string | null>(
     null,
-  );
-  const [detailReturnView, setDetailReturnView] = useState<"held" | "journey">(
-    "held",
   );
   const [reservationDetail, setReservationDetail] =
     useState<CustomerReservationDetailResponse | null>(null);
   const [detailObservedAt, setDetailObservedAt] = useState(0);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailFailure, setDetailFailure] = useState("");
+  const detailRequestSequenceRef = useRef(0);
   const [detailPriceExpanded, setDetailPriceExpanded] = useState(false);
   const [paymentStage, setPaymentStage] = useState<PaymentStage>("confirm");
   const [paymentFailure, setPaymentFailure] = useState("");
@@ -561,6 +564,10 @@ export function CustomerSeatBrowser({
     ReadonlyArray<RepairImageSaved>
   >([]);
   const repairKeyRef = useRef<string | null>(null);
+  const availabilityRef = useRef(availability);
+  const selectedSeatRef = useRef(selectedSeat);
+  availabilityRef.current = availability;
+  selectedSeatRef.current = selectedSeat;
 
   useEffect(() => {
     orderPaymentKeyRef.current = null;
@@ -588,11 +595,65 @@ export function CustomerSeatBrowser({
   useEffect(() => {
     if (route) {
       pendingEntryIntentRef.current = null;
+      if (route.kind !== "reservation-detail") {
+        creationFeedbackReservationIdRef.current = null;
+      }
       if (route.kind === "journeys") {
         setView("journey");
         setJourneyAttempt((attempt) => attempt + 1);
       } else if (route.kind === "membership") {
         setView("membership");
+      } else if (route.kind === "reservation-seats") {
+        if (!reservationDraftActiveRef.current || !availabilityRef.current) {
+          reservationDraftActiveRef.current = false;
+          setRouteRecoveryNotice(
+            "未提交的时段、座位和体验券选择只保留在当前页面中，刷新后未被保留。",
+          );
+          setView("conditions");
+          router.replace("/customer/reservations");
+        } else {
+          setView("seats");
+        }
+      } else if (route.kind === "reservation-confirm") {
+        if (!reservationDraftActiveRef.current || !availabilityRef.current) {
+          reservationDraftActiveRef.current = false;
+          setRouteRecoveryNotice(
+            "未提交的时段、座位和体验券选择只保留在当前页面中，刷新后未被保留。",
+          );
+          setView("conditions");
+          router.replace("/customer/reservations");
+        } else if (!selectedSeatRef.current) {
+          setRouteRecoveryNotice(
+            "确认步骤缺少未提交的座位选择，已返回最近可继续的选座步骤。",
+          );
+          setView("seats");
+          router.replace("/customer/reservations/new/seats");
+        } else {
+          setView("confirm");
+        }
+      } else if (route.kind === "reservation-detail") {
+        const reservationId = route.reservationId;
+        setActiveReservationId(reservationId);
+        setReservationDetail(null);
+        setDetailFailure("");
+        setDetailPriceExpanded(false);
+        setView(
+          creationFeedbackReservationIdRef.current === reservationId
+            ? "held"
+            : "detail",
+        );
+        void readReservationDetail(reservationId);
+      } else if (route.kind === "reservation-payment") {
+        const reservationId = route.reservationId;
+        setActiveReservationId(reservationId);
+        setReservationDetail(null);
+        setDetailFailure("");
+        setPaymentStage("confirm");
+        setPaymentFailure("");
+        setPaymentResult(null);
+        paymentKeyRef.current = null;
+        setView("payment");
+        void readReservationDetail(reservationId);
       } else {
         setView("conditions");
       }
@@ -617,7 +678,7 @@ export function CustomerSeatBrowser({
     setLegacyHistoryFilter("all");
     setView("journey");
     setJourneyAttempt((attempt) => attempt + 1);
-  }, [entryPage, route]);
+  }, [entryPage, route, router]);
 
   useEffect(() => {
     if (!route || !catalog) return;
@@ -629,7 +690,7 @@ export function CustomerSeatBrowser({
         ?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [catalog, route]);
+  }, [catalog, detailLoading, reservationDetail?.reservationId, route, view]);
 
   useEffect(() => {
     if (
@@ -905,7 +966,8 @@ export function CustomerSeatBrowser({
     setSubmissionFailure("");
     setConflictInvalidated(false);
     reservationKeyRef.current = null;
-    setView("confirm");
+    setRouteRecoveryNotice("");
+    router.push("/customer/reservations/new/confirm");
   }
 
   function returnToSeats() {
@@ -914,7 +976,7 @@ export function CustomerSeatBrowser({
     setSubmissionFailure("");
     setConflictInvalidated(false);
     reservationKeyRef.current = null;
-    setView("seats");
+    router.push("/customer/reservations/new/seats");
   }
 
   async function createReservation() {
@@ -971,9 +1033,9 @@ export function CustomerSeatBrowser({
       const created = payload as CustomerPendingReservationResponse;
       setCreatedReservation(created);
       setActiveReservationId(created.reservationId);
-      setDetailReturnView("held");
+      creationFeedbackReservationIdRef.current = created.reservationId;
       setView("held");
-      void readReservationDetail(created.reservationId);
+      router.push(customerReservationPath(created.reservationId));
     } catch (error) {
       setSubmissionFailure(
         error instanceof Error
@@ -986,6 +1048,8 @@ export function CustomerSeatBrowser({
   }
 
   async function readReservationDetail(reservationId: string) {
+    const requestSequence = detailRequestSequenceRef.current + 1;
+    detailRequestSequenceRef.current = requestSequence;
     setActiveReservationId(reservationId);
     setDetailLoading(true);
     setDetailFailure("");
@@ -997,35 +1061,52 @@ export function CustomerSeatBrowser({
           credentials: "same-origin",
         },
       );
-      const payload = (await response.json()) as
-        ApiErrorResponse | CustomerReservationDetailResponse;
+      const payload = (await response.json().catch(() => null)) as
+        ApiErrorResponse | CustomerReservationDetailResponse | null;
       if (!response.ok) {
+        if (response.status === 403 || response.status === 404) {
+          throw new Error("对象不存在或不可访问");
+        }
         throw new Error(
-          "error" in payload ? payload.error.message : "预约详情暂时无法读取。",
+          payload && "error" in payload
+            ? payload.error.message
+            : "预约详情暂时无法读取。",
         );
       }
+      if (detailRequestSequenceRef.current !== requestSequence) return null;
       setReservationDetail(payload as CustomerReservationDetailResponse);
       setDetailObservedAt(Date.now());
       return payload as CustomerReservationDetailResponse;
     } catch (error) {
+      if (detailRequestSequenceRef.current !== requestSequence) return null;
       setDetailFailure(
         error instanceof Error ? error.message : "预约详情暂时无法读取。",
       );
       return null;
     } finally {
-      setDetailLoading(false);
+      if (detailRequestSequenceRef.current === requestSequence) {
+        setDetailLoading(false);
+      }
     }
   }
 
   function openPayment() {
+    if (!activeReservationId) return;
+    creationFeedbackReservationIdRef.current = null;
     setPaymentStage("confirm");
     setPaymentFailure("");
     setPaymentResult(null);
-    setView("payment");
+    router.push(customerReservationPaymentPath(activeReservationId));
   }
 
   async function simulatePayment() {
-    if (!activeReservationId || paymentStage === "processing") return;
+    if (
+      !activeReservationId ||
+      paymentStage === "processing" ||
+      !reservationDetail?.actions.canSimulatePayment
+    ) {
+      return;
+    }
     const idempotencyKey = paymentKeyRef.current ?? createBrowserUuid();
     paymentKeyRef.current = idempotencyKey;
     const controller = new AbortController();
@@ -1766,7 +1847,8 @@ export function CustomerSeatBrowser({
   }
 
   function restartReservation() {
-    setView("conditions");
+    reservationDraftActiveRef.current = false;
+    creationFeedbackReservationIdRef.current = null;
     setCreatedReservation(null);
     setReservationDetail(null);
     setActiveReservationId(null);
@@ -1776,16 +1858,11 @@ export function CustomerSeatBrowser({
     setPaymentFailure("");
     paymentKeyRef.current = null;
     cancelKeyRef.current = null;
+    router.push("/customer/reservations");
   }
 
   function openJourneyReservation(reservationId: string) {
-    setReservationDetail(null);
-    setDetailFailure("");
-    setDetailPriceExpanded(false);
-    setActiveReservationId(reservationId);
-    setDetailReturnView("journey");
-    setView("detail");
-    void readReservationDetail(reservationId);
+    router.push(customerReservationPath(reservationId));
   }
 
   if (!catalog) {
@@ -3352,6 +3429,16 @@ export function CustomerSeatBrowser({
             </div>
           </section>
 
+          {routeRecoveryNotice ? (
+            <section className="customer-feedback" role="status">
+              <Info />
+              <span>
+                <strong>未提交选择未被保留</strong>
+                {routeRecoveryNotice}
+              </span>
+            </section>
+          ) : null}
+
           <section
             className="customer-section"
             aria-labelledby="stores-heading"
@@ -3587,7 +3674,11 @@ export function CustomerSeatBrowser({
             <button
               className="customer-primary-button customer-find-seats"
               disabled={!availability || availabilityLoading}
-              onClick={() => setView("seats")}
+              onClick={() => {
+                reservationDraftActiveRef.current = true;
+                setRouteRecoveryNotice("");
+                router.push("/customer/reservations/new/seats");
+              }}
               type="button"
             >
               <MagnifyingGlass />
@@ -3602,7 +3693,7 @@ export function CustomerSeatBrowser({
         <div className="customer-scroll-content has-seat-action">
           <button
             className="customer-back-button"
-            onClick={() => setView("conditions")}
+            onClick={() => router.push("/customer/reservations")}
             type="button"
           >
             <CaretLeft />
@@ -3658,7 +3749,9 @@ export function CustomerSeatBrowser({
                   {availability?.area.displayName} ·{" "}
                   {availability?.seats.length ?? 0} 个匹配座位
                 </span>
-                <h1>请选择一个座位</h1>
+                <h1 data-customer-route-heading tabIndex={-1}>
+                  请选择一个座位
+                </h1>
               </div>
               <small>屏幕方向 ↑</small>
             </div>
@@ -3817,7 +3910,7 @@ export function CustomerSeatBrowser({
           <section className="customer-confirmation-hero">
             <span className="customer-eyebrow">RESERVATION SNAPSHOT</span>
             <div>
-              <h1>
+              <h1 data-customer-route-heading tabIndex={-1}>
                 {formatSeatTitle(availability.area.displayName, selectedSeat)}
               </h1>
               <em>
@@ -4021,18 +4114,90 @@ export function CustomerSeatBrowser({
             </button>
           </div>
         </div>
-      ) : view === "payment" && activeReservationId && activeSnapshot ? (
+      ) : view === "payment" && activeReservationId ? (
         <div className="customer-scroll-content customer-payment-flow">
-          {paymentStage === "confirm" ? (
+          {detailLoading && !reservationDetail ? (
+            <section className="customer-payment-stage" aria-live="polite">
+              <div className="customer-payment-stage-icon">
+                <ArrowClockwise />
+              </div>
+              <span className="customer-eyebrow">AUTHORITATIVE STATUS</span>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                正在确认预约状态
+              </h1>
+              <p>从服务端重新读取当前状态后，才会显示允许的操作。</p>
+            </section>
+          ) : detailFailure && !reservationDetail ? (
+            <section className="customer-payment-stage is-failure">
+              <div className="customer-payment-stage-icon">
+                <Warning weight="duotone" />
+              </div>
+              <span className="customer-eyebrow">SAFE RECOVERY</span>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                无法确认可支付状态
+              </h1>
+              <p>{detailFailure}</p>
+              <button
+                className="customer-primary-button"
+                onClick={() => void readReservationDetail(activeReservationId)}
+                type="button"
+              >
+                <ArrowClockwise />
+                重新读取
+              </button>
+              <button
+                className="customer-payment-secondary"
+                onClick={() =>
+                  router.push(customerReservationPath(activeReservationId))
+                }
+                type="button"
+              >
+                返回预约详情
+              </button>
+            </section>
+          ) : !activeSnapshot ? (
+            <section className="customer-payment-stage is-failure">
+              <Warning weight="duotone" />
+              <h1 data-customer-route-heading tabIndex={-1}>
+                无法确认可支付状态
+              </h1>
+              <p>未获得预约的服务端价格快照，不会提供模拟支付动作。</p>
+            </section>
+          ) : paymentStage !== "success" &&
+            paymentStage !== "processing" &&
+            !reservationDetail?.actions.canSimulatePayment ? (
+            <section className="customer-payment-stage is-failure">
+              <div className="customer-payment-stage-icon">
+                <ShieldCheck weight="duotone" />
+              </div>
+              <span className="customer-eyebrow">STATE-GATED ACTION</span>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                当前状态不能进行模拟支付
+              </h1>
+              <p>
+                服务端当前状态为
+                {reservationDetail
+                  ? reservationStatusLabels[reservationDetail.status].label
+                  : "未知"}
+                ，未执行任何非法动作。
+              </p>
+              <button
+                className="customer-primary-button"
+                onClick={() =>
+                  router.push(customerReservationPath(activeReservationId))
+                }
+                type="button"
+              >
+                查看预约详情
+                <CaretRight />
+              </button>
+            </section>
+          ) : paymentStage === "confirm" ? (
             <>
               <button
                 className="customer-back-button"
                 onClick={() =>
-                  setView(
-                    createdReservation?.reservationId === activeReservationId
-                      ? "held"
-                      : "detail",
-                  )
+                  router.push(customerReservationPath(activeReservationId))
                 }
                 type="button"
               >
@@ -4044,7 +4209,9 @@ export function CustomerSeatBrowser({
                   <ShieldCheck weight="duotone" />
                 </div>
                 <span className="customer-eyebrow">SIMULATED PAYMENT</span>
-                <h1>确认模拟支付</h1>
+                <h1 data-customer-route-heading tabIndex={-1}>
+                  确认模拟支付
+                </h1>
                 <p>本次不会扣款，也不需要任何真实支付凭证。</p>
                 <strong>
                   {formatMoney(activeSnapshot.price.payableCents)}
@@ -4070,7 +4237,9 @@ export function CustomerSeatBrowser({
                 </button>
                 <button
                   className="customer-payment-secondary"
-                  onClick={() => setView("detail")}
+                  onClick={() =>
+                    router.push(customerReservationPath(activeReservationId))
+                  }
                   type="button"
                 >
                   查看预约详情与状态
@@ -4086,7 +4255,9 @@ export function CustomerSeatBrowser({
                 <Hourglass />
               </div>
               <span className="customer-eyebrow">PROCESSING</span>
-              <h1>正在完成模拟支付</h1>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                正在完成模拟支付
+              </h1>
               <p>只更新演示预约，不会扣款，也不会接触真实支付凭证。</p>
               <div className="customer-payment-progress" />
               <small>请勿重复提交；超时后可使用原提交标识安全重试。</small>
@@ -4100,7 +4271,9 @@ export function CustomerSeatBrowser({
                 <CheckCircle weight="fill" />
               </div>
               <span className="customer-eyebrow">SIMULATION SUCCEEDED</span>
-              <h1>模拟支付成功</h1>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                模拟支付成功
+              </h1>
               <p>预约已确认。全程没有扣款，也没有使用真实支付凭证。</p>
               <strong>
                 {formatMoney(paymentResult?.payment.amountCents ?? 0)}
@@ -4114,7 +4287,9 @@ export function CustomerSeatBrowser({
               </section>
               <button
                 className="customer-primary-button"
-                onClick={() => setView("detail")}
+                onClick={() =>
+                  router.push(customerReservationPath(activeReservationId))
+                }
                 type="button"
               >
                 查看预约详情
@@ -4130,7 +4305,9 @@ export function CustomerSeatBrowser({
                 <Warning weight="duotone" />
               </div>
               <span className="customer-eyebrow">SIMULATION NOT COMPLETED</span>
-              <h1>模拟支付尚未完成</h1>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                模拟支付尚未完成
+              </h1>
               <p>{paymentFailure}</p>
               <section className="customer-no-charge-notice">
                 <ShieldCheck weight="duotone" />
@@ -4149,7 +4326,9 @@ export function CustomerSeatBrowser({
               </button>
               <button
                 className="customer-payment-secondary"
-                onClick={() => setView("detail")}
+                onClick={() =>
+                  router.push(customerReservationPath(activeReservationId))
+                }
                 type="button"
               >
                 先查看当前预约状态
@@ -4161,17 +4340,11 @@ export function CustomerSeatBrowser({
         <div className="customer-scroll-content customer-lifecycle-detail">
           <button
             className="customer-back-button"
-            onClick={() =>
-              detailReturnView === "journey"
-                ? route?.kind === "journeys"
-                  ? setView("journey")
-                  : router.push(customerJourneyPath("current"))
-                : setView(detailReturnView)
-            }
+            onClick={() => router.push(customerJourneyPath("current"))}
             type="button"
           >
             <CaretLeft />
-            {detailReturnView === "journey" ? "返回统一行程" : "返回预约保留"}
+            返回统一行程
           </button>
           {detailLoading && !reservationDetail ? (
             <section className="customer-lifecycle-loading" aria-live="polite">
@@ -4181,6 +4354,13 @@ export function CustomerSeatBrowser({
             </section>
           ) : reservationDetail ? (
             <>
+              <section className="customer-lifecycle-heading">
+                <span className="customer-eyebrow">RESERVATION DETAIL</span>
+                <h1 data-customer-route-heading tabIndex={-1}>
+                  预约详情
+                </h1>
+                <p>状态、快照和业务事件均以服务端当前结果为准。</p>
+              </section>
               <section className="customer-arrival-card">
                 <div>
                   <span className="customer-eyebrow">ARRIVAL WINDOW</span>
@@ -4551,7 +4731,11 @@ export function CustomerSeatBrowser({
           ) : (
             <section className="customer-lifecycle-loading is-error">
               <Warning />
-              <strong>预约详情暂时不可用</strong>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                {detailFailure === "对象不存在或不可访问"
+                  ? "对象不存在或不可访问"
+                  : "预约详情暂时不可用"}
+              </h1>
               <span>{detailFailure}</span>
               <button
                 className="customer-primary-button"
@@ -4569,7 +4753,9 @@ export function CustomerSeatBrowser({
             <CheckCircle weight="fill" />
           </div>
           <span className="customer-eyebrow">PENDING CONFIRMATION</span>
-          <h1>预约已排他保留十分钟</h1>
+          <h1 data-customer-route-heading tabIndex={-1}>
+            预约已排他保留十分钟
+          </h1>
           <p>
             到 {formatWindow(createdReservation.holdExpiresAt)}{" "}
             前，该座位时段只为你保留。
@@ -4624,7 +4810,10 @@ export function CustomerSeatBrowser({
             <button
               className="customer-payment-secondary"
               disabled={detailLoading && !reservationDetail}
-              onClick={() => setView("detail")}
+              onClick={() => {
+                creationFeedbackReservationIdRef.current = null;
+                setView("detail");
+              }}
               type="button"
             >
               {detailLoading && !reservationDetail

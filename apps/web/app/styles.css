@@ -7969,6 +7969,28 @@ strong {
   padding-bottom: 28px;
 }
 
+.customer-lifecycle-heading {
+  display: grid;
+  gap: 6px;
+  padding: 4px 2px 2px;
+}
+
+.customer-lifecycle-heading h1,
+.customer-lifecycle-heading p {
+  margin: 0;
+}
+
+.customer-lifecycle-heading h1 {
+  font-size: 24px;
+  letter-spacing: -0.04em;
+}
+
+.customer-lifecycle-heading p {
+  color: #899da8;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
 .customer-lifecycle-loading {
   min-height: 420px;
   display: grid;
@@ -7985,7 +8007,9 @@ strong {
   color: var(--cyan);
 }
 
-.customer-lifecycle-loading > strong {
+.customer-lifecycle-loading > strong,
+.customer-lifecycle-loading > h1 {
+  margin: 0;
   color: #eff6f8;
   font-size: 18px;
 }

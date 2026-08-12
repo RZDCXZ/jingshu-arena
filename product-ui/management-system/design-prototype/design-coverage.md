@@ -303,6 +303,15 @@
 - `WEB-C03 / MP-17` 的可用、占用中、已使用、已过期体验券分别由 `/customer/membership/coupons/available|reserved|redeemed|expired` 恢复，父路径只规范化替换到 `available`。
 - 稳定页面和 Tab 导航会把顾客工作区回到顶部并聚焦主标题；后退/前进、刷新和复制链接恢复同一 Tab 与筛选。覆盖状态、三档视口和无障碍证据记录在 `design-qa.md` 与 `design/evidence/web-url-routing-ticket-04/`。
 
+## Web URL 路由 Ticket 05 — 顾客预约创建、详情与模拟支付
+
+- `WEB-C01 / MP-06–MP-07` 的选座与确认分别由 `/customer/reservations/new/seats`、`/customer/reservations/new/confirm` 承载；从预约条件进入、继续确认、返回修改和浏览器前进/后退都改变并恢复规范 URL，同时继续使用既有服务端可订性、价格、体验券和冲突校验。
+- 未提交的时段、座位和体验券只保留在当前 React 树内存。刷新或直接打开缺少前置状态的步骤时，以 `replace` 回到最近可继续的选座步骤或预约入口，并明确说明未提交选择未被保留；不从 URL、`localStorage` 或 `sessionStorage` 猜测或重建草稿。
+- 创建待确认预约成功后直接进入 `/customer/reservations/:reservationId`，在同一规范详情地址显示一次性“十分钟排他保留”反馈，不新增 `/created` 或 `/success` 别名。反馈消费或离开后，详情页只从服务端重读当前七状态、价格/体验券快照、模拟退款、关联记录和不可变业务事件。
+- `WEB-C02 / MP-08–MP-09` 的待确认预约使用 `/customer/reservations/:reservationId/payment`；页面读取服务端合法动作后才展示模拟支付。已确认或其他不合法状态只显示安全恢复结果和详情入口，不发出非法命令。
+- URL 只提供预约标识；共享角色守卫先确认服务端顾客上下文，对象 API 再按当前顾客和沙箱授权。缺失与无权对象使用同一“对象不存在或不可访问”结果，切换 ID 时清空旧详情并以请求序列隔离迟到响应。
+- `360 × 800`、`1440 × 1024` 与 `1024 × 768` 的确认、详情、支付门禁、共享壳稳定性、标题焦点和无横向溢出证据记录在 `design-qa.md` 与 `design/evidence/web-url-routing-ticket-05/`。
+
 ## 运行与验证
 
 - 本地开发：`npm run dev -- --host 0.0.0.0 --port 4173`

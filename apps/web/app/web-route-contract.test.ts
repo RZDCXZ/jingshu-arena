@@ -35,6 +35,22 @@ describe("Web route contract", () => {
     expect(
       buildWebPath("hq-store-products", { storeCode: "prism-flagship" }),
     ).toBe("/hq/stores/prism-flagship/products");
+    expect(buildWebPath("customer-reservation-seats")).toBe(
+      "/customer/reservations/new/seats",
+    );
+    expect(buildWebPath("customer-reservation-confirm")).toBe(
+      "/customer/reservations/new/confirm",
+    );
+    expect(
+      buildWebPath("customer-reservation-detail", {
+        reservationId: "reservation with space",
+      }),
+    ).toBe("/customer/reservations/reservation%20with%20space");
+    expect(
+      buildWebPath("customer-reservation-payment", {
+        reservationId: "reservation-05",
+      }),
+    ).toBe("/customer/reservations/reservation-05/payment");
   });
 
   it("parses every generated canonical route back to the same route identity", () => {

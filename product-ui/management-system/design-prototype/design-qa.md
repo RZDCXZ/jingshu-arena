@@ -678,6 +678,27 @@ final result: passed
 
 final result: passed
 
+## Web URL 路由 Ticket 05 — 顾客预约创建、详情与模拟支付
+
+### 对照源与证据
+
+- 移动页面职责、步骤层级和预约状态继续使用小程序选定源 `../../miniprogram/design-prototype/design/reference/selected-reservation-first-home.png` 及 `MP-06–MP-09` 正式状态；桌面和平板共享壳继续使用 `design/reference/selected-night-operations-console.png`。本票只把既有预约业务接入稳定 URL，并补齐安全恢复与详情主标题，没有改变视觉方向。
+- `360 × 800` 预约确认与固定提交动作：`design/evidence/web-url-routing-ticket-05/reservation-confirm-360x800.png`。
+- `360 × 800` 直达/刷新后的服务端权威预约详情：`design/evidence/web-url-routing-ticket-05/reservation-detail-360x800.png`。
+- `360 × 800` 已确认预约的支付状态门禁：`design/evidence/web-url-routing-ticket-05/reservation-payment-gated-360x800.png`。
+- `1440 × 1024` 预约详情与完整共享壳：`design/evidence/web-url-routing-ticket-05/reservation-route-1440x1024.png`。
+- `1024 × 768` 支付状态门禁与折叠侧栏：`design/evidence/web-url-routing-ticket-05/reservation-route-1024x768.png`。
+
+### Findings 与验证
+
+- 首轮 P1：既有选座、确认、创建成功、详情和支付只通过组件 `view` 状态切换，刷新或复制地址无法恢复，创建成功也停留在非资源页。修复后四个显式 App Router 页面控制 URL；每个用户推进步骤使用 `push`，缺失内存草稿使用 `replace` 回退，创建成功直接进入资源详情并只显示一次内存反馈。
+- 首轮 P1：既有动态详情在共享路由守卫中统一被预阻断，已迁移预约无法直达；详情请求失败还可能透传对象级消息。修复后只放行本票已迁移的预约详情/支付，由顾客 API 重新授权；403 与 404 统一显示“对象不存在或不可访问”，目标 ID 切换先清空旧详情，迟到响应不能覆盖当前对象。
+- 首轮 P1：既有支付视图可从内存详情直接展示动作，直达 URL 缺少服务端状态门禁。修复后支付页先重读预约详情，仅在 `actions.canSimulatePayment` 为真时展示模拟支付；已确认等状态只显示原因与规范详情入口，自动化断言没有非法支付按钮或请求。
+- `customer-seat-browse.spec.ts` 的 Ticket 05 回归覆盖选座/确认 URL、确认刷新回退与说明、创建后规范详情和一次性反馈、详情直达/刷新、支付路径、非法状态门禁、浏览器后退/前进，以及缺失/无权对象同形边界。既有 `WEB-C01–C04` 三条受影响回归修正为等待规范详情 URL 和语义标题后继续通过。
+- 视觉检查确认移动端保持深海军蓝、青色进度/信息、青柠主动作、固定提交区和明确“不扣款”边界；桌面/平板顾客画布不超过 `520px`，共享壳与页面均无横向溢出。页面标题、详情 `h1` 和焦点由同一 URL 状态驱动；三档证据控制台 warning/error 为 0。当前 P0/P1/P2 均已清零。
+
+final result: passed
+
 ## Open Questions
 
 - 无阻塞问题。

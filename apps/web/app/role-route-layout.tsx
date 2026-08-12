@@ -117,6 +117,24 @@ function customerRouteFor(
   if (route.routeId === "customer-reservations") {
     return { kind: "reservations" };
   }
+  if (route.routeId === "customer-reservation-seats") {
+    return { kind: "reservation-seats" };
+  }
+  if (route.routeId === "customer-reservation-confirm") {
+    return { kind: "reservation-confirm" };
+  }
+  if (route.routeId === "customer-reservation-detail") {
+    return {
+      kind: "reservation-detail",
+      reservationId: route.params.reservationId ?? "",
+    };
+  }
+  if (route.routeId === "customer-reservation-payment") {
+    return {
+      kind: "reservation-payment",
+      reservationId: route.params.reservationId ?? "",
+    };
+  }
   if (route.routeId === "customer-stores") return { kind: "stores" };
   if (route.routeId.startsWith("customer-journeys-")) {
     const tab = route.routeId.replace("customer-journeys-", "");
@@ -147,6 +165,12 @@ function customerRouteFor(
 
 function routeBoundary(route: ParsedWebRoute) {
   if (route.status === "not-found") return { kind: "not-found" } as const;
+  if (
+    route.routeId === "customer-reservation-detail" ||
+    route.routeId === "customer-reservation-payment"
+  ) {
+    return undefined;
+  }
   return webRouteMetadata(route.routeId).kind === "detail"
     ? ({ kind: "object-unavailable" } as const)
     : undefined;

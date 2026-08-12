@@ -195,6 +195,7 @@ const catalog: CustomerStoreCatalogResponse = {
 const currentStoryReservationId = "00000000-0000-4000-8000-000000000710";
 const futureStoryReservationId = "00000000-0000-4000-8000-000000000711";
 const historyStoryReservationId = "00000000-0000-4000-8000-000000000712";
+const forbiddenStoryReservationId = "00000000-0000-4000-8000-000000000799";
 const storySnapshot: CustomerPendingReservationResponse["snapshot"] = {
   area: { code: "competitive-a", displayName: "竞技区 A" },
   coupon: {
@@ -663,13 +664,25 @@ async function openCustomerH5(
     /\/api\/v1\/customer\/reservations\/[^/]+$/u,
     async (route) => {
       const reservationId = route.request().url().split("/").at(-1)!;
+      if (reservationId === forbiddenStoryReservationId) {
+        await route.fulfill({
+          json: {
+            error: {
+              code: "CUSTOMER_RESERVATION_FORBIDDEN",
+              message: "内部对象存在，但属于另一位顾客。",
+              requestId: "00000000-0000-4000-8000-000000000798",
+            },
+          },
+          status: 403,
+        });
+        return;
+      }
       const isStoryReservation = [
         currentStoryReservationId,
         futureStoryReservationId,
         historyStoryReservationId,
       ].includes(reservationId);
-      const snapshot =
-        activeSnapshot ?? (isStoryReservation ? storySnapshot : null);
+      const snapshot = isStoryReservation ? storySnapshot : activeSnapshot;
       if (!snapshot) {
         await route.fulfill({ status: 404 });
         return;
@@ -1347,6 +1360,9 @@ async function createHeldReservation(page: Page) {
   await page.getByRole("button", { name: /A-05，.*可订/u }).click();
   await page.getByRole("button", { name: "继续确认" }).click();
   await page.getByRole("button", { name: "创建十分钟保留" }).click();
+  await expect(page).toHaveURL(
+    /\/customer\/reservations\/00000000-0000-4000-8000-000000000708$/u,
+  );
   await expect(
     page.getByRole("heading", { name: "预约已排他保留十分钟" }),
   ).toBeVisible();
@@ -1518,7 +1534,9 @@ test("WEB-C03 exposes the silver profile, four coupon states and linked growth a
     .locator(".customer-member-coupon-copy > button")
     .getByText("棱镜旗舰店预约")
     .click();
-  await expect(page.getByText("预约详情", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "预约详情", exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "返回统一行程" }),
   ).toBeVisible();
@@ -1556,7 +1574,9 @@ test("WEB-C03 operates journey tabs, reservation jumps and actionable history fi
     "true",
   );
   await page.locator(".customer-journey-main").first().click();
-  await expect(page.getByText("预约详情", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "预约详情", exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "返回统一行程" }).click();
 
   await page.getByRole("tab", { name: /未来 1/u }).click();
@@ -1791,6 +1811,194 @@ test("Ticket 04 keeps the routed customer canvas stable in desktop and tablet sh
     }
   }
   expect(browserErrors).toEqual([]);
+});
+
+test("Ticket 05 routes reservation creation, refresh recovery, detail, payment and browser history at 360px", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      browserErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  await page.route("**/api/v1/demo/story", async (route) => {
+    await route.fulfill({ json: { completedCount: 0 }, status: 200 });
+  });
+  await openCustomerH5(page);
+
+  await page.getByRole("button", { name: "查找可订座位" }).click();
+  await expect(page).toHaveURL(/\/customer\/reservations\/new\/seats$/u);
+  await expect(page).toHaveTitle("选择座位｜竞枢");
+  await page.getByRole("button", { name: /A-05，.*可订/u }).click();
+  await page.getByRole("button", { name: "继续确认" }).click();
+  await expect(page).toHaveURL(/\/customer\/reservations\/new\/confirm$/u);
+  await expect(page).toHaveTitle("确认预约｜竞枢");
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-05/reservation-confirm-360x800.png",
+    });
+  }
+
+  await page.reload();
+  await expect(page).toHaveURL(/\/customer\/reservations$/u);
+  await expect(page.getByText("未提交选择未被保留")).toBeVisible();
+  await expect(page.getByText(/刷新后未被保留/u)).toBeVisible();
+
+  await page.getByRole("button", { name: "查找可订座位" }).click();
+  await page.getByRole("button", { name: /A-05，.*可订/u }).click();
+  await page.getByRole("button", { name: "继续确认" }).click();
+  await page.getByRole("button", { name: "创建十分钟保留" }).click();
+  await expect(page).toHaveURL(
+    /\/customer\/reservations\/00000000-0000-4000-8000-000000000708$/u,
+  );
+  await expect(page).toHaveTitle("预约详情｜竞枢");
+  await expect(
+    page.getByRole("heading", { name: "预约已排他保留十分钟" }),
+  ).toBeVisible();
+  await expect(page.url()).not.toMatch(/\/(?:created|success)(?:\/|$)/u);
+
+  await page.getByRole("button", { name: "查看预约详情" }).click();
+  await expect(
+    page.getByRole("heading", { name: "预约详情", exact: true }),
+  ).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/customer\/reservations\/new\/confirm$/u);
+  await expect(
+    page.getByRole("heading", { name: "竞技区 A-05" }),
+  ).toBeVisible();
+  await page.goForward();
+  await expect(page).toHaveURL(
+    /\/customer\/reservations\/00000000-0000-4000-8000-000000000708$/u,
+  );
+  await expect(
+    page.getByRole("heading", { name: "预约详情", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "预约已排他保留十分钟" }),
+  ).toHaveCount(0);
+
+  await page.getByRole("button", { name: "继续模拟支付（不扣款）" }).click();
+  await expect(page).toHaveURL(
+    /\/customer\/reservations\/00000000-0000-4000-8000-000000000708\/payment$/u,
+  );
+  await expect(page).toHaveTitle("预约模拟支付｜竞枢");
+  await expect(
+    page.getByRole("heading", { name: "确认模拟支付" }),
+  ).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(
+    /\/customer\/reservations\/00000000-0000-4000-8000-000000000708$/u,
+  );
+
+  await page.goto(`/customer/reservations/${futureStoryReservationId}`);
+  await expect(
+    page.getByRole("heading", { name: "预约详情", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("竞技区 A-08", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "预约详情", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".customer-lifecycle-status-row").getByText("已确认", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-05/reservation-detail-360x800.png",
+    });
+  }
+
+  await page.goto(`/customer/reservations/${futureStoryReservationId}/payment`);
+  await expect(
+    page.getByRole("heading", { name: "当前状态不能进行模拟支付" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "确认模拟支付（不扣款）" }),
+  ).toHaveCount(0);
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-05/reservation-payment-gated-360x800.png",
+    });
+  }
+  await expect(browserErrors).toEqual([]);
+});
+
+test("Ticket 05 keeps routed reservation detail and payment stable in desktop and tablet shells", async ({
+  page,
+}) => {
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      browserErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  await page.route("**/api/v1/demo/story", async (route) => {
+    await route.fulfill({ json: { completedCount: 0 }, status: 200 });
+  });
+  await page.setViewportSize({ height: 1024, width: 1440 });
+  await openCustomerH5(page);
+
+  for (const viewport of [
+    {
+      height: 1024,
+      route: `/customer/reservations/${futureStoryReservationId}`,
+      width: 1440,
+    },
+    {
+      height: 768,
+      route: `/customer/reservations/${futureStoryReservationId}/payment`,
+      width: 1024,
+    },
+  ]) {
+    await page.setViewportSize({
+      height: viewport.height,
+      width: viewport.width,
+    });
+    await page.goto(viewport.route);
+    await expect(page.locator("[data-customer-route-heading]")).toBeFocused();
+    const layout = await page.evaluate(() => {
+      const canvas = document.querySelector<HTMLElement>(".customer-h5");
+      return {
+        canvasWidth: canvas?.getBoundingClientRect().width ?? 0,
+        pageScrollWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    expect(layout.canvasWidth).toBeLessThanOrEqual(520);
+    expect(layout.pageScrollWidth).toBeLessThanOrEqual(layout.viewportWidth);
+    if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+      await page.screenshot({
+        path: `product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-05/reservation-route-${viewport.width}x${viewport.height}.png`,
+      });
+    }
+  }
+  await expect(browserErrors).toEqual([]);
+});
+
+test("Ticket 05 gives missing and forbidden customer reservations the same non-leaking boundary", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  await openCustomerH5(page);
+
+  for (const reservationId of [
+    forbiddenStoryReservationId,
+    "00000000-0000-4000-8000-000000000797",
+  ]) {
+    await page.goto(`/customer/reservations/${reservationId}`);
+    await expect(
+      page.getByRole("heading", { name: "对象不存在或不可访问" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("内部对象存在，但属于另一位顾客。"),
+    ).toHaveCount(0);
+  }
 });
 
 test("WEB-C04 keeps the desktop cart action within the H5 canvas and preserves its mobile fixed layout", async ({
