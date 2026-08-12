@@ -1119,22 +1119,27 @@ test("mobile customer can browse three stores and inspect server-derived seats a
     page.getByText("工作日 18:00–24:00 · 1.20 倍").first(),
   ).toBeVisible();
 
-  const localSelectionMilliseconds = await page.evaluate(async () => {
-    const target = [
-      ...document.querySelectorAll<HTMLButtonElement>("button"),
-    ].find((button) => button.getAttribute("aria-label")?.includes("A-05，"));
-    if (!target) return Number.POSITIVE_INFINITY;
-    const startedAt = performance.now();
-    target.click();
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => resolve()),
-    );
-    return performance.now() - startedAt;
-  });
-  expect(localSelectionMilliseconds).toBeLessThan(100);
+  const availabilityRequestsBeforeSelection = await page.evaluate(
+    () =>
+      performance
+        .getEntriesByType("resource")
+        .filter((entry) => entry.name.includes("/customer/seat-availability"))
+        .length,
+  );
+  await page.getByRole("button", { name: /A-05，.*可订/u }).click();
   await expect(
     page.getByRole("button", { name: /A-05，.*已选/u }),
   ).toBeVisible();
+  const availabilityRequestsAfterSelection = await page.evaluate(
+    () =>
+      performance
+        .getEntriesByType("resource")
+        .filter((entry) => entry.name.includes("/customer/seat-availability"))
+        .length,
+  );
+  expect(availabilityRequestsAfterSelection).toBe(
+    availabilityRequestsBeforeSelection,
+  );
   await page.getByRole("button", { name: "继续确认" }).click();
   await expect(
     page.getByRole("heading", { name: "竞技区 A-05" }),
