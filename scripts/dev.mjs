@@ -210,7 +210,9 @@ async function migrateDatabase(environment) {
 }
 
 async function startServices(environment) {
+  const apiHost = environment.JINGSHU_API_HOST ?? "127.0.0.1";
   const apiPort = environment.JINGSHU_API_PORT ?? "3001";
+  const webHost = environment.JINGSHU_WEB_HOST ?? "127.0.0.1";
   const webPort = environment.JINGSHU_WEB_PORT ?? "3000";
   const webOrigin = environment.PUBLIC_ORIGIN ?? `http://127.0.0.1:${webPort}`;
   const apiOrigin =
@@ -218,6 +220,7 @@ async function startServices(environment) {
   const api = spawnProcess("pnpm", ["--filter", "@jingshu/api", "dev"], {
     env: {
       ...environment,
+      JINGSHU_API_HOST: apiHost,
       PORT: apiPort,
       PUBLIC_ORIGIN: webOrigin,
     },
@@ -231,7 +234,7 @@ async function startServices(environment) {
       "next",
       "dev",
       "--hostname",
-      "127.0.0.1",
+      webHost,
       "--port",
       webPort,
     ],

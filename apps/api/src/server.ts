@@ -13,6 +13,7 @@ import {
 } from "./sandbox-lifecycle-cleanup.js";
 
 const port = Number.parseInt(process.env.PORT ?? "3001", 10);
+const hostname = process.env.JINGSHU_API_HOST;
 const databaseUrl = process.env.DATABASE_URL;
 const sessionSecret = process.env.SESSION_SECRET;
 const publicOrigin = process.env.PUBLIC_ORIGIN ?? "http://127.0.0.1:3000";
@@ -149,10 +150,13 @@ const app = createApp({
 const server = serve({
   fetch: (request, nodeBindings) =>
     app.fetch(request, { clientIp: nodeClientIp(nodeBindings) }),
+  ...(hostname === undefined ? {} : { hostname }),
   port,
 });
 
-console.log(`Jingshu API listening on http://localhost:${port}`);
+console.log(
+  `Jingshu API listening on http://${hostname ?? "localhost"}:${port}`,
+);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {

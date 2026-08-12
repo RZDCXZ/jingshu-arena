@@ -1583,6 +1583,73 @@ test("WEB-C03 operates journey tabs, reservation jumps and actionable history fi
   expect(undersizedControls).toEqual([]);
 });
 
+test("WEB-C04 keeps the desktop cart action within the H5 canvas and preserves its mobile fixed layout", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 866, width: 1327 });
+  await openCustomerH5(page, { detailStatuses: ["arrived"] });
+  await page.getByRole("button", { name: "行程", exact: true }).click();
+  await page.locator(".customer-journey-main").first().click();
+  await page.getByRole("button", { name: "购买柜台商品" }).click();
+
+  const desktopLayout = await page
+    .locator(".customer-order-action-bar")
+    .evaluate((bar) => {
+      const h5 = document.querySelector(".customer-h5");
+      const workspace = document.querySelector(".role-workspace");
+      const barRect = bar.getBoundingClientRect();
+      const h5Rect = h5?.getBoundingClientRect();
+      const workspaceRect = workspace?.getBoundingClientRect();
+
+      return {
+        bar: {
+          bottom: barRect.bottom,
+          left: barRect.left,
+          right: barRect.right,
+        },
+        h5: h5Rect
+          ? {
+              left: h5Rect.left,
+              right: h5Rect.right,
+            }
+          : null,
+        position: window.getComputedStyle(bar).position,
+        workspaceBottom: workspaceRect?.bottom ?? null,
+      };
+    });
+
+  expect(desktopLayout.position).toBe("sticky");
+  expect(desktopLayout.h5).not.toBeNull();
+  expect(desktopLayout.workspaceBottom).not.toBeNull();
+  expect(
+    Math.abs(desktopLayout.bar.left - (desktopLayout.h5?.left ?? 0)),
+  ).toBeLessThanOrEqual(1);
+  expect(
+    Math.abs(desktopLayout.bar.right - (desktopLayout.h5?.right ?? 0)),
+  ).toBeLessThanOrEqual(1);
+  expect(
+    Math.abs(desktopLayout.bar.bottom - (desktopLayout.workspaceBottom ?? 0)),
+  ).toBeLessThanOrEqual(1);
+
+  await page.setViewportSize({ height: 800, width: 360 });
+  const mobileLayout = await page
+    .locator(".customer-order-action-bar")
+    .evaluate((bar) => ({
+      clientWidth: document.documentElement.clientWidth,
+      paddingBottom: window.getComputedStyle(
+        document.querySelector(".customer-order-page")!,
+      ).paddingBottom,
+      position: window.getComputedStyle(bar).position,
+      scrollWidth: document.documentElement.scrollWidth,
+    }));
+
+  expect(mobileLayout.position).toBe("fixed");
+  expect(mobileLayout.paddingBottom).toBe("96px");
+  expect(mobileLayout.scrollWidth).toBeLessThanOrEqual(
+    mobileLayout.clientWidth,
+  );
+});
+
 test("WEB-C04 completes the arrived-reservation whole-cart and no-charge order flow at 360px", async ({
   page,
 }) => {

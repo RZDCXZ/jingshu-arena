@@ -3427,6 +3427,20 @@ strong {
   overflow: hidden;
 }
 
+/*
+ * 业务页面由共享壳层约束在可视工作区内。直接挂载的 <main> 需要自己
+ * 成为纵向滚动宿主，否则内容会超过工作区后被 role-workspace 裁切。
+ * 带检查器的工作台已由其内部列负责滚动，因此不在此规则范围内。
+ */
+.role-shell:not(.is-customer) .role-workspace > main {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
 .role-workbench {
   height: 100%;
   display: grid;
@@ -8477,9 +8491,14 @@ strong {
     padding-bottom: 94px;
   }
 
+  .customer-order-page.has-order-action {
+    padding-bottom: 96px;
+  }
+
   .customer-find-action,
   .customer-seat-action,
   .customer-confirm-action,
+  .customer-order-action-bar,
   .customer-bottom-nav {
     position: fixed;
     right: 0;
@@ -8505,6 +8524,11 @@ strong {
   }
 
   .customer-confirm-action {
+    bottom: 0;
+    margin: 0;
+  }
+
+  .customer-order-action-bar {
     bottom: 0;
     margin: 0;
   }
@@ -9932,7 +9956,10 @@ strong {
 }
 
 .customer-order-page.has-order-action {
-  padding-bottom: 96px;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
 }
 
 .customer-order-link-card,
@@ -10117,11 +10144,10 @@ strong {
 
 .customer-order-action-bar {
   min-height: 76px;
-  position: fixed;
-  z-index: 35;
-  right: max(0px, calc((100vw - 520px) / 2));
+  position: sticky;
+  z-index: 25;
   bottom: 0;
-  left: max(0px, calc((100vw - 520px) / 2));
+  margin: auto -12px 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -10131,6 +10157,21 @@ strong {
   background: rgb(7 19 27 / 96%);
   box-shadow: 0 -12px 35px rgb(0 0 0 / 30%);
   backdrop-filter: blur(15px);
+}
+
+/* 订单栏的桌面规则定义在此处，需在其后重申手机端覆盖，避免层叠顺序将其还原为 sticky。 */
+@media (max-width: 720px) {
+  .customer-order-page.has-order-action {
+    padding-bottom: 96px;
+  }
+
+  .customer-order-action-bar {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    margin: 0;
+  }
 }
 
 .customer-order-action-bar > span {
@@ -14610,6 +14651,35 @@ strong {
   width: 6px;
   height: 6px;
   border-radius: 50%;
+}
+
+.hq-comparison-tooltip {
+  min-width: 228px;
+  max-width: min(320px, calc(100vw - 32px));
+  gap: 6px;
+  padding: 10px 12px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.hq-comparison-tooltip strong {
+  color: #f3fbfd;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.hq-comparison-tooltip span {
+  align-items: flex-start;
+  color: #d9e7eb;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.hq-comparison-tooltip i {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  margin-top: 4px;
 }
 
 .manager-dashboard-dual-head {

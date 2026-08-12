@@ -3488,6 +3488,83 @@ async function enterManagerAudit(page: Page) {
   await expect(page.getByRole("heading", { name: "审计与导出" })).toBeVisible();
 }
 
+async function expectDirectRolePageToScroll(page: Page, selector: string) {
+  const metrics = await page.locator(selector).evaluate((main) => {
+    const workspace = main.parentElement;
+    main.scrollTo({ top: main.scrollHeight });
+
+    return {
+      clientHeight: main.clientHeight,
+      overflowY: window.getComputedStyle(main).overflowY,
+      scrollHeight: main.scrollHeight,
+      scrollTop: main.scrollTop,
+      workspaceClientHeight: workspace?.clientHeight ?? 0,
+    };
+  });
+
+  expect(metrics.overflowY).toBe("auto");
+  expect(metrics.clientHeight).toBe(metrics.workspaceClientHeight);
+  expect(metrics.scrollHeight).toBeGreaterThanOrEqual(metrics.clientHeight);
+  if (metrics.scrollHeight > metrics.clientHeight) {
+    expect(metrics.scrollTop).toBeGreaterThan(0);
+  }
+}
+
+test("direct role pages scroll inside the shared workspace instead of being clipped", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await enterStaffShell(page);
+
+  await page.getByRole("button", { name: "报修", exact: true }).click();
+  await expectDirectRolePageToScroll(page, ".staff-repair-main");
+
+  await page.getByRole("button", { name: "班次与交接", exact: true }).click();
+  await expectDirectRolePageToScroll(page, ".attendance-page");
+  await page.getByRole("button", { name: "交接班", exact: true }).click();
+  await expectDirectRolePageToScroll(page, ".attendance-page");
+
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "店长 许知远 · 虚构人物 棱镜旗舰店",
+    })
+    .click();
+  await expect(page.getByRole("heading", { name: "经营看板" })).toBeVisible();
+  await expectDirectRolePageToScroll(page, ".manager-dashboard-main");
+
+  await page.getByRole("button", { name: "员工与排班", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "员工、排班与考勤" }),
+  ).toBeVisible();
+  await expectDirectRolePageToScroll(page, ".people-main");
+
+  await page.getByRole("button", { name: "审计与导出", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "审计与导出" })).toBeVisible();
+  await expectDirectRolePageToScroll(page, ".manager-audit-main");
+
+  await page.getByRole("button", { name: "切换角色" }).click();
+  await page
+    .getByRole("button", {
+      name: "总部运营 沈微 · 虚构人物 固定三店",
+    })
+    .click();
+  await expect(page.getByRole("heading", { name: "连锁看板" })).toBeVisible();
+  await page.getByRole("button", { name: "门店比较", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "门店比较" })).toBeVisible();
+  await expectDirectRolePageToScroll(page, ".hq-comparison-main");
+
+  await page.getByRole("button", { name: "人员与排班", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "人员与排班汇总" }),
+  ).toBeVisible();
+  await expectDirectRolePageToScroll(page, ".people-main");
+
+  await page.getByRole("button", { name: "审计与导出", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "审计与导出" })).toBeVisible();
+  await expectDirectRolePageToScroll(page, ".manager-audit-main");
+});
+
 test("WEB-G03 renders a server-derived, accessible twelve-step drawer without manual completion", async ({
   page,
 }) => {

@@ -211,6 +211,38 @@ const metricOrder: ReadonlyArray<ComparisonMetric> = [
 
 const storeColors = ["#b8f34a", "#59d8ff", "#b9a7ff"] as const;
 
+function HeadquartersChartTooltip({
+  active,
+  format,
+  label,
+  payload,
+}: {
+  readonly active?: boolean;
+  readonly format: (value: number) => string;
+  readonly label?: string;
+  readonly payload?: ReadonlyArray<{
+    readonly color?: string;
+    readonly name?: string;
+    readonly value?: number | null;
+  }>;
+}) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="manager-dashboard-tooltip hq-comparison-tooltip">
+      <strong>经营日 {label}</strong>
+      {payload.map((item, index) => (
+        <span key={`${item.name ?? "store"}-${index}`}>
+          <i style={{ backgroundColor: item.color }} />
+          {item.name ?? "门店"}：
+          {item.value === null || item.value === undefined
+            ? "未生成历史快照"
+            : format(item.value)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function rangeFor(
   preset: RangePreset,
   days: HeadquartersComparisonResponse["availableBusinessDays"],
@@ -961,12 +993,9 @@ export function HeadquartersComparison({
                   width={68}
                 />
                 <Tooltip
-                  formatter={(value) =>
-                    value === null || value === undefined
-                      ? "未生成历史快照"
-                      : definition.format(Number(value))
+                  content={
+                    <HeadquartersChartTooltip format={definition.format} />
                   }
-                  labelFormatter={(label) => `经营日 ${label}`}
                 />
                 <Legend iconType="circle" wrapperStyle={{ fontSize: 10 }} />
                 {visibleStores.map((store) => {
