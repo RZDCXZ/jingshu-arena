@@ -20,6 +20,8 @@ import type {
   HeadquartersProductCategory,
 } from "@jingshu/contracts";
 
+import { createBrowserUuid } from "./browser-uuid";
+
 type Catalogs = HeadquartersCatalogsResponse;
 type Product = Catalogs["products"][number];
 type MachineProfile = Catalogs["machineProfiles"][number];
@@ -558,7 +560,7 @@ export function HeadquartersCatalogs({
           credentials: "same-origin",
           headers: {
             "Content-Type": "application/json",
-            "Idempotency-Key": crypto.randomUUID(),
+            "Idempotency-Key": createBrowserUuid(),
             "X-CSRF-Token": csrfToken,
           },
           method: "POST",

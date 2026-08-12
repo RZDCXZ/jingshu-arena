@@ -1,7 +1,55 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runDevelopment } from "./dev.mjs";
+import { resolveDevelopmentNetwork, runDevelopment } from "./dev.mjs";
+
+test("dev network defaults expose Web on the private LAN with exact origins", () => {
+  const network = resolveDevelopmentNetwork(
+    {},
+    {
+      docker0: [{ address: "172.17.0.1", family: "IPv4", internal: false }],
+      en0: [{ address: "192.168.1.8", family: "IPv4", internal: false }],
+      lo0: [{ address: "127.0.0.1", family: "IPv4", internal: true }],
+    },
+  );
+
+  assert.deepEqual(network, {
+    allowedWebOrigins: [
+      "http://192.168.1.8:3000",
+      "http://127.0.0.1:3000",
+      "http://localhost:3000",
+    ],
+    networkWebOrigin: "http://192.168.1.8:3000",
+    publicOrigin: "http://192.168.1.8:3000",
+    webHost: "0.0.0.0",
+    webPort: "3000",
+  });
+});
+
+test("dev network preserves explicit host, origin, port, and access host overrides", () => {
+  const network = resolveDevelopmentNetwork(
+    {
+      JINGSHU_DEV_ACCESS_HOST: "devbox.test",
+      JINGSHU_WEB_HOST: "0.0.0.0",
+      JINGSHU_WEB_PORT: "4100",
+      PUBLIC_ORIGIN: "https://devbox.test:4443",
+    },
+    {},
+  );
+
+  assert.deepEqual(network, {
+    allowedWebOrigins: [
+      "https://devbox.test:4443",
+      "http://127.0.0.1:4100",
+      "http://localhost:4100",
+      "http://devbox.test:4100",
+    ],
+    networkWebOrigin: "http://devbox.test:4100",
+    publicOrigin: "https://devbox.test:4443",
+    webHost: "0.0.0.0",
+    webPort: "4100",
+  });
+});
 
 test("dev startup provisions Postgres before starting API and Web", async () => {
   const events = [];

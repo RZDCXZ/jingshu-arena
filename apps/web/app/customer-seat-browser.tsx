@@ -72,6 +72,7 @@ import type {
 } from "@jingshu/contracts";
 
 import repairSample from "../../../product-ui/miniprogram/design-prototype/public/assets/repair-headset-sample.png";
+import { createBrowserUuid } from "./browser-uuid";
 
 const profileIcons = {
   competitive: GameController,
@@ -883,7 +884,7 @@ export function CustomerSeatBrowser({
     if (!availability || !selectedSeat || submitting || conflictInvalidated) {
       return;
     }
-    const idempotencyKey = reservationKeyRef.current ?? crypto.randomUUID();
+    const idempotencyKey = reservationKeyRef.current ?? createBrowserUuid();
     reservationKeyRef.current = idempotencyKey;
     const request: CreateCustomerPendingReservationRequest = {
       areaCode: availability.area.code,
@@ -988,7 +989,7 @@ export function CustomerSeatBrowser({
 
   async function simulatePayment() {
     if (!activeReservationId || paymentStage === "processing") return;
-    const idempotencyKey = paymentKeyRef.current ?? crypto.randomUUID();
+    const idempotencyKey = paymentKeyRef.current ?? createBrowserUuid();
     paymentKeyRef.current = idempotencyKey;
     const controller = new AbortController();
     const timeout = window.setTimeout(
@@ -1048,7 +1049,7 @@ export function CustomerSeatBrowser({
     ) {
       return;
     }
-    const idempotencyKey = cancelKeyRef.current ?? crypto.randomUUID();
+    const idempotencyKey = cancelKeyRef.current ?? createBrowserUuid();
     cancelKeyRef.current = idempotencyKey;
     const controller = new AbortController();
     const timeout = window.setTimeout(
@@ -1226,7 +1227,7 @@ export function CustomerSeatBrowser({
       lines,
       reservationId: orderCatalog.reservation.reservationId,
     };
-    const idempotencyKey = orderCreateKeyRef.current ?? crypto.randomUUID();
+    const idempotencyKey = orderCreateKeyRef.current ?? createBrowserUuid();
     orderCreateKeyRef.current = idempotencyKey;
     setOrderSubmitting(true);
     setOrderSubmissionFailure("");
@@ -1274,7 +1275,7 @@ export function CustomerSeatBrowser({
 
   async function simulateOrderPayment() {
     if (!activeOrderId || orderPaymentLoading) return;
-    const idempotencyKey = orderPaymentKeyRef.current ?? crypto.randomUUID();
+    const idempotencyKey = orderPaymentKeyRef.current ?? createBrowserUuid();
     orderPaymentKeyRef.current = idempotencyKey;
     setOrderPaymentLoading(true);
     setOrderPaymentFailure("");
@@ -1320,7 +1321,7 @@ export function CustomerSeatBrowser({
 
   async function cancelOrder() {
     if (!activeOrderId || orderCancelLoading) return;
-    const idempotencyKey = orderCancelKeyRef.current ?? crypto.randomUUID();
+    const idempotencyKey = orderCancelKeyRef.current ?? createBrowserUuid();
     orderCancelKeyRef.current = idempotencyKey;
     setOrderCancelLoading(true);
     setOrderCancelFailure("");
@@ -1485,7 +1486,7 @@ export function CustomerSeatBrowser({
       ...current,
       ...accepted.map((file) => ({
         file,
-        id: crypto.randomUUID(),
+        id: createBrowserUuid(),
         previewUrl: URL.createObjectURL(file),
       })),
     ]);
@@ -1639,7 +1640,7 @@ export function CustomerSeatBrowser({
     ) {
       return;
     }
-    const idempotencyKey = repairKeyRef.current ?? crypto.randomUUID();
+    const idempotencyKey = repairKeyRef.current ?? createBrowserUuid();
     repairKeyRef.current = idempotencyKey;
     setRepairSubmitting(true);
     setRepairFailure("");

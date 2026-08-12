@@ -30,6 +30,7 @@ import type {
   StoreBusinessHoursDaySet,
 } from "@jingshu/contracts";
 
+import { createBrowserUuid } from "./browser-uuid";
 import { canonicalHeadquartersStores } from "./headquarters-stores";
 
 type Configuration = ManagerStoreConfigurationResponse;
@@ -1885,7 +1886,7 @@ function StoreConfiguration({
       const requestPayload = JSON.stringify(command);
       const idempotencyKey =
         pendingCommandKeysRef.current.get(requestPayload) ??
-        crypto.randomUUID();
+        createBrowserUuid();
       pendingCommandKeysRef.current.set(requestPayload, idempotencyKey);
       try {
         const response = await fetch(commandEndpoint, {
@@ -2878,7 +2879,7 @@ export function HeadquartersStoreConfiguration({
     async (command: HeadquartersCatalogCommandRequest, success: string) => {
       const requestPayload = JSON.stringify(command);
       const idempotencyKey =
-        pendingKeysRef.current.get(requestPayload) ?? crypto.randomUUID();
+        pendingKeysRef.current.get(requestPayload) ?? createBrowserUuid();
       pendingKeysRef.current.set(requestPayload, idempotencyKey);
       try {
         const response = await fetch("/api/v1/hq/catalogs/commands", {

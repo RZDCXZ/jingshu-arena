@@ -23,6 +23,8 @@ import type {
   StaffHandoversResponse,
 } from "@jingshu/contracts";
 
+import { createBrowserUuid } from "./browser-uuid";
+
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     day: "2-digit",
@@ -243,7 +245,7 @@ export function StaffHandoverPanel({
       retryRef.current.targetId !== targetId
     ) {
       retryRef.current = {
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: createBrowserUuid(),
         kind,
         targetId,
       };

@@ -1,7 +1,16 @@
 import type { NextConfig } from "next";
 
+const allowedDevOrigins = [
+  "127.0.0.1",
+  "localhost",
+  ...(process.env.JINGSHU_DEV_ACCESS_HOST
+    ? [process.env.JINGSHU_DEV_ACCESS_HOST]
+    : []),
+];
+
 const nextConfig: NextConfig = {
   agentRules: false,
+  allowedDevOrigins: [...new Set(allowedDevOrigins)],
   ...(process.env.JINGSHU_NEXT_DIST_DIR
     ? { distDir: process.env.JINGSHU_NEXT_DIST_DIR }
     : {}),

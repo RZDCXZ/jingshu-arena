@@ -23,6 +23,7 @@ import type {
   StaffReservationTimeFilter,
   StaffReservationWorkbenchResponse,
 } from "@jingshu/contracts";
+import { createBrowserUuid } from "./browser-uuid";
 import { StaffShiftSummary } from "./staff-shift-attendance";
 
 export interface StaffReservationPreset {
@@ -658,7 +659,7 @@ export function RoleWorkbench({
   }
 
   function openCommand(draft: CommandDraft) {
-    idempotencyKeyRef.current = crypto.randomUUID();
+    idempotencyKeyRef.current = createBrowserUuid();
     setCommandError("");
     setCommandDraft(draft);
   }

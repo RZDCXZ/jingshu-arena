@@ -5,6 +5,16 @@
 - 已验证契约版本：`product-ui/management-system/prod.md` 1.19
 - 验证范围：[`29 — 基于业务证据的十二步 Web 主演示`](../../../.scratch/jingshu-basic-rc/issues/29-web-demo-story.md)、[`28 — 沙箱容量、自然过期与可重试清理`](../../../.scratch/jingshu-basic-rc/issues/28-sandbox-capacity-expiry-cleanup.md)；保留 ticket 27 实时失效通知、轮询与只读降级及更早结论
 
+## 局域网 HTTP 真机兼容性回归
+
+- 本轮不改变 `prod.md` 的页面职责、状态、业务规则或 `design-coverage.md` 的旅程覆盖；修复的是公开入口及后续全部 Web 命令在局域网 HTTP 非安全上下文中的幂等键生成能力。原生 `crypto.randomUUID()` 可用时继续使用原生实现；不可用时通过浏览器 `crypto.getRandomValues()` 生成符合版本位和变体位约束的 UUID v4，仍满足“失败后复用原幂等键”的契约。
+- 根目录 `pnpm dev` 现默认让 Web 监听 `0.0.0.0`，自动选择物理网卡私有 IPv4 并打印手机访问地址；API 继续只监听本机回环地址。开发环境仅放行自动探测的局域网 Web Origin、`127.0.0.1` 和 `localhost` 三类精确 Origin，生产环境忽略开发附加项。
+- 真实 Chromium 通过 `http://192.168.1.8:3000` 验证 `isSecureContext = false`、`crypto.randomUUID = undefined`、`crypto.getRandomValues` 可用；在不 Mock API 的 Web → Hono → 临时 PostgreSQL 路径选择顾客角色后进入“沙箱已准备完成”，浏览器 `pageerror = 0`。`360 × 800` 复核公开入口、创建动作和完成结果均可达且无横向溢出。
+- 新增 UUID 原生/回退单元回归、开发网卡与显式覆盖回归、开发/生产 Origin 隔离回归，以及公开入口移除 `crypto.randomUUID` 后仍能创建沙箱的 Chromium 回归。
+- 相关门禁通过：345 个 Vitest 单元测试、4 个开发启动测试、74 个 Chromium E2E、lint、工作区检查、全仓类型检查、格式检查及 Web/API 生产构建均为绿色。
+
+final result: passed
+
 ## 浏览器批注 1–11 — 工作区纵向滚动与 `WEB-C04` 购物车栏
 
 - 本轮不改变 `prod.md` 中的页面职责、状态或业务规则，也不改变 `design-coverage.md` 的页面/旅程覆盖；修正的是共享角色壳中已存在页面的可达性与顾客 H5 操作栏归属。选定视觉源仍分别为夜间运营控制台和预约优先首页。

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPublicSandboxDatabase } from "@jingshu/database";
 
+import { resolveAllowedOrigins } from "./allowed-origins.js";
 import { createApp } from "./app.js";
 import { nodeClientIp } from "./node-client-ip.js";
 import { FileRepairImageStorage } from "./repair-image-storage.js";
@@ -17,6 +18,13 @@ const hostname = process.env.JINGSHU_API_HOST;
 const databaseUrl = process.env.DATABASE_URL;
 const sessionSecret = process.env.SESSION_SECRET;
 const publicOrigin = process.env.PUBLIC_ORIGIN ?? "http://127.0.0.1:3000";
+const allowedOrigins = resolveAllowedOrigins({
+  ...(process.env.JINGSHU_DEV_ALLOWED_ORIGINS
+    ? { developmentOrigins: process.env.JINGSHU_DEV_ALLOWED_ORIGINS }
+    : {}),
+  ...(process.env.NODE_ENV ? { nodeEnvironment: process.env.NODE_ENV } : {}),
+  publicOrigin,
+});
 
 function positiveIntegerFromEnvironment(name: string): number | undefined {
   const raw = process.env[name];
@@ -140,7 +148,7 @@ triggerCleanup();
 const cleanupTimer = setInterval(triggerCleanup, 60_000);
 cleanupTimer.unref();
 const app = createApp({
-  allowedOrigins: [publicOrigin],
+  allowedOrigins,
   sandboxDatabase: database,
   repairImageSigningSecret: sessionSecret,
   repairImageStorage,

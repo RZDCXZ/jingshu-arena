@@ -36,6 +36,7 @@ import type {
 } from "@jingshu/contracts";
 
 import repairSample from "../../../product-ui/miniprogram/design-prototype/public/assets/repair-headset-sample.png";
+import { createBrowserUuid } from "./browser-uuid";
 
 interface StaffRepairFile {
   readonly file: File;
@@ -291,7 +292,7 @@ export function StaffRepairQueue({
       const idempotencyKey =
         retry?.fingerprint === fingerprint
           ? retry.idempotencyKey
-          : crypto.randomUUID();
+          : createBrowserUuid();
       actionRetryRef.current = { fingerprint, idempotencyKey };
       const response = await fetch(
         `/api/v1/staff/repairs/${selectedRepairId}/${actionDialog}`,
@@ -415,7 +416,7 @@ export function StaffRepairQueue({
       const idempotencyKey =
         retry?.fingerprint === fingerprint
           ? retry.idempotencyKey
-          : crypto.randomUUID();
+          : createBrowserUuid();
       workflowRetryRef.current = { fingerprint, idempotencyKey };
       const response = await fetch(
         `/api/v1/staff/repairs/${selectedRepairId}/${endpoint}`,
@@ -485,7 +486,7 @@ export function StaffRepairQueue({
       ...current,
       ...accepted.map((file) => ({
         file,
-        id: crypto.randomUUID(),
+        id: createBrowserUuid(),
         previewUrl: URL.createObjectURL(file),
       })),
     ]);
@@ -597,7 +598,7 @@ export function StaffRepairQueue({
         credentials: "same-origin",
         headers: {
           "Content-Type": "application/json",
-          "Idempotency-Key": crypto.randomUUID(),
+          "Idempotency-Key": createBrowserUuid(),
           "X-CSRF-Token": csrfToken,
         },
         method: "POST",

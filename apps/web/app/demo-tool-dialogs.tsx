@@ -25,6 +25,7 @@ import type {
   SandboxResetReadyResponse,
 } from "@jingshu/contracts";
 
+import { createBrowserUuid } from "./browser-uuid";
 import { useDialogKeyboard } from "./role-context-dialogs";
 
 const impactLabels: Record<DemoTimeDueHandlerKind, string> = {
@@ -220,7 +221,7 @@ export function DemoTimeDialog({
 
   async function advanceTime() {
     if (!selectedMode || !selection?.afterTime) return;
-    const requestKey = idempotencyKey ?? window.crypto.randomUUID();
+    const requestKey = idempotencyKey ?? createBrowserUuid();
     if (!idempotencyKey) setIdempotencyKey(requestKey);
     setStage("processing");
     setError("");
@@ -589,7 +590,7 @@ export function SandboxResetDialog({
 
   async function resetSandbox() {
     if (!confirmed) return;
-    const requestKey = idempotencyKey ?? window.crypto.randomUUID();
+    const requestKey = idempotencyKey ?? createBrowserUuid();
     if (!idempotencyKey) setIdempotencyKey(requestKey);
     setStage("processing");
     setError("");

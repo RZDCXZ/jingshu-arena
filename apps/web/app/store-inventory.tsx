@@ -22,6 +22,8 @@ import type {
   StoreInventoryResponse,
 } from "@jingshu/contracts";
 
+import { createBrowserUuid } from "./browser-uuid";
+
 const movementLabels: Record<InventoryMovementResponse["kind"], string> = {
   compensation: "补偿流水",
   receipt: "手工入库",
@@ -97,7 +99,7 @@ function InventoryCommandDialog({
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const idempotencyKeyRef = useRef(crypto.randomUUID());
+  const idempotencyKeyRef = useRef(createBrowserUuid());
   const dialogRef = useRef<HTMLDivElement>(null);
   const firstFieldRef = useRef<HTMLSelectElement>(null);
   const item = inventory.items.find(

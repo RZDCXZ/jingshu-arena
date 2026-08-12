@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { networkInterfaces } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,6 +13,90 @@ const workspaceRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
+
+function isPrivateIpv4(address) {
+  const octets = address.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet))) {
+    return false;
+  }
+  return (
+    octets[0] === 10 ||
+    (octets[0] === 172 && (octets[1] ?? 0) >= 16 && (octets[1] ?? 0) <= 31) ||
+    (octets[0] === 192 && octets[1] === 168)
+  );
+}
+
+function interfacePriority(name) {
+  if (/^(?:docker|br-|veth|virbr|vmnet|utun|tun|tap|tailscale)/iu.test(name)) {
+    return -1;
+  }
+  if (/^en0$/iu.test(name)) return 500;
+  if (/^en\d+$/iu.test(name)) return 450;
+  if (/^(?:wlan|wifi|wl)/iu.test(name)) return 400;
+  if (/^(?:eth|eno|enp)/iu.test(name)) return 350;
+  return 100;
+}
+
+function findPrivateLanAddress(interfaces) {
+  const candidates = [];
+  for (const [name, addresses] of Object.entries(interfaces)) {
+    const priority = interfacePriority(name);
+    if (priority < 0) continue;
+    for (const address of addresses ?? []) {
+      if (
+        address.internal ||
+        (address.family !== "IPv4" && address.family !== 4) ||
+        !isPrivateIpv4(address.address)
+      ) {
+        continue;
+      }
+      candidates.push({ address: address.address, priority });
+    }
+  }
+  candidates.sort((left, right) => right.priority - left.priority);
+  return candidates[0]?.address;
+}
+
+function httpOrigin(host, port) {
+  const formattedHost = host.includes(":") ? `[${host}]` : host;
+  return `http://${formattedHost}:${port}`;
+}
+
+export function resolveDevelopmentNetwork(
+  environment = process.env,
+  interfaces = networkInterfaces(),
+) {
+  const webHost = environment.JINGSHU_WEB_HOST ?? "0.0.0.0";
+  const webPort = environment.JINGSHU_WEB_PORT ?? "3000";
+  const canExposeToNetwork = webHost !== "127.0.0.1" && webHost !== "localhost";
+  const accessHost = canExposeToNetwork
+    ? (environment.JINGSHU_DEV_ACCESS_HOST ??
+      (webHost === "0.0.0.0" || webHost === "::"
+        ? findPrivateLanAddress(interfaces)
+        : webHost))
+    : undefined;
+  const networkWebOrigin = accessHost
+    ? httpOrigin(accessHost, webPort)
+    : undefined;
+  const publicOrigin =
+    environment.PUBLIC_ORIGIN ??
+    networkWebOrigin ??
+    httpOrigin("127.0.0.1", webPort);
+  const allowedWebOrigins = [
+    publicOrigin,
+    httpOrigin("127.0.0.1", webPort),
+    httpOrigin("localhost", webPort),
+    ...(networkWebOrigin ? [networkWebOrigin] : []),
+  ];
+
+  return {
+    allowedWebOrigins: [...new Set(allowedWebOrigins)],
+    ...(networkWebOrigin ? { networkWebOrigin } : {}),
+    publicOrigin,
+    webHost,
+    webPort,
+  };
+}
 
 function spawnProcess(command, args, options = {}) {
   return spawn(command, args, {
@@ -212,17 +297,24 @@ async function migrateDatabase(environment) {
 async function startServices(environment) {
   const apiHost = environment.JINGSHU_API_HOST ?? "127.0.0.1";
   const apiPort = environment.JINGSHU_API_PORT ?? "3001";
-  const webHost = environment.JINGSHU_WEB_HOST ?? "127.0.0.1";
-  const webPort = environment.JINGSHU_WEB_PORT ?? "3000";
-  const webOrigin = environment.PUBLIC_ORIGIN ?? `http://127.0.0.1:${webPort}`;
+  const network = resolveDevelopmentNetwork(environment);
   const apiOrigin =
     environment.JINGSHU_API_ORIGIN ?? `http://127.0.0.1:${apiPort}`;
+  console.log(
+    `Web available on this computer at ${httpOrigin("localhost", network.webPort)}.`,
+  );
+  if (network.networkWebOrigin) {
+    console.log(
+      `Web available to phones on the same network at ${network.networkWebOrigin}.`,
+    );
+  }
   const api = spawnProcess("pnpm", ["--filter", "@jingshu/api", "dev"], {
     env: {
       ...environment,
       JINGSHU_API_HOST: apiHost,
+      JINGSHU_DEV_ALLOWED_ORIGINS: network.allowedWebOrigins.join(","),
       PORT: apiPort,
-      PUBLIC_ORIGIN: webOrigin,
+      PUBLIC_ORIGIN: network.publicOrigin,
     },
   });
   const web = spawnProcess(
@@ -234,13 +326,19 @@ async function startServices(environment) {
       "next",
       "dev",
       "--hostname",
-      webHost,
+      network.webHost,
       "--port",
-      webPort,
+      network.webPort,
     ],
     {
       env: {
         ...environment,
+        ...(network.networkWebOrigin
+          ? {
+              JINGSHU_DEV_ACCESS_HOST: new URL(network.networkWebOrigin)
+                .hostname,
+            }
+          : {}),
         JINGSHU_API_ORIGIN: apiOrigin,
       },
     },

@@ -19,6 +19,7 @@ import type {
   StaffShiftAttendanceResponse,
   StaffShiftAttendanceSummary,
 } from "@jingshu/contracts";
+import { createBrowserUuid } from "./browser-uuid";
 import { StaffHandoverPanel } from "./staff-handover";
 
 function formatDateTime(value: string) {
@@ -371,7 +372,7 @@ export function StaffShiftAttendance({
     ) {
       retryRef.current = {
         action,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: createBrowserUuid(),
         shiftId,
       };
     }

@@ -22,6 +22,7 @@ import type {
   ManagerShiftCoveragePreviewResponse,
 } from "@jingshu/contracts";
 
+import { createBrowserUuid } from "./browser-uuid";
 import { canonicalHeadquartersStores } from "./headquarters-stores";
 import { ManagerHandoverExceptions } from "./staff-handover";
 
@@ -206,7 +207,7 @@ function EmployeeDialog({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const idempotencyKey = useRef(crypto.randomUUID());
+  const idempotencyKey = useRef(createBrowserUuid());
   const dependencies = employee?.dependencies;
   const hasDependencies = Boolean(
     dependencies &&
@@ -411,7 +412,7 @@ function ShiftDialog({
     useState<ManagerShiftCoveragePreviewResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const idempotencyKey = useRef(crypto.randomUUID());
+  const idempotencyKey = useRef(createBrowserUuid());
 
   const runPreview = useCallback(async () => {
     setError("");
@@ -707,7 +708,7 @@ function CancelShiftDialog({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const idempotencyKey = useRef(crypto.randomUUID());
+  const idempotencyKey = useRef(createBrowserUuid());
 
   async function submit() {
     setBusy(true);
@@ -809,7 +810,7 @@ function AttendanceCorrectionDialog({
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const idempotencyKey = useRef(crypto.randomUUID());
+  const idempotencyKey = useRef(createBrowserUuid());
 
   async function submit() {
     if (!reason.trim()) return;

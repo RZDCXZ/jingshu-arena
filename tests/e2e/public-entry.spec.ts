@@ -322,6 +322,32 @@ test("role selection shows creation progress and the versioned three-store world
   expect(page.url()).not.toMatch(/sandbox|token|session/iu);
 });
 
+test("role selection works when LAN HTTP does not expose crypto.randomUUID", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(globalThis.crypto, "randomUUID", {
+      configurable: true,
+      value: undefined,
+    });
+  });
+  await page.route("**/api/v1/public/sandboxes", async (route) => {
+    expect(route.request().headers()["idempotency-key"]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    await route.fulfill({ json: readyWorld, status: 201 });
+  });
+
+  await page.goto("/");
+  await expect(page.evaluate(() => typeof crypto.randomUUID)).resolves.toBe(
+    "undefined",
+  );
+  await page.getByRole("button", { name: /进入顾客演示/u }).click();
+  await expect(
+    page.getByRole("heading", { name: "沙箱已准备完成" }),
+  ).toBeVisible();
+});
+
 test("failed creation keeps the same key for a safe retry", async ({
   page,
 }) => {

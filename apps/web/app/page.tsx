@@ -26,6 +26,7 @@ import type {
 } from "@jingshu/contracts";
 
 import jingshuMark from "../../../product-ui/management-system/design-prototype/public/assets/jingshu-mark.png";
+import { createBrowserUuid } from "./browser-uuid";
 import { publicRoleCards } from "./role-context-model";
 import { RoleContextShell } from "./role-context-shell";
 
@@ -1101,7 +1102,7 @@ export default function PublicEntryPage() {
   }
 
   function startCreation(role: PublicRole) {
-    const key = crypto.randomUUID();
+    const key = createBrowserUuid();
     setCreationKey(key);
     void createSandbox(role, key);
   }

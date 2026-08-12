@@ -78,16 +78,27 @@ packages/domain
 
 ### 局域网真机调试
 
-手机与电脑连接同一局域网时，可在未提交的 `.env.local` 中设置当前电脑的局域网 IP：
+手机与电脑连接同一局域网时，直接运行：
 
-```env
-JINGSHU_WEB_HOST=<computer-lan-ip>
-PUBLIC_ORIGIN=http://<computer-lan-ip>:3000
-JINGSHU_API_HOST=127.0.0.1
-JINGSHU_API_ORIGIN=http://127.0.0.1:3001
+```bash
+pnpm dev
 ```
 
-随后重启 `pnpm dev`，并在手机上访问 `http://<computer-lan-ip>:3000`。Web 会在服务端同源代理 API；API 保持只监听本机回环地址，避免将开发接口直接暴露给局域网。
+启动器默认让 Web 监听 `0.0.0.0`，自动选择物理网卡上的私有 IPv4，并打印类似下面的地址：
+
+```text
+Web available to phones on the same network at http://192.168.1.8:3000.
+```
+
+手机打开该地址即可。API 仍只监听 `127.0.0.1:3001`，由 Web 同源代理访问；开发启动器仅把自动探测的局域网地址和两个回环地址作为精确 Origin 加入本地写请求白名单，生产环境不会接受这些附加 Origin。
+
+如果电脑同时连接了多个网络而自动选择不正确，只需在未提交的 `.env.local` 中指定手机能访问的地址：
+
+```env
+JINGSHU_DEV_ACCESS_HOST=<computer-lan-ip-or-hostname>
+```
+
+如需明确关闭局域网访问，可设置 `JINGSHU_WEB_HOST=127.0.0.1`。`PUBLIC_ORIGIN` 仍可覆盖主要 Origin，但不再需要为了普通局域网真机调试手工修改。
 
 ### 部署实时能力探针
 

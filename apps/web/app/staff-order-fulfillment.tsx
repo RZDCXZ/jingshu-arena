@@ -21,6 +21,8 @@ import type {
   StaffOrderSummaryResponse,
 } from "@jingshu/contracts";
 
+import { createBrowserUuid } from "./browser-uuid";
+
 const statusLabels: Record<CustomerOrderStatus, string> = {
   cancelled: "已取消",
   completed: "已完成",
@@ -563,7 +565,7 @@ export function StaffOrderFulfillment({
         ? previous
         : {
             action,
-            key: crypto.randomUUID(),
+            key: createBrowserUuid(),
             orderId: selectedId,
             ...(reason ? { reason } : {}),
           };
