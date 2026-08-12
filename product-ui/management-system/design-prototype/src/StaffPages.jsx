@@ -132,9 +132,10 @@ export function StaffWorkbench({
       <main className="page-main workbench-main">
         <div className="page-title-row compact-title">
           <div>
+            <span className="eyebrow">现场脉冲</span>
             <h1>
               <Pulse weight="regular" />
-              现场脉冲
+              工作台
             </h1>
             <p>经营日 08月08日 06:00–次日05:59</p>
           </div>
@@ -694,14 +695,23 @@ export function ReservationsPage({
   );
 }
 
-export function OrdersPage({ orderStates, onAdvance, onCancel, readonly }) {
-  const [tab, setTab] = useState("active");
+export function OrdersPage({
+  allOrdersHref,
+  orderStates,
+  onAdvance,
+  onAllOrdersNavigate,
+  onCancel,
+  onLegacyTabChange,
+  qa = new URLSearchParams(),
+  readonly,
+  routeTab,
+}) {
+  const [legacyTab, setLegacyTab] = useState("active");
+  const tab = routeTab || legacyTab;
   const [selectedId, setSelectedId] = useState(orders[0].id);
   const [search, setSearch] = useState("");
   const [stage, setStage] = useState("all");
-  const fixedCommandState = new URLSearchParams(window.location.search).get(
-    "orderCommandState",
-  );
+  const fixedCommandState = qa.get("orderCommandState");
   const [submitting, setSubmitting] = useState(
     fixedCommandState === "processing",
   );
@@ -762,6 +772,16 @@ export function OrdersPage({ orderStates, onAdvance, onCancel, readonly }) {
       setSubmitting(false);
     }, 520);
   }
+
+  function selectTab(nextTab, event) {
+    if (nextTab === "all" && allOrdersHref) {
+      onAllOrdersNavigate?.(event);
+      return;
+    }
+
+    setLegacyTab(nextTab);
+    onLegacyTabChange?.(nextTab);
+  }
   const columns = [
     { key: "time", label: "下单时间" },
     {
@@ -802,8 +822,9 @@ export function OrdersPage({ orderStates, onAdvance, onCancel, readonly }) {
         </div>
         <Tabs
           value={tab}
-          onChange={setTab}
+          onChange={selectTab}
           items={[
+            ["all", "全部订单", orders.length, allOrdersHref],
             ["active", "履约中", 4],
             ["completed", "已完成", 1],
             ["exceptions", "异常终态", 0],
@@ -1563,15 +1584,14 @@ export function ShiftPage({
   onHandoverConfirm,
   handoverConfirmed,
   handoverSubmitted,
+  qa = new URLSearchParams(),
   readonly,
 }) {
   const [tab, setTab] = useState("shift");
   const [handoverNote, setHandoverNote] = useState(
     "A-18 耳机报修待分派；晚高峰到店窗口较集中，请优先关注。",
   );
-  const initialAttendanceState =
-    new URLSearchParams(window.location.search).get("attendanceState") ||
-    "checked-in";
+  const initialAttendanceState = qa.get("attendanceState") || "checked-in";
   const [attendanceState, setAttendanceState] = useState(
     initialAttendanceState === "duplicate"
       ? "checked-in"
@@ -1600,9 +1620,7 @@ export function ShiftPage({
   function submitAttendance() {
     if (attendanceLoading || readonly) return;
     const previousState = attendanceState;
-    const simulatedResult = new URLSearchParams(window.location.search).get(
-      "attendanceResult",
-    );
+    const simulatedResult = qa.get("attendanceResult");
     setAttendanceLoading(true);
     setAttendanceResult(null);
     window.setTimeout(() => {

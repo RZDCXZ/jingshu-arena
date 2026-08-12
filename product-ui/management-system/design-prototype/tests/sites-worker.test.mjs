@@ -41,9 +41,43 @@ test("falls back to index.html for an unknown app route", async () => {
   assert.deepEqual(calls, ["/flow/step-two?source=share", "/index.html"]);
 });
 
+test("serves tracer deep links for HTML GET and HEAD refreshes", async () => {
+  for (const [pathname, method] of [
+    ["/staff/workbench?demoStep=6", "GET"],
+    ["/staff/orders/all?sandboxState=readonly", "HEAD"],
+  ]) {
+    const calls = [];
+    const response = await worker.fetch(
+      new Request(`https://example.test${pathname}`, {
+        headers: { accept: "text/html" },
+        method,
+      }),
+      {
+        ASSETS: {
+          fetch: async (request) => {
+            const url = new URL(request.url);
+            calls.push([request.method, url.pathname + url.search]);
+            return new Response(null, {
+              status: url.pathname === "/index.html" ? 200 : 404,
+            });
+          },
+        },
+      },
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls, [
+      [method, pathname],
+      [method, "/index.html"],
+    ]);
+  }
+});
+
 test("does not turn missing API or write requests into the app shell", async () => {
   for (const request of [
     new Request("https://example.test/api/missing", { headers: { accept: "application/json" } }),
+    new Request("https://example.test/api/missing", { headers: { accept: "text/html" } }),
+    new Request("https://example.test/assets/missing.js", { headers: { accept: "text/html" } }),
     new Request("https://example.test/flow", { method: "POST", headers: { accept: "text/html" } }),
   ]) {
     let calls = 0;

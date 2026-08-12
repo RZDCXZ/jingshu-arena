@@ -22,6 +22,15 @@
 - 纯路由契约 9 项测试覆盖四角色默认落点、静态页、稳定 Tab、对象详情、动态参数编码、父路径替换、小写静态段、无尾斜杠、页面查询允许形状、未知参数移除、重复参数收束和固定查询顺序；清单中的每条非父级规范路径均完成生成后再解析的穷举回归。
 - Chromium 在精确 `1440 × 1024` 验证公开根地址选择店员后以历史替换进入 `/staff/workbench`，历史长度不新增；在精确 `1024 × 768` 验证直接刷新、直接打开 `/staff` 的父路径替换、已有店员上下文访问 `/` 的替换恢复，以及角色人物、门店范围、沙箱业务时钟、主演示入口和数据新鲜度继续可见。两档 `documentElement.scrollWidth <= innerWidth`，进入角色后 warning/error 为 `0`。
 - 搜索引擎元数据由同一浏览器旅程核对：`/` 输出 `index, follow`，`/staff/workbench` 输出 `noindex, nofollow`。Next.js 生产构建列出 `/`、`/staff` 与 `/staff/workbench` 为真实 App Router 静态入口，不使用根页 catch-all 或页面组件各自操作 History。
+
+## Web URL 路由 Ticket 02 正式原型 tracer 证据
+
+- 局部结论：`passed`。本票只验证正式管理端原型 `/staff/workbench` 与 `/staff/orders/all` tracer；选定视觉源继续是 `design/reference/selected-night-operations-console.png`。其余正式原型路由仍待 Ticket 16，整套 `prod.md` 1.20 QA 继续保持 `stale`。
+- `npm run test:routes` 的 5 项纯路由测试通过，覆盖两条规范路径的角色/页面/Tab/标题元数据、`/staff` 与 `/staff/orders` 父路径替换、QA 参数白名单、真实链接修饰键边界，以及集中式 `pushState`、`replaceState`、`popstate` 恢复。
+- `npm run test:routes:browser` 的 3 项 Chromium 测试通过：在精确 `1440 × 1024` 与 `1024 × 768` 直接打开工作台，使用真实侧栏链接进入“全部订单”Tab，刷新后保持订单 Tab，再以后退/前进恢复工作台与订单；两档均确认地址、浏览器标题、`h1`、侧栏 `aria-current`、Tab `aria-selected` 同步，`documentElement.scrollWidth <= innerWidth`，控制台 warning/error 为 `0`。
+- QA 兼容测试直接打开 `/staff/orders?demoStep=6&sandboxState=readonly&role=hq&storeCode=other`，地址以历史替换规范化为 `/staff/orders/all?demoStep=6&sandboxState=readonly`，只读设计状态仍可固定，角色与门店输入被移除且没有改变原型角色或权限。
+- 双视口实现证据：[工作台 1440 × 1024](design/implementation-web-url-routing-02-workbench-1440x1024.png)、[工作台 1024 × 768](design/implementation-web-url-routing-02-workbench-1024x768.png)、[全部订单 1440 × 1024](design/implementation-web-url-routing-02-orders-1440x1024.png)、[全部订单 1024 × 768](design/implementation-web-url-routing-02-orders-1024x768.png)。人工对照选定视觉源确认布局、密度、深色层级、青柠主操作和响应式侧栏没有路由引入的视觉回归；工作台仅把规范 `h1` 调整为“工作台”，原“现场脉冲”保留为眉题。
+- `npm run build` 通过并生成 `dist/client/index.html`、`dist/server/index.js`、`dist/.openai/hosting.json`；`npm run test:sites` 的 5 项测试通过，覆盖已有资源直出、HTML `GET/HEAD` tracer 深链回退，以及缺失资源、API、非 HTML 与写请求保持原始 `404`。
 - 共享角色壳完整 Chromium 回归覆盖工作台、角色切换、跨标签失效、SSE/轮询、业务时间、重置、只读降级和既有业务表面；本票曾发现非店员角色过渡会过早卸载弹窗与焦点，现改为在尚未迁移的角色继续使用旧根表面时原位历史替换，店员规范路由保持真实 App Router。最终没有本票范围内未解决的 P0、P1 或 P2 路由、视觉或交互问题。
 - 门禁命令：`pnpm lint`、`pnpm typecheck`、`pnpm format:check`、`pnpm --filter @jingshu/web build`、`pnpm exec vitest run --config vitest.unit.config.ts apps/web/app/web-route-contract.test.ts` 和 `pnpm exec playwright test tests/e2e/role-context-shell.spec.ts`。
 

@@ -61,6 +61,7 @@ import {
   TimeAdvanceModal,
 } from "./SharedViews.jsx";
 import { Brand, Button, IconButton, StatusPill, Toast } from "./ui.jsx";
+import { usePrototypeRouter } from "./usePrototypeRouter.js";
 
 const navIcons = {
   workbench: Pulse,
@@ -96,20 +97,17 @@ const freshnessMeta = {
   rate: ["限流恢复", "warning"],
 };
 
-function initialDemoStep() {
-  const value = Number.parseInt(
-    new URLSearchParams(window.location.search).get("demoStep") ?? "",
-    10,
-  );
+function initialDemoStep(qa) {
+  const value = Number.parseInt(qa.get("demoStep") ?? "", 10);
   return value >= 1 && value <= 12 ? value : 3;
 }
 
 export function App() {
-  const initialSandboxState = new URLSearchParams(window.location.search).get(
-    "sandboxState",
-  );
-  const [role, setRole] = useState("staff");
-  const [page, setPage] = useState("workbench");
+  const { route, router } = usePrototypeRouter();
+  const qa = route.qa;
+  const initialSandboxState = qa.get("sandboxState");
+  const [legacyRole, setLegacyRole] = useState("staff");
+  const [legacyPage, setLegacyPage] = useState("workbench");
   const [publicView, setPublicView] = useState(false);
   const [customerHandoff, setCustomerHandoff] = useState(false);
   const [initializingRole, setInitializingRole] = useState(null);
@@ -120,9 +118,7 @@ export function App() {
   const [repairStates, setRepairStates] = useState({});
   const [repairSpareStates, setRepairSpareStates] = useState({});
   const [repairVerificationEvidence, setRepairVerificationEvidence] = useState({});
-  const initialHandoverState = new URLSearchParams(window.location.search).get(
-    "handoverState",
-  );
+  const initialHandoverState = qa.get("handoverState");
   const [handoverSubmitted, setHandoverSubmitted] = useState(
     initialHandoverState === "submitted" ||
       initialHandoverState === "confirmed",
@@ -130,9 +126,9 @@ export function App() {
   const [handoverConfirmed, setHandoverConfirmed] = useState(
     initialHandoverState === "confirmed",
   );
-  const [demoStep, setDemoStep] = useState(initialDemoStep);
+  const [demoStep, setDemoStep] = useState(() => initialDemoStep(qa));
   const [businessTime, setBusinessTime] = useState(
-    new URLSearchParams(window.location.search).get("businessTime") || "19:30",
+    qa.get("businessTime") || "19:30",
   );
   const [dataMode, setDataMode] = useState(
     ["readonly", "stale", "expired", "reset", "rate"].includes(
@@ -157,6 +153,8 @@ export function App() {
   const [queueFilter, setQueueFilter] = useState("");
   const blockingReturnFocusRef = useRef(null);
 
+  const role = route.matched ? route.role : legacyRole;
+  const page = route.matched ? route.page : legacyPage;
   const meta = roleMeta[role];
   const readonly = dataMode === "readonly";
   const blocking =
@@ -184,8 +182,34 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [dataMode, rateRetrySeconds]);
 
-  function navigate(nextPage) {
-    setPage(nextPage);
+  function leaveTracerAt(nextRole, nextPage, options) {
+    setLegacyRole(nextRole);
+    setLegacyPage(nextPage);
+    router.leaveTracer(options);
+  }
+
+  function navigate(nextPage, options) {
+    const routeKey =
+      role === "staff" && nextPage === "workbench"
+        ? "staff.workbench"
+        : role === "staff" && nextPage === "orders"
+          ? "staff.orders.all"
+          : null;
+
+    if (routeKey) {
+      router.navigate(routeKey, options);
+      return;
+    }
+
+    leaveTracerAt(role, nextPage, options);
+  }
+
+  function showPublicEntry() {
+    setPublicView(true);
+    setCustomerHandoff(false);
+    setLegacyRole("staff");
+    setLegacyPage("workbench");
+    if (route.matched) router.leaveTracer();
   }
 
   function createSandbox(nextRole) {
@@ -200,8 +224,12 @@ export function App() {
         setCustomerHandoff(true);
         return;
       }
-      setRole(nextRole);
-      setPage(roleMeta[nextRole].defaultPage);
+      const nextPage = roleMeta[nextRole].defaultPage;
+      if (nextRole === "staff" && nextPage === "workbench") {
+        router.navigate("staff.workbench", { replace: true });
+      } else {
+        leaveTracerAt(nextRole, nextPage, { replace: true });
+      }
       setToast({
         tone: "success",
         text: `${roleMeta[nextRole].label}视图已准备完成`,
@@ -216,8 +244,12 @@ export function App() {
       setCustomerHandoff(true);
       return;
     }
-    setRole(nextRole);
-    setPage(roleMeta[nextRole].defaultPage);
+    const nextPage = roleMeta[nextRole].defaultPage;
+    if (nextRole === "staff" && nextPage === "workbench") {
+      router.navigate("staff.workbench", { replace: true });
+    } else {
+      leaveTracerAt(nextRole, nextPage, { replace: true });
+    }
     setToast({
       tone: "info",
       text: `已切换为${roleMeta[nextRole].persona} · ${roleMeta[nextRole].label}`,
@@ -346,8 +378,13 @@ export function App() {
       12: [role, page],
     };
     const [targetRole, targetPage] = targets[step] || [role, page];
-    setRole(targetRole);
-    setPage(targetPage);
+    if (targetRole === "staff" && targetPage === "workbench") {
+      router.navigate("staff.workbench");
+    } else if (targetRole === "staff" && targetPage === "orders") {
+      router.navigate("staff.orders.all");
+    } else {
+      leaveTracerAt(targetRole, targetPage);
+    }
     if (step === 7) {
       setTimeResult(null);
       setOverlay("time");
@@ -450,10 +487,19 @@ export function App() {
       if (page === "orders")
         return (
           <OrdersPage
+            allOrdersHref={router.href("staff.orders.all")}
             orderStates={orderStates}
             onAdvance={handleOrderAdvance}
+            onAllOrdersNavigate={(event) =>
+              router.handleLink(event, "staff.orders.all")
+            }
             onCancel={handleOrderCancel}
+            onLegacyTabChange={() => {
+              if (route.matched) leaveTracerAt("staff", "orders");
+            }}
+            qa={qa}
             readonly={readonly}
+            routeTab={route.key === "staff.orders.all" ? route.tab : null}
           />
         );
       if (page === "repairs")
@@ -474,6 +520,7 @@ export function App() {
       if (page === "shift")
         return (
           <ShiftPage
+            qa={qa}
             readonly={readonly}
             handoverConfirmed={handoverConfirmed}
             handoverSubmitted={handoverSubmitted}
@@ -497,6 +544,7 @@ export function App() {
       if (page === "live-ops")
         return (
           <ManagerLiveOps
+            qa={qa}
             tab={liveOpsTab}
             onTab={setLiveOpsTab}
             reservationStatus={reservationStatus}
@@ -576,6 +624,10 @@ export function App() {
     handoverConfirmed,
     handoverSubmitted,
     queueFilter,
+    route.key,
+    route.tab,
+    qa,
+    router,
   ]);
 
   if (capacityReadonly)
@@ -584,7 +636,7 @@ export function App() {
         onRetry={() => createSandbox(capacityRole)}
         onReturn={() => {
           setCapacityReadonly(false);
-          setPublicView(true);
+          showPublicEntry();
         }}
       />
     );
@@ -594,7 +646,7 @@ export function App() {
       <CustomerHandoff
         onBack={() => {
           setCustomerHandoff(false);
-          setPublicView(true);
+          showPublicEntry();
         }}
         onStaff={() => createSandbox("staff")}
       />
@@ -606,8 +658,7 @@ export function App() {
         onExplore={() => {
           setPublicView(false);
           setDataMode("readonly");
-          setRole("staff");
-          setPage("workbench");
+          router.navigate("staff.workbench", { replace: true });
         }}
       />
     );
@@ -618,7 +669,7 @@ export function App() {
     >
       <header className="app-topbar" {...blockedBackgroundProps}>
         <div className="topbar-brand">
-          <Brand onClick={() => setPublicView(true)} />
+          <Brand onClick={showPublicEntry} />
           <span className="demo-chip">演示数据</span>
           <span className="business-day">
             经营日&nbsp; 08月08日 06:00–次日05:59
@@ -797,11 +848,33 @@ export function App() {
           <nav aria-label={`${meta.label}导航`}>
             {meta.nav.map(([id, label]) => {
               const Icon = navIcons[id] || House;
+              const routeKey =
+                role === "staff" && id === "workbench"
+                  ? "staff.workbench"
+                  : role === "staff" && id === "orders"
+                    ? "staff.orders.all"
+                    : null;
+
+              if (routeKey)
+                return (
+                  <a
+                    aria-current={page === id ? "page" : undefined}
+                    className={page === id ? "is-active" : ""}
+                    data-tooltip={label}
+                    href={router.href(routeKey)}
+                    key={id}
+                    onClick={(event) => router.handleLink(event, routeKey)}
+                  >
+                    <Icon weight="regular" />
+                    <span>{label}</span>
+                  </a>
+                );
+
               return (
                 <button
                   key={id}
                   className={page === id ? "is-active" : ""}
-                  onClick={() => setPage(id)}
+                  onClick={() => navigate(id)}
                   data-tooltip={label}
                 >
                   <Icon weight="regular" />
@@ -841,8 +914,8 @@ export function App() {
         {...blockedBackgroundProps}
         onClick={() =>
           role === "hq"
-            ? setPage("store-compare")
-            : setPage(role === "manager" ? "manager-inventory" : "inventory")
+            ? navigate("store-compare")
+            : navigate(role === "manager" ? "manager-inventory" : "inventory")
         }
       >
         <span>
@@ -875,25 +948,19 @@ export function App() {
           businessTime={businessTime}
           loading={timeLoading}
           result={timeResult}
-          scenario={
-            new URLSearchParams(window.location.search).get("timeState") ||
-            "ready"
-          }
+          scenario={qa.get("timeState") || "ready"}
           onClose={() => setOverlay(null)}
           onAdvance={advanceTime}
         />
       )}
       {overlay === "reset" && (
         <ResetModal
-          error={
-            new URLSearchParams(window.location.search).get("resetState") ===
-            "error"
-          }
+          error={qa.get("resetState") === "error"}
           loading={resetLoading}
           result={resetResult}
           onClose={() => {
             setOverlay(null);
-            if (resetResult) setPublicView(true);
+            if (resetResult) showPublicEntry();
           }}
           onReset={resetSandbox}
         />
@@ -979,6 +1046,7 @@ export function App() {
 }
 
 function ManagerLiveOps({
+  qa,
   tab,
   onTab,
   reservationStatus,
@@ -1037,6 +1105,7 @@ function ManagerLiveOps({
             orderStates={orderStates}
             onAdvance={onOrderAdvance}
             onCancel={onOrderCancel}
+            qa={qa}
             readonly={readonly}
           />
         )}

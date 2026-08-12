@@ -166,17 +166,34 @@ export function Tabs({ items, value, onChange, ariaLabel = "页面分段" }) {
   return (
     <div className="tabs" role="tablist" aria-label={ariaLabel}>
       {items.map((item) => {
-        const [id, label, count] = item;
-        return (
-          <button
-            key={id}
-            role="tab"
-            aria-selected={value === id}
-            className={value === id ? "is-active" : ""}
-            onClick={() => onChange(id)}
-          >
+        const [id, label, count, href] = item;
+        const children = (
+          <>
             {label}
             {count !== undefined && <span>{count}</span>}
+          </>
+        );
+
+        return href ? (
+          <a
+            aria-selected={value === id}
+            className={value === id ? "is-active" : ""}
+            href={href}
+            key={id}
+            onClick={(event) => onChange(id, event)}
+            role="tab"
+          >
+            {children}
+          </a>
+        ) : (
+          <button
+            aria-selected={value === id}
+            className={value === id ? "is-active" : ""}
+            key={id}
+            onClick={(event) => onChange(id, event)}
+            role="tab"
+          >
+            {children}
           </button>
         );
       })}

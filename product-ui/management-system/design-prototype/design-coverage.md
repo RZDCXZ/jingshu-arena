@@ -44,6 +44,15 @@
 - 根地址显式保持 `index, follow`，店员命名空间由共享布局统一输出 `noindex, nofollow`。规范路由自动化覆盖生成/解析、父路径替换、动态对象参数、小写静态段、无尾斜杠、未知查询移除和固定查询顺序。
 - 本票没有改变夜间运营控制台的页面职责、视觉层级或响应式策略。其余顾客、店员业务页、店长、总部、深链守卫和完整历史导航仍属于后续 ticket；因此本文件顶部的整套四角色路由状态继续保持“待实现与 QA”。
 
+#### Web URL 路由 Ticket 02 正式原型 tracer
+
+- 正式管理端原型已新增单一轻量 History 路由入口：纯路由契约集中解析、生成并规范化 `/staff/workbench` 与店员商品订单默认 Tab `/staff/orders/all`，React 适配层统一封装 `pushState`、父路径 `replaceState` 和 `popstate` 恢复；页面组件不直接读写 History。
+- 店员侧栏的工作台与商品订单入口、商品订单“全部订单”Tab 使用带真实 `href` 的语义化链接，普通点击新增浏览历史，同时保留 Cmd/Ctrl 点击、新标签打开和复制地址能力。URL 控制角色、一级页面和本票稳定 Tab；刷新、直接打开、后退和前进恢复同一工作区。
+- `/staff` 与 `/staff/orders` 分别替换到唯一默认地址 `/staff/workbench` 与 `/staff/orders/all`。两个 tracer 路由同步浏览器标题、页面主标题、侧栏 `aria-current` 与 Tab `aria-selected`；工作台原“现场脉冲”保留为眉题，规范页面主标题统一为“工作台”。
+- 原型 QA 参数由集中式白名单接收：`attendanceResult`、`attendanceState`、`businessTime`、`demoStep`、`handoverState`、`orderCommandState`、`resetState`、`sandboxState`、`timeState`。导航保留这些参数并移除 `role`、`storeCode`、`permission` 等非 QA 输入；参数不声明角色、门店、权限或生产业务状态。
+- Sites Worker 只对缺失的 HTML `GET/HEAD` 页面导航回退 `index.html`，店员 tracer 深链可直接刷新；存在的静态资源继续直接返回，缺失资源、`/api/*`、非 HTML 和写请求保持原始 `404`。
+- 本票仅建立工作台与一个稳定 Tab 的正式原型 tracer；其余店员、店长、总部页面、稳定 Tab 和详情仍由 Ticket 16 迁移，因此本文件顶部整套四角色路由状态继续保持“待实现与 QA”。局部构建、History、Sites 与双视口证据记录在 `design-qa.md`。
+
 #### Ticket 03 生产接线
 
 - `WEB-G00` 已接入 `apps/web` 根路由：覆盖未创建沙箱、桌面端只读了解、四角色明确选择及顾客推荐起点；公开地址不承载沙箱标识或会话能力。

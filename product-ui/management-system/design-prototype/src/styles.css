@@ -90,6 +90,12 @@ button {
   cursor: pointer;
 }
 
+a {
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
@@ -462,7 +468,8 @@ time,
   border-bottom: 1px solid var(--line);
 }
 
-.tabs button {
+.tabs button,
+.tabs a {
   align-self: stretch;
   position: relative;
   display: flex;
@@ -473,7 +480,8 @@ time,
   font-size: 13px;
 }
 
-.tabs button::after {
+.tabs button::after,
+.tabs a::after {
   content: "";
   height: 2px;
   position: absolute;
@@ -483,15 +491,18 @@ time,
   background: transparent;
 }
 
-.tabs button.is-active {
+.tabs button.is-active,
+.tabs a.is-active {
   color: var(--text);
 }
 
-.tabs button.is-active::after {
+.tabs button.is-active::after,
+.tabs a.is-active::after {
   background: var(--lime);
 }
 
-.tabs button span {
+.tabs button span,
+.tabs a span {
   min-width: 18px;
   padding: 1px 6px;
   border-radius: 999px;
@@ -1280,7 +1291,8 @@ button.metric-card:hover {
   padding: 4px 12px;
   transition: padding 190ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.sidebar nav button {
+.sidebar nav button,
+.sidebar nav a {
   min-height: 50px;
   position: relative;
   display: flex;
@@ -1297,7 +1309,8 @@ button.metric-card:hover {
     background-color 140ms ease,
     color 140ms ease;
 }
-.sidebar nav button span {
+.sidebar nav button span,
+.sidebar nav a span {
   max-width: 126px;
   overflow: hidden;
   opacity: 1;
@@ -1308,19 +1321,23 @@ button.metric-card:hover {
     transform 170ms ease;
   white-space: nowrap;
 }
-.sidebar nav button svg {
+.sidebar nav button svg,
+.sidebar nav a svg {
   width: 21px;
   height: 21px;
 }
-.sidebar nav button:hover {
+.sidebar nav button:hover,
+.sidebar nav a:hover {
   background: var(--surface);
   color: var(--text);
 }
-.sidebar nav button.is-active {
+.sidebar nav button.is-active,
+.sidebar nav a.is-active {
   background: #15252f;
   color: var(--lime);
 }
-.sidebar nav button.is-active::after {
+.sidebar nav button.is-active::after,
+.sidebar nav a.is-active::after {
   content: "";
   width: 3px;
   position: absolute;
@@ -1335,7 +1352,8 @@ button.metric-card:hover {
     opacity 120ms ease,
     transform 170ms ease;
 }
-.sidebar nav button[data-tooltip]::before {
+.sidebar nav button[data-tooltip]::before,
+.sidebar nav a[data-tooltip]::before {
   content: attr(data-tooltip);
   position: absolute;
   z-index: 90;
@@ -1433,18 +1451,21 @@ button.metric-card:hover {
 .sidebar-collapsed .sidebar nav {
   padding-inline: 8px;
 }
-.sidebar-collapsed .sidebar nav button {
+.sidebar-collapsed .sidebar nav button,
+.sidebar-collapsed .sidebar nav a {
   justify-content: center;
   gap: 0;
   padding: 0;
 }
 .sidebar-collapsed .sidebar nav button span,
+.sidebar-collapsed .sidebar nav a span,
 .sidebar-collapsed .sandbox-life span {
   max-width: 0;
   opacity: 0;
   transform: translateX(-8px);
 }
-.sidebar-collapsed .sidebar nav button.is-active::after {
+.sidebar-collapsed .sidebar nav button.is-active::after,
+.sidebar-collapsed .sidebar nav a.is-active::after {
   opacity: 0;
   transform: scaleY(0.45);
 }
@@ -1461,7 +1482,9 @@ button.metric-card:hover {
   margin-inline: auto;
 }
 .sidebar-collapsed .sidebar nav button[data-tooltip]:hover::before,
-.sidebar-collapsed .sidebar nav button[data-tooltip]:focus-visible::before {
+.sidebar-collapsed .sidebar nav button[data-tooltip]:focus-visible::before,
+.sidebar-collapsed .sidebar nav a[data-tooltip]:hover::before,
+.sidebar-collapsed .sidebar nav a[data-tooltip]:focus-visible::before {
   opacity: 1;
   transform: translate(0, -50%);
 }
@@ -2220,8 +2243,11 @@ button.metric-card:hover {
   .sidebar-context-copy,
   .sidebar nav,
   .sidebar nav button,
+  .sidebar nav a,
   .sidebar nav button span,
+  .sidebar nav a span,
   .sidebar nav button.is-active::after,
+  .sidebar nav a.is-active::after,
   .sidebar-footer,
   .sandbox-life > span {
     transition-duration: 0.01ms !important;
@@ -4263,7 +4289,8 @@ progress::-webkit-progress-value {
   .app-body {
     grid-template-columns: 184px minmax(0, 1fr);
   }
-  .sidebar nav button {
+  .sidebar nav button,
+  .sidebar nav a {
     font-size: 12px;
   }
   .hero-task {
@@ -4320,17 +4347,20 @@ progress::-webkit-progress-value {
   }
   .sidebar-context > span:last-child,
   .sidebar nav button span,
+  .sidebar nav a span,
   .sandbox-life span {
     display: none;
   }
   .sidebar nav {
     padding-inline: 8px;
   }
-  .sidebar nav button {
+  .sidebar nav button,
+  .sidebar nav a {
     justify-content: center;
     padding: 0;
   }
-  .sidebar nav button.is-active::after {
+  .sidebar nav button.is-active::after,
+  .sidebar nav a.is-active::after {
     right: -8px;
   }
   .sidebar-footer {
@@ -4342,7 +4372,9 @@ progress::-webkit-progress-value {
     padding: 0;
   }
   .sidebar nav button[data-tooltip]:hover::before,
-  .sidebar nav button[data-tooltip]:focus-visible::before {
+  .sidebar nav button[data-tooltip]:focus-visible::before,
+  .sidebar nav a[data-tooltip]:hover::before,
+  .sidebar nav a[data-tooltip]:focus-visible::before {
     opacity: 1;
     transform: translate(0, -50%);
   }
@@ -4415,10 +4447,12 @@ progress::-webkit-progress-value {
   .app-body {
     grid-template-columns: 58px minmax(0, 1fr);
   }
-  .sidebar nav button {
+  .sidebar nav button,
+  .sidebar nav a {
     min-height: 46px;
   }
-  .sidebar nav button svg {
+  .sidebar nav button svg,
+  .sidebar nav a svg {
     width: 19px;
     height: 19px;
   }
