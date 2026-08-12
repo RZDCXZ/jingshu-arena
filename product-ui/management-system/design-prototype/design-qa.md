@@ -16,6 +16,17 @@
 - 待验证跨标签角色变化、切换结果未知、规范大小写/尾斜杠/查询顺序，以及立即筛选、输入法组合与防抖搜索、复杂筛选草稿和应用之间的 URL 时机。
 - 在上述生产实现、正式设计参考和自动化证据完成前，本文件不得恢复为 `current`，既有 1.19 结论不能作为 1.20 路由行为已交付的证据。
 
+## Web URL 路由 Ticket 01 生产基础证据
+
+- 本票只完成生产规范路由清单与店员工作台 tracer；选定视觉源继续是 `design/reference/selected-night-operations-console.png`，没有改变工作台页面职责、信息层级、颜色、密度、组件外观或响应式策略。整套 1.20 路由 QA 仍为 `stale`，不能用本段局部证据宣称全部四角色已经交付。
+- 纯路由契约 9 项测试覆盖四角色默认落点、静态页、稳定 Tab、对象详情、动态参数编码、父路径替换、小写静态段、无尾斜杠、页面查询允许形状、未知参数移除、重复参数收束和固定查询顺序；清单中的每条非父级规范路径均完成生成后再解析的穷举回归。
+- Chromium 在精确 `1440 × 1024` 验证公开根地址选择店员后以历史替换进入 `/staff/workbench`，历史长度不新增；在精确 `1024 × 768` 验证直接刷新、直接打开 `/staff` 的父路径替换、已有店员上下文访问 `/` 的替换恢复，以及角色人物、门店范围、沙箱业务时钟、主演示入口和数据新鲜度继续可见。两档 `documentElement.scrollWidth <= innerWidth`，进入角色后 warning/error 为 `0`。
+- 搜索引擎元数据由同一浏览器旅程核对：`/` 输出 `index, follow`，`/staff/workbench` 输出 `noindex, nofollow`。Next.js 生产构建列出 `/`、`/staff` 与 `/staff/workbench` 为真实 App Router 静态入口，不使用根页 catch-all 或页面组件各自操作 History。
+- 共享角色壳完整 Chromium 回归覆盖工作台、角色切换、跨标签失效、SSE/轮询、业务时间、重置、只读降级和既有业务表面；本票曾发现非店员角色过渡会过早卸载弹窗与焦点，现改为在尚未迁移的角色继续使用旧根表面时原位历史替换，店员规范路由保持真实 App Router。最终没有本票范围内未解决的 P0、P1 或 P2 路由、视觉或交互问题。
+- 门禁命令：`pnpm lint`、`pnpm typecheck`、`pnpm format:check`、`pnpm --filter @jingshu/web build`、`pnpm exec vitest run --config vitest.unit.config.ts apps/web/app/web-route-contract.test.ts` 和 `pnpm exec playwright test tests/e2e/role-context-shell.spec.ts`。
+
+final result: passed（仅 Ticket 01；1.20 整体仍 stale）
+
 ## 局域网 HTTP 真机兼容性回归
 
 - 本轮不改变 `prod.md` 的页面职责、状态、业务规则或 `design-coverage.md` 的旅程覆盖；修复的是公开入口及后续全部 Web 命令在局域网 HTTP 非安全上下文中的幂等键生成能力。原生 `crypto.randomUUID()` 可用时继续使用原生实现；不可用时通过浏览器 `crypto.getRandomValues()` 生成符合版本位和变体位约束的 UUID v4，仍满足“失败后复用原幂等键”的契约。

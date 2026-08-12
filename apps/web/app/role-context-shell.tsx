@@ -278,12 +278,14 @@ function ContextPage({
 
 export function RoleContextShell({
   context,
+  initialPage,
   onContextChange,
   onContextRequired,
   onContextUnavailable,
   onServiceUnavailable,
 }: {
   context: RoleContextReadyResponse;
+  initialPage?: RolePageId;
   onContextChange: (context: RoleContextReadyResponse) => void;
   onContextRequired: () => void;
   onContextUnavailable: (reason: SandboxEndReason) => void;
@@ -293,7 +295,7 @@ export function RoleContextShell({
   }) => void;
 }) {
   const [activePage, setActivePage] = useState<RolePageId>(
-    roleMeta[context.role.id].defaultPage,
+    initialPage ?? roleMeta[context.role.id].defaultPage,
   );
   const [filter, setFilter] = useState("");
   const [reservationFiltersDirty, setReservationFiltersDirty] = useState(false);
@@ -389,7 +391,7 @@ export function RoleContextShell({
 
   useEffect(() => {
     const storyPage = storyPageAfterSwitchRef.current;
-    setActivePage(roleMeta[context.role.id].defaultPage);
+    setActivePage(initialPage ?? roleMeta[context.role.id].defaultPage);
     if (storyPage?.role === context.role.id) {
       setActivePage(storyPage.page);
       storyPageAfterSwitchRef.current = null;
@@ -398,7 +400,7 @@ export function RoleContextShell({
     setReservationFiltersDirty(false);
     setReservationPreset({});
     setManagerLiveMode("workbench");
-  }, [context.role.id]);
+  }, [context.role.id, initialPage]);
 
   useEffect(() => {
     if (activePage !== "live-ops") setManagerLiveMode("workbench");

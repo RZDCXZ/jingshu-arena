@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import {
@@ -27,8 +28,13 @@ import type {
 
 import jingshuMark from "../../../product-ui/management-system/design-prototype/public/assets/jingshu-mark.png";
 import { createBrowserUuid } from "./browser-uuid";
+import {
+  requestExistingRoleContext,
+  SANDBOX_RECOVERY_ROLE_KEY,
+} from "./role-context-client";
 import { publicRoleCards } from "./role-context-model";
 import { RoleContextShell } from "./role-context-shell";
+import { roleHomePath } from "./web-route-contract";
 
 const REQUEST_TIMEOUT_MS = 8_000;
 const roles = publicRoleCards;
@@ -96,30 +102,6 @@ function retryAfterSeconds(response: Response) {
   const retryAt = retryAfter ? Date.parse(retryAfter) : Number.NaN;
   if (!Number.isFinite(retryAt)) return 15;
   return Math.min(300, Math.max(1, Math.ceil((retryAt - Date.now()) / 1_000)));
-}
-
-async function requestExistingRoleContext(signal?: AbortSignal) {
-  let response = await fetch("/api/v1/demo/context", {
-    cache: "no-store",
-    credentials: "same-origin",
-    ...(signal ? { signal } : {}),
-  });
-  let payload: unknown = await response.json().catch(() => null);
-  const apiError = payload as ApiErrorResponse | null;
-
-  if (!response.ok && apiError?.error?.code === "ROLE_CONTEXT_STALE") {
-    response = await fetch("/api/v1/demo/context/refresh", {
-      body: JSON.stringify({ mode: "canonical" }),
-      cache: "no-store",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      method: "POST",
-      ...(signal ? { signal } : {}),
-    });
-    payload = await response.json().catch(() => null);
-  }
-
-  return { payload, response };
 }
 
 function Brand() {
@@ -684,7 +666,7 @@ function RateLimitedView({
   );
 }
 
-function ReadonlySeedSnapshot({
+export function ReadonlySeedSnapshot({
   failure,
   mode = "service",
   onRetry,
@@ -804,7 +786,7 @@ function ReadonlySeedSnapshot({
   );
 }
 
-function SandboxEndedView({
+export function SandboxEndedView({
   onCreate,
   onReturn,
   reason,
@@ -856,6 +838,7 @@ function SandboxEndedView({
 }
 
 export default function PublicEntryPage() {
+  const router = useRouter();
   const [stage, setStage] = useState<CreationStage>("checking");
   const [selectedRole, setSelectedRole] = useState<PublicRole>("customer");
   const [creationKey, setCreationKey] = useState("");
@@ -870,6 +853,7 @@ export default function PublicEntryPage() {
   const [rateLimitRetryTarget, setRateLimitRetryTarget] = useState<
     "context" | "sandbox"
   >("context");
+  const recoveryCreationStartedRef = useRef(false);
 
   const showRateLimited = useCallback(
     (
@@ -892,6 +876,24 @@ export default function PublicEntryPage() {
   );
 
   useEffect(() => {
+    const requestedRecoveryRole = window.sessionStorage.getItem(
+      SANDBOX_RECOVERY_ROLE_KEY,
+    );
+    if (
+      recoveryCreationStartedRef.current ||
+      requestedRecoveryRole === "customer" ||
+      requestedRecoveryRole === "staff" ||
+      requestedRecoveryRole === "manager" ||
+      requestedRecoveryRole === "hq"
+    ) {
+      if (!recoveryCreationStartedRef.current && requestedRecoveryRole) {
+        recoveryCreationStartedRef.current = true;
+        window.sessionStorage.removeItem(SANDBOX_RECOVERY_ROLE_KEY);
+        startCreation(requestedRecoveryRole as PublicRole);
+      }
+      return undefined;
+    }
+
     let active = true;
     const controller = new AbortController();
 
@@ -932,6 +934,10 @@ export default function PublicEntryPage() {
         if (context.status !== "ready") {
           throw new Error("The role-context response was incomplete.");
         }
+        if (context.role.id === "staff") {
+          router.replace(roleHomePath(context.role.id));
+          return;
+        }
         setSelectedRole(context.role.id);
         setRoleContext(context);
         setStage("shell");
@@ -946,7 +952,7 @@ export default function PublicEntryPage() {
       active = false;
       controller.abort();
     };
-  }, [showRateLimited]);
+  }, [router, showRateLimited]);
 
   async function enterRoleContext() {
     setStage("checking");
@@ -985,6 +991,10 @@ export default function PublicEntryPage() {
       const context = payload as RoleContextReadyResponse;
       if (context.status !== "ready") {
         throw new Error("The role-context response was incomplete.");
+      }
+      if (context.role.id === "staff") {
+        router.replace(roleHomePath(context.role.id));
+        return;
       }
       setSelectedRole(context.role.id);
       setRoleContext(context);

@@ -4877,6 +4877,79 @@ test("repair spares, resolution, independent failure retry, and close remain sta
   );
 });
 
+test("staff root and direct workbench use the canonical App Router path and shared role layout", async ({
+  page,
+}) => {
+  const browserErrors: string[] = [];
+  let collectBrowserErrors = false;
+  page.on("console", (message) => {
+    if (
+      collectBrowserErrors &&
+      (message.type() === "error" || message.type() === "warning")
+    ) {
+      browserErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => {
+    if (collectBrowserErrors) browserErrors.push(error.message);
+  });
+  await page.setViewportSize({ height: 1024, width: 1440 });
+  await page.goto("/");
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
+    "content",
+    /index, follow/u,
+  );
+  await page.getByRole("button", { name: /进入店员演示/u }).click();
+  await expect(
+    page.getByRole("heading", { name: "沙箱已准备完成" }),
+  ).toBeVisible();
+  collectBrowserErrors = true;
+
+  const historyLength = await page.evaluate(() => window.history.length);
+  await page.getByRole("button", { name: "进入店员视图" }).click();
+  await expect(page).toHaveURL(/\/staff\/workbench$/u);
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+  await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
+  await expect(page.getByText("主演示", { exact: true })).toBeVisible();
+  await expect(page.getByText("上海业务时钟", { exact: false })).toBeVisible();
+  await expect(
+    page.getByRole("status", { name: /数据更新状态/u }),
+  ).toBeVisible();
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
+    "content",
+    /noindex, nofollow/u,
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await page.reload();
+  await expect(page).toHaveURL(/\/staff\/workbench$/u);
+  await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "周宁 店员 棱镜旗舰店，打开角色切换",
+    }),
+  ).toBeVisible();
+
+  await page.goto("/staff");
+  await expect(page).toHaveURL(/\/staff\/workbench$/u);
+  await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
+
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/staff\/workbench$/u);
+  await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  expect(browserErrors).toEqual([]);
+});
+
 test("shared shell exposes the signed persona, role, scope, lifecycle, and freshness", async ({
   page,
 }) => {

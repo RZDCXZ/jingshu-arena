@@ -6,6 +6,10 @@ import "./styles.css";
 
 export const metadata: Metadata = {
   description: "电竞场馆预约与运营协同演示",
+  robots: {
+    follow: true,
+    index: true,
+  },
   title: "竞枢 · Jingshu Arena",
 };
 
