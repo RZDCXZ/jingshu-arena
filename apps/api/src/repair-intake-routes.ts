@@ -52,6 +52,8 @@ import {
   isRoleContextStale,
   isRoleContextUnavailable,
   recordRoleContextDenial,
+  roleContextUnavailableBody,
+  type AppEnvironment,
   type AppServices,
 } from "./route-support.js";
 
@@ -105,8 +107,8 @@ function repairFailure(error: unknown, requestId: string) {
   }
   if (isRoleContextUnavailable(error)) {
     return {
-      body: errorBody(
-        "ROLE_CONTEXT_UNAVAILABLE",
+      body: roleContextUnavailableBody(
+        error,
         "当前演示角色或沙箱已失效，请返回公开入口重新选择。",
         requestId,
       ),
@@ -357,7 +359,7 @@ const repairImageContentTypes = new Set<RepairImageContentType>([
   "image/webp",
 ]);
 const REPAIR_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
-const REPAIR_IMAGE_ORPHAN_GRACE_MS = 10 * 60 * 1_000;
+const REPAIR_IMAGE_ORPHAN_GRACE_MS = 60 * 60 * 1_000;
 
 async function cleanStoredRepairImageObject(
   storage: NonNullable<AppServices["repairImageStorage"]>,
@@ -674,7 +676,10 @@ async function staffWriteFence(
   return { idempotencyKey, response: null };
 }
 
-export function registerRepairIntakeRoutes(app: Hono, services: AppServices) {
+export function registerRepairIntakeRoutes(
+  app: Hono<AppEnvironment>,
+  services: AppServices,
+) {
   app.get("/api/v1/repairs/:repairId", async (context) => {
     const requestId = randomUUID();
     context.header("X-Request-Id", requestId);

@@ -157,6 +157,29 @@ export function readRoleSession(
   return isRoleSessionPayload(parsed, now) ? parsed : null;
 }
 
+/**
+ * Keep an authenticated but expired cookie distinguishable from an absent or
+ * malformed one. The caller still treats the latter as an ordinary sign-in
+ * requirement; only the former represents a terminal sandbox expiry.
+ */
+export function readRoleSessionEndReason(
+  token: string | undefined,
+  secret: string,
+  now = Date.now(),
+): "expired" | undefined {
+  const current = readSignedPayload(token, secret, signSessionPayload);
+  if (isRoleSessionPayload(current, Number.NEGATIVE_INFINITY)) {
+    return Date.parse(current.expiresAt) <= now ? "expired" : undefined;
+  }
+
+  const legacy = readSignedPayload(token, secret, signLegacySessionPayload);
+  if (isLegacyRoleSessionPayload(legacy, Number.NEGATIVE_INFINITY)) {
+    return Date.parse(legacy.expiresAt) <= now ? "expired" : undefined;
+  }
+
+  return undefined;
+}
+
 export function readRoleSessionWithLegacyFallback(
   token: string | undefined,
   secret: string,

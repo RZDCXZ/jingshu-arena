@@ -123,6 +123,7 @@ async function main() {
         "apps/api/src/headquarters-comparison.integration.test.ts",
         "apps/api/src/manager-audit-export.integration.test.ts",
         "apps/api/src/repair-intake.integration.test.ts",
+        "apps/api/src/sandbox-capacity-expiry-cleanup.integration.test.ts",
         "apps/api/src/role-context.integration.test.ts",
         "apps/api/src/demo-tools.integration.test.ts",
         "apps/api/src/sandbox-realtime.integration.test.ts",

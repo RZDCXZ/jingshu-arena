@@ -2432,3 +2432,111 @@ export const sandboxCreationRequests = pgTable(
     }),
   ],
 ).enableRLS();
+
+export const sandboxLifecycleTasks = pgTable(
+  "sandbox_lifecycle_tasks",
+  {
+    sandboxId: uuid("sandbox_id").primaryKey(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    state: text("state").default("active").notNull(),
+    cleanupReason: text("cleanup_reason"),
+    cleanupPhase: text("cleanup_phase"),
+    cleanupStartedAt: timestamp("cleanup_started_at", { withTimezone: true }),
+    attempts: integer("attempts").default(0).notNull(),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    lastFailure: text("last_failure"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    check(
+      "sandbox_lifecycle_tasks_state",
+      sql`${table.state} IN ('active', 'pending', 'retry')`,
+    ),
+    check(
+      "sandbox_lifecycle_tasks_cleanup_reason",
+      sql`${table.cleanupReason} IS NULL OR ${table.cleanupReason} IN ('expired', 'reset')`,
+    ),
+    check(
+      "sandbox_lifecycle_tasks_cleanup_phase",
+      sql`${table.cleanupPhase} IS NULL OR ${table.cleanupPhase} IN ('blobs', 'business')`,
+    ),
+    check(
+      "sandbox_lifecycle_tasks_cleanup_shape",
+      sql`(${table.state} = 'active' AND ${table.cleanupReason} IS NULL AND ${table.cleanupPhase} IS NULL) OR (${table.state} IN ('pending', 'retry') AND ${table.cleanupReason} IS NOT NULL AND ${table.cleanupPhase} IS NOT NULL)`,
+    ),
+    index("sandbox_lifecycle_tasks_due_idx").on(table.state, table.availableAt),
+  ],
+);
+
+export const sandboxRequestRateLimits = pgTable(
+  "sandbox_request_rate_limits",
+  {
+    operation: text("operation").notNull(),
+    subjectKind: text("subject_kind").notNull(),
+    windowKind: text("window_kind").notNull(),
+    subjectHash: text("subject_hash").notNull(),
+    windowStartedAt: timestamp("window_started_at", {
+      withTimezone: true,
+    }).notNull(),
+    requestCount: integer("request_count").default(0).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.operation,
+        table.subjectKind,
+        table.windowKind,
+        table.subjectHash,
+        table.windowStartedAt,
+      ],
+      name: "sandbox_request_rate_limits_pk",
+    }),
+    check(
+      "sandbox_request_rate_limits_operation",
+      sql`${table.operation} IN ('create', 'reset')`,
+    ),
+    check(
+      "sandbox_request_rate_limits_subject_kind",
+      sql`${table.subjectKind} IN ('visitor', 'ip')`,
+    ),
+    check(
+      "sandbox_request_rate_limits_window_kind",
+      sql`${table.windowKind} IN ('hour', 'day')`,
+    ),
+    check(
+      "sandbox_request_rate_limits_positive_count",
+      sql`${table.requestCount} > 0`,
+    ),
+  ],
+);
+
+export const sandboxDeletionReceipts = pgTable(
+  "sandbox_deletion_receipts",
+  {
+    id: uuid("id").primaryKey(),
+    reason: text("reason").notNull(),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }).notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+  },
+  (table) => [
+    check(
+      "sandbox_deletion_receipts_reason",
+      sql`${table.reason} IN ('expired', 'reset')`,
+    ),
+    check(
+      "sandbox_deletion_receipts_non_negative_attempts",
+      sql`${table.attempts} >= 0`,
+    ),
+  ],
+);

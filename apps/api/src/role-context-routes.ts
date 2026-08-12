@@ -7,6 +7,7 @@ import type { DatabaseRoleContext } from "@jingshu/database";
 import {
   issueRoleSession,
   readRoleSession,
+  readRoleSessionEndReason,
   readRoleSessionWithLegacyFallback,
 } from "./role-session.js";
 import type { RoleSessionPayload } from "./role-session.js";
@@ -20,7 +21,9 @@ import {
   isRoleContextUnavailable,
   recordRoleContextDenial,
   roleContextBody,
+  roleContextUnavailableBody,
   setRoleSessionCookie,
+  type AppEnvironment,
   type AppServices,
 } from "./route-support.js";
 
@@ -39,7 +42,10 @@ function sessionMatchesContext(
   );
 }
 
-export function registerRoleContextRoutes(app: Hono, services: AppServices) {
+export function registerRoleContextRoutes(
+  app: Hono<AppEnvironment>,
+  services: AppServices,
+) {
   app.get("/api/v1/demo/context", async (context) => {
     const requestId = randomUUID();
     context.header("X-Request-Id", requestId);
@@ -56,10 +62,12 @@ export function registerRoleContextRoutes(app: Hono, services: AppServices) {
       );
     }
 
+    const sessionToken = getCookie(context, SESSION_COOKIE);
+    const now = services.wallClock.now().getTime();
     const session = readRoleSessionWithLegacyFallback(
-      getCookie(context, SESSION_COOKIE),
+      sessionToken,
       services.sessionSecret,
-      services.wallClock.now().getTime(),
+      now,
     );
     if (!session) {
       return context.json(
@@ -67,6 +75,7 @@ export function registerRoleContextRoutes(app: Hono, services: AppServices) {
           "ROLE_CONTEXT_REQUIRED",
           "演示角色上下文已失效，请返回公开入口重新选择。",
           requestId,
+          readRoleSessionEndReason(sessionToken, services.sessionSecret, now),
         ),
         401,
       );
@@ -81,7 +90,11 @@ export function registerRoleContextRoutes(app: Hono, services: AppServices) {
         const upgraded = issueRoleSession(current, services.sessionSecret);
         setRoleSessionCookie(context, upgraded.token, services);
         return context.json(
-          roleContextBody(current, upgraded.payload.csrfToken),
+          roleContextBody(
+            current,
+            upgraded.payload.csrfToken,
+            services.wallClock.now(),
+          ),
         );
       }
       const roleContext = await services.sandboxDatabase.readRoleContext({
@@ -90,7 +103,13 @@ export function registerRoleContextRoutes(app: Hono, services: AppServices) {
         role: session.role,
         personaId: session.personaId,
       });
-      return context.json(roleContextBody(roleContext, session.csrfToken));
+      return context.json(
+        roleContextBody(
+          roleContext,
+          session.csrfToken,
+          services.wallClock.now(),
+        ),
+      );
     } catch (error) {
       if (isRoleContextStale(error)) {
         return context.json(
@@ -113,8 +132,8 @@ export function registerRoleContextRoutes(app: Hono, services: AppServices) {
         );
       }
       return context.json(
-        errorBody(
-          "ROLE_CONTEXT_UNAVAILABLE",
+        roleContextUnavailableBody(
+          error,
           "当前演示角色或沙箱已失效，请返回公开入口重新选择。",
           requestId,
         ),
@@ -139,10 +158,12 @@ export function registerRoleContextRoutes(app: Hono, services: AppServices) {
       );
     }
 
+    const sessionToken = getCookie(context, SESSION_COOKIE);
+    const now = services.wallClock.now().getTime();
     const session = readRoleSessionWithLegacyFallback(
-      getCookie(context, SESSION_COOKIE),
+      sessionToken,
       services.sessionSecret,
-      services.wallClock.now().getTime(),
+      now,
     );
     if (!session) {
       return context.json(
@@ -150,6 +171,7 @@ export function registerRoleContextRoutes(app: Hono, services: AppServices) {
           "ROLE_CONTEXT_REQUIRED",
           "演示角色上下文已失效，请返回公开入口重新选择。",
           requestId,
+          readRoleSessionEndReason(sessionToken, services.sessionSecret, now),
         ),
         401,
       );
@@ -260,18 +282,24 @@ export function registerRoleContextRoutes(app: Hono, services: AppServices) {
         ...(fence ? { fence } : {}),
       });
       if (session.version === 2 && sessionMatchesContext(session, current)) {
-        return context.json(roleContextBody(current, session.csrfToken));
+        return context.json(
+          roleContextBody(current, session.csrfToken, services.wallClock.now()),
+        );
       }
       const nextSession = issueRoleSession(current, services.sessionSecret);
       setRoleSessionCookie(context, nextSession.token, services);
       return context.json(
-        roleContextBody(current, nextSession.payload.csrfToken),
+        roleContextBody(
+          current,
+          nextSession.payload.csrfToken,
+          services.wallClock.now(),
+        ),
       );
     } catch (error) {
       if (isRoleContextUnavailable(error)) {
         return context.json(
-          errorBody(
-            "ROLE_CONTEXT_UNAVAILABLE",
+          roleContextUnavailableBody(
+            error,
             "当前演示角色或沙箱已失效，请返回公开入口重新选择。",
             requestId,
           ),
@@ -305,17 +333,16 @@ export function registerRoleContextRoutes(app: Hono, services: AppServices) {
       );
     }
 
-    const session = readRoleSession(
-      getCookie(context, SESSION_COOKIE),
-      services.sessionSecret,
-      services.wallClock.now().getTime(),
-    );
+    const sessionToken = getCookie(context, SESSION_COOKIE);
+    const now = services.wallClock.now().getTime();
+    const session = readRoleSession(sessionToken, services.sessionSecret, now);
     if (!session) {
       return context.json(
         errorBody(
           "ROLE_CONTEXT_REQUIRED",
           "演示角色上下文已失效，请返回公开入口重新选择。",
           requestId,
+          readRoleSessionEndReason(sessionToken, services.sessionSecret, now),
         ),
         401,
       );
@@ -394,7 +421,11 @@ export function registerRoleContextRoutes(app: Hono, services: AppServices) {
       const nextSession = issueRoleSession(switched, services.sessionSecret);
       setRoleSessionCookie(context, nextSession.token, services);
       return context.json(
-        roleContextBody(switched, nextSession.payload.csrfToken),
+        roleContextBody(
+          switched,
+          nextSession.payload.csrfToken,
+          services.wallClock.now(),
+        ),
       );
     } catch (error) {
       if (isRoleContextStale(error)) {
@@ -415,8 +446,8 @@ export function registerRoleContextRoutes(app: Hono, services: AppServices) {
       }
       if (isRoleContextUnavailable(error)) {
         return context.json(
-          errorBody(
-            "ROLE_CONTEXT_UNAVAILABLE",
+          roleContextUnavailableBody(
+            error,
             "当前演示角色或沙箱已失效，请返回公开入口重新选择。",
             requestId,
           ),

@@ -2,8 +2,18 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-12
-- 已验证契约版本：`product-ui/management-system/prod.md` 1.16
-- 验证范围：[`27 — 实时失效通知、轮询与只读降级`](../../../.scratch/jingshu-basic-rc/issues/27-realtime-readonly-fallback.md)；保留 ticket 25 总部固定三店配置与人员排班汇总和更早结论
+- 已验证契约版本：`product-ui/management-system/prod.md` 1.18
+- 验证范围：[`28 — 沙箱容量、自然过期与可重试清理`](../../../.scratch/jingshu-basic-rc/issues/28-sandbox-capacity-expiry-cleanup.md)；保留 ticket 27 实时失效通知、轮询与只读降级及更早结论
+
+## Ticket 28 `WEB-G01/WEB-G06/WEB-G07` 对照目标与结论
+
+- 视觉方向继续使用选定源 `design/reference/selected-night-operations-console.png`。容量只读、自然到期和重置后旧标签三个新增状态沿用深海军蓝底、青色信息、青柠唯一恢复主操作、细线卡片与紧凑控制台密度；容量状态是新的页面职责，因此同屏比较以选定源校验视觉系统和信息层级，而不要求把活动运营控制台的业务布局逐像素复制到只读快照。
+- 应用内浏览器以精确 `1440 × 1024 CSS px` 打开正式原型的 `capacity`、`expired` 与 `reset` 状态。容量页完整呈现三店标准种子摘要、四项禁用业务动作和恢复主按钮；两种结束态均显示完整 `alertdialog`。三页的 `documentElement.clientWidth = scrollWidth = 1440`，没有横向溢出。
+- 应用内浏览器以精确 `1024 × 768 CSS px` 完成三状态和主动作验收：容量页四项业务按钮均禁用，“稍后重新创建独立沙箱”会进入“正在准备店员视图”；自然到期和旧标签失效分别显示对应的结束文案，背景“办理到店”被阻断，两个“创建新的独立沙箱”主按钮同样进入创建准备态。三页均为 `documentElement.clientWidth = scrollWidth = 1024`，无裁切或横向溢出。
+- 应用内浏览器以 `360 × 800 CSS px` 复核容量、自然到期和旧标签失效：容量保留四项禁用动作和完整恢复主按钮；两个结束态的主按钮均在首屏可达。各状态的 `documentElement.clientWidth` 与 `scrollWidth` 相等，未出现横向溢出。
+- 本票正式原型执行 `npm run build` 与 `npm run test:sites` 均通过；三状态和创建准备态的浏览器 warning/error 均为 `0`。当前没有仍需处理的 P0、P1 或 P2 视觉或交互差异；功能职责以 `prod.md` 1.18 为唯一记录。
+
+final result: passed
 
 ## Ticket 27 `WEB-G02/WEB-G07/WEB-G08` 对照目标与结论
 

@@ -27,6 +27,8 @@ import {
   isRoleContextStale,
   isRoleContextUnavailable,
   recordRoleContextDenial,
+  roleContextUnavailableBody,
+  type AppEnvironment,
   type AppServices,
 } from "./route-support.js";
 
@@ -138,8 +140,8 @@ function contextFailure(error: unknown, requestId: string) {
   }
   if (isRoleContextUnavailable(error)) {
     return {
-      body: errorBody(
-        "ROLE_CONTEXT_UNAVAILABLE",
+      body: roleContextUnavailableBody(
+        error,
         "当前演示角色或员工身份已失效，请返回公开入口重新选择。",
         requestId,
       ),
@@ -157,7 +159,10 @@ function contextFailure(error: unknown, requestId: string) {
   };
 }
 
-export function registerStaffHandoverRoutes(app: Hono, services: AppServices) {
+export function registerStaffHandoverRoutes(
+  app: Hono<AppEnvironment>,
+  services: AppServices,
+) {
   const readSession = (context: Parameters<typeof getCookie>[0]) =>
     services.sessionSecret
       ? readRoleSession(

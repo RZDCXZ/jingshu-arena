@@ -26,6 +26,8 @@ import {
   isRoleContextStale,
   isRoleContextUnavailable,
   recordRoleContextDenial,
+  roleContextUnavailableBody,
+  type AppEnvironment,
   type AppServices,
 } from "./route-support.js";
 
@@ -62,8 +64,8 @@ function orderFailure(error: unknown, requestId: string) {
   }
   if (isRoleContextUnavailable(error)) {
     return {
-      body: errorBody(
-        "ROLE_CONTEXT_UNAVAILABLE",
+      body: roleContextUnavailableBody(
+        error,
         "当前演示角色或沙箱已失效，请返回公开入口重新选择。",
         requestId,
       ),
@@ -268,7 +270,10 @@ async function customerWriteFence(
   return { idempotencyKey, response: null };
 }
 
-export function registerCustomerOrderRoutes(app: Hono, services: AppServices) {
+export function registerCustomerOrderRoutes(
+  app: Hono<AppEnvironment>,
+  services: AppServices,
+) {
   app.get(
     "/api/v1/customer/reservations/:reservationId/products",
     async (context) => {

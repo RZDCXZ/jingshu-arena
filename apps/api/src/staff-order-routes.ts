@@ -27,6 +27,8 @@ import {
   isRoleContextStale,
   isRoleContextUnavailable,
   recordRoleContextDenial,
+  roleContextUnavailableBody,
+  type AppEnvironment,
   type AppServices,
 } from "./route-support.js";
 
@@ -62,8 +64,8 @@ function failure(error: unknown, requestId: string) {
   }
   if (isRoleContextUnavailable(error)) {
     return {
-      body: errorBody(
-        "ROLE_CONTEXT_UNAVAILABLE",
+      body: roleContextUnavailableBody(
+        error,
         "当前演示角色或沙箱已失效，请返回公开入口重新选择。",
         requestId,
       ),
@@ -164,7 +166,10 @@ function summaryResponse(
   return { ...summary, stageEnteredAt: summary.stageEnteredAt.toISOString() };
 }
 
-export function registerStaffOrderRoutes(app: Hono, services: AppServices) {
+export function registerStaffOrderRoutes(
+  app: Hono<AppEnvironment>,
+  services: AppServices,
+) {
   app.get("/api/v1/staff/orders", async (context) => {
     const requestId = randomUUID();
     context.header("X-Request-Id", requestId);

@@ -15,6 +15,8 @@ import {
   isRoleContextStale,
   isRoleContextUnavailable,
   recordRoleContextDenial,
+  roleContextUnavailableBody,
+  type AppEnvironment,
   type AppServices,
 } from "./route-support.js";
 
@@ -143,8 +145,8 @@ function failure(error: unknown, requestId: string) {
   }
   if (isRoleContextUnavailable(error)) {
     return {
-      body: errorBody(
-        "ROLE_CONTEXT_UNAVAILABLE",
+      body: roleContextUnavailableBody(
+        error,
         "当前沙箱已失效，请重新开始演示。",
         requestId,
       ),
@@ -162,7 +164,7 @@ function failure(error: unknown, requestId: string) {
 }
 
 export function registerManagerDashboardRoutes(
-  app: Hono,
+  app: Hono<AppEnvironment>,
   services: AppServices,
 ) {
   app.get("/api/v1/manager/dashboard", async (context) => {

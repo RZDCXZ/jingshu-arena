@@ -91,6 +91,8 @@ import {
   StaffOrderConflictError,
   PublicSandboxIdempotencyConflictError,
   PublicSandboxOwnershipConflictError,
+  PublicSandboxCapacityExceededError,
+  PublicSandboxRateLimitedError,
   RoleContextStaleError,
   RoleContextUnavailableError,
 } from "./errors.js";
@@ -105,6 +107,8 @@ import {
 const { Pool } = pg;
 
 const SANDBOX_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 const HALF_HOUR_MS = 30 * 60 * 1_000;
 const REPAIR_IMAGE_INTENT_LIFETIME_MS = 5 * 60 * 1000;
 const REPAIR_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
@@ -123,11 +127,88 @@ const repairImageExtensions: Record<
   "image/webp": new Set(["webp"]),
 };
 const publicSandboxSeed = buildPublicSandboxSeed();
+const SANDBOX_BUSINESS_CLEANUP_TABLES = [
+  "repair_image_cleanup_jobs",
+  "audit_events",
+  "handover_confirmations",
+  "handover_exceptions",
+  "handover_command_requests",
+  "handovers",
+  "attendance_corrections",
+  "attendance_events",
+  "attendance_command_requests",
+  "manager_people_command_requests",
+  "repair_spare_returns",
+  "repair_spare_usages",
+  "repair_business_events",
+  "repair_command_requests",
+  "repair_state_command_requests",
+  "repair_upload_intents",
+  "repair_images",
+  "order_inventory_reservations",
+  "order_business_events",
+  "order_command_requests",
+  "order_lifecycle_command_requests",
+  "order_frontline_command_requests",
+  "order_simulated_refunds",
+  "reservation_simulated_refunds",
+  "member_growth_events",
+  "reservation_lifecycle_command_requests",
+  "reservation_frontline_command_requests",
+  "reservation_business_events",
+  "reservation_command_requests",
+  "inventory_movements",
+  "inventory_command_requests",
+  "store_config_command_requests",
+  "headquarters_catalog_command_requests",
+  "store_business_hours_versions",
+  "price_plans",
+  "store_products",
+  "product_store_scopes",
+  "customer_orders",
+  "repairs",
+  "reservations",
+  "experience_coupons",
+  "member_profiles",
+  "attendance_records",
+  "inventory_items",
+  "seats",
+  "store_areas",
+  "shifts",
+  "employees",
+  "products",
+  "machine_profiles",
+  "demo_personas",
+  "stores",
+  "operators",
+  "sandbox_command_requests",
+] as const;
 
 export interface CreatePublicSandboxInput {
+  clientIp?: string;
   creationKey: string;
   selectedRole: PublicRole;
   visitorKey: string;
+}
+
+export interface SandboxRequestRateLimit {
+  readonly perDay: number;
+  readonly perHour: number;
+}
+
+export interface PublicSandboxAdmissionLimits {
+  readonly activeSandboxLimit?: number;
+  readonly createPerIp?: SandboxRequestRateLimit;
+  readonly createPerVisitor?: SandboxRequestRateLimit;
+  readonly resetPerIp?: SandboxRequestRateLimit;
+  readonly resetPerVisitor?: SandboxRequestRateLimit;
+}
+
+export interface DatabaseSandboxCleanupTask {
+  readonly attempts: number;
+  readonly phase: "blobs" | "business";
+  readonly reason: "expired" | "reset";
+  readonly sandboxId: string;
 }
 
 export interface PublicSandboxResult {
@@ -2439,6 +2520,20 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
     readonly failure: string;
     readonly jobId: string;
   }): Promise<void>;
+  scheduleExpiredSandboxCleanup(): Promise<number>;
+  readDueSandboxCleanupTasks(
+    limit: number,
+  ): Promise<ReadonlyArray<DatabaseSandboxCleanupTask>>;
+  markSandboxCleanupBlobsDeleted(sandboxId: string): Promise<void>;
+  deleteSandboxBusinessBatch(input: {
+    readonly batchSize: number;
+    readonly sandboxId: string;
+  }): Promise<{ readonly completed: boolean; readonly deletedRows: number }>;
+  retrySandboxCleanupTask(input: {
+    readonly availableAt: Date;
+    readonly failure: string;
+    readonly sandboxId: string;
+  }): Promise<void>;
   simulateCustomerOrderPayment(
     input: SimulateCustomerOrderPaymentInput,
   ): Promise<DatabaseCustomerOrderPayment>;
@@ -2552,6 +2647,7 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
 }
 
 export interface PublicSandboxDatabaseOptions {
+  readonly admissionLimits?: PublicSandboxAdmissionLimits;
   readonly dueHandlers?: DemoTimeDueHandlerRegistry;
   readonly wallClock?: WallClock;
 }
@@ -4178,6 +4274,82 @@ function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+interface EffectiveSandboxAdmissionLimits {
+  readonly activeSandboxLimit: number;
+  readonly createPerIp: SandboxRequestRateLimit;
+  readonly createPerVisitor: SandboxRequestRateLimit;
+  readonly resetPerIp: SandboxRequestRateLimit;
+  readonly resetPerVisitor: SandboxRequestRateLimit;
+}
+
+const DEFAULT_SANDBOX_REQUEST_RATE_LIMIT: SandboxRequestRateLimit = {
+  perDay: 20,
+  perHour: 5,
+};
+const DEFAULT_SANDBOX_IP_RATE_LIMIT: SandboxRequestRateLimit = {
+  perDay: 200,
+  perHour: 50,
+};
+
+function normalizeRequestRateLimit(
+  value: SandboxRequestRateLimit | undefined,
+  fallback: SandboxRequestRateLimit,
+): SandboxRequestRateLimit {
+  const perDay = value?.perDay ?? fallback.perDay;
+  const perHour = value?.perHour ?? fallback.perHour;
+  if (
+    !Number.isSafeInteger(perDay) ||
+    !Number.isSafeInteger(perHour) ||
+    perDay < 1 ||
+    perHour < 1
+  ) {
+    throw new Error("Sandbox request rate limits must be positive integers.");
+  }
+  return { perDay, perHour };
+}
+
+function normalizeSandboxAdmissionLimits(
+  value: PublicSandboxAdmissionLimits | undefined,
+): EffectiveSandboxAdmissionLimits {
+  const activeSandboxLimit = value?.activeSandboxLimit ?? 200;
+  if (!Number.isSafeInteger(activeSandboxLimit) || activeSandboxLimit < 1) {
+    throw new Error("Sandbox active capacity must be a positive integer.");
+  }
+  return {
+    activeSandboxLimit,
+    createPerIp: normalizeRequestRateLimit(
+      value?.createPerIp,
+      DEFAULT_SANDBOX_IP_RATE_LIMIT,
+    ),
+    createPerVisitor: normalizeRequestRateLimit(
+      value?.createPerVisitor,
+      DEFAULT_SANDBOX_REQUEST_RATE_LIMIT,
+    ),
+    resetPerIp: normalizeRequestRateLimit(
+      value?.resetPerIp,
+      DEFAULT_SANDBOX_IP_RATE_LIMIT,
+    ),
+    resetPerVisitor: normalizeRequestRateLimit(
+      value?.resetPerVisitor,
+      DEFAULT_SANDBOX_REQUEST_RATE_LIMIT,
+    ),
+  };
+}
+
+function hourWindowStart(wallTime: Date): Date {
+  return new Date(Math.floor(wallTime.getTime() / HOUR_MS) * HOUR_MS);
+}
+
+function dayWindowStart(wallTime: Date): Date {
+  return new Date(
+    Date.UTC(
+      wallTime.getUTCFullYear(),
+      wallTime.getUTCMonth(),
+      wallTime.getUTCDate(),
+    ),
+  );
+}
+
 function managerStoreConfigurationDenialSummary(
   input: ExecuteManagerStoreConfigurationCommandInput,
   payloadHash: string,
@@ -4998,6 +5170,21 @@ function businessTimeForSandbox(sandbox: SandboxRow, wallTime: Date): Date {
   });
 }
 
+function assertSandboxAvailable(
+  sandbox: SandboxRow | undefined,
+  wallTime: Date,
+): asserts sandbox is SandboxRow {
+  if (!sandbox) throw new RoleContextUnavailableError();
+  // Cleanup marks an expired sandbox invalidated so it cannot be revived. Its
+  // externally observable ending remains natural expiry, not a reset.
+  if (sandbox.expires_at.getTime() <= wallTime.getTime()) {
+    throw new RoleContextUnavailableError("expired");
+  }
+  if (sandbox.invalidated_at !== null) {
+    throw new RoleContextUnavailableError("reset");
+  }
+}
+
 async function assertCustomerBrowseContext(
   client: PoolClient,
   input: CustomerBrowseContextInput,
@@ -5009,13 +5196,7 @@ async function assertCustomerBrowseContext(
     [input.sandboxId],
   );
   const sandboxRow = sandbox.rows[0];
-  if (
-    !sandboxRow ||
-    sandboxRow.invalidated_at !== null ||
-    sandboxRow.expires_at.getTime() <= wallTime.getTime()
-  ) {
-    throw new RoleContextUnavailableError();
-  }
+  assertSandboxAvailable(sandboxRow, wallTime);
   if (
     input.role !== "customer" ||
     sandboxRow.role_context_role !== "customer" ||
@@ -5043,13 +5224,7 @@ async function assertFrontlineContext(
     [input.sandboxId],
   );
   const sandboxRow = sandbox.rows[0];
-  if (
-    !sandboxRow ||
-    sandboxRow.invalidated_at !== null ||
-    sandboxRow.expires_at.getTime() <= wallTime.getTime()
-  ) {
-    throw new RoleContextUnavailableError();
-  }
+  assertSandboxAvailable(sandboxRow, wallTime);
   if (
     (input.role !== "staff" && input.role !== "manager") ||
     sandboxRow.role_context_role !== input.role ||
@@ -5077,13 +5252,7 @@ async function assertHeadquartersContext(
     [input.sandboxId],
   );
   const sandboxRow = sandbox.rows[0];
-  if (
-    !sandboxRow ||
-    sandboxRow.invalidated_at !== null ||
-    sandboxRow.expires_at.getTime() <= wallTime.getTime()
-  ) {
-    throw new RoleContextUnavailableError();
-  }
+  assertSandboxAvailable(sandboxRow, wallTime);
   if (
     input.role !== "hq" ||
     sandboxRow.role_context_role !== "hq" ||
@@ -5908,13 +6077,7 @@ async function assertRepairActorContext(
     [input.sandboxId],
   );
   const sandboxRow = sandbox.rows[0];
-  if (
-    !sandboxRow ||
-    sandboxRow.invalidated_at !== null ||
-    sandboxRow.expires_at.getTime() <= wallTime.getTime()
-  ) {
-    throw new RoleContextUnavailableError();
-  }
+  assertSandboxAvailable(sandboxRow, wallTime);
   if (
     sandboxRow.role_context_role !== input.role ||
     sandboxRow.role_context_version !== input.contextVersion
@@ -6639,7 +6802,11 @@ async function readSandboxResult(
     [sandboxId],
   );
   let sandboxRow = sandbox.rows[0];
-  if (!sandboxRow || sandboxRow.invalidated_at !== null) {
+  if (
+    !sandboxRow ||
+    sandboxRow.invalidated_at !== null ||
+    sandboxRow.expires_at.getTime() <= wallTime.getTime()
+  ) {
     throw new Error("The public sandbox transaction returned incomplete data.");
   }
   if (sandboxRow.role_context_role === null) {
@@ -6747,6 +6914,12 @@ async function materializePublicSandbox(input: {
       input.selectedRole,
       input.wallTime,
     ],
+  );
+  await input.client.query(
+    `insert into sandbox_lifecycle_tasks (
+       sandbox_id, expires_at, state, available_at, created_at, updated_at
+     ) values ($1, $2, 'active', $3, $3, $3)`,
+    [input.sandboxId, input.expiresAt, input.wallTime],
   );
   await input.client.query(
     `insert into operators (id, sandbox_id, display_name, city)
@@ -9375,6 +9548,175 @@ export function createPublicSandboxDatabase(
 ): PublicSandboxDatabase {
   const pool = new Pool({ connectionString: databaseUrl });
   const wallClock = options.wallClock ?? { now: () => new Date() };
+  const admissionLimits = normalizeSandboxAdmissionLimits(
+    options.admissionLimits,
+  );
+
+  async function holdSandboxAdmissionLock(client: PoolClient) {
+    await client.query(
+      "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+      ["public-sandbox-admission-capacity"],
+    );
+  }
+
+  async function scheduleExpiredSandboxCleanupWithClient(
+    client: PoolClient,
+    wallTime: Date,
+  ): Promise<number> {
+    const scheduled = await client.query<{ sandbox_id: string }>(
+      `update sandbox_lifecycle_tasks
+          set state = 'pending', cleanup_reason = 'expired',
+              cleanup_phase = 'blobs', cleanup_started_at = coalesce(
+                cleanup_started_at, $1
+              ), attempts = 0, available_at = $1, last_failure = null,
+              updated_at = $1
+        where state = 'active' and expires_at <= $1
+        returning sandbox_id`,
+      [wallTime],
+    );
+    for (const task of scheduled.rows) {
+      await client.query("select set_config('app.sandbox_id', $1, true)", [
+        task.sandbox_id,
+      ]);
+      await client.query(
+        `update sandboxes
+            set invalidated_at = coalesce(invalidated_at, $2),
+                role_context_version = case
+                  when invalidated_at is null then role_context_version + 1
+                  else role_context_version
+                end
+          where id = $1`,
+        [task.sandbox_id, wallTime],
+      );
+    }
+    return scheduled.rowCount ?? 0;
+  }
+
+  async function consumeRateLimitWindow(
+    client: PoolClient,
+    input: {
+      readonly limit: number;
+      readonly operation: "create" | "reset";
+      readonly subjectHash: string;
+      readonly subjectKind: "ip" | "visitor";
+      readonly wallTime: Date;
+      readonly windowKind: "day" | "hour";
+    },
+  ) {
+    const windowStartedAt =
+      input.windowKind === "hour"
+        ? hourWindowStart(input.wallTime)
+        : dayWindowStart(input.wallTime);
+    const consumed = await client.query(
+      `insert into sandbox_request_rate_limits (
+         operation, subject_kind, window_kind, subject_hash,
+         window_started_at, request_count, updated_at
+       ) values ($1, $2, $3, $4, $5, 1, $6)
+       on conflict (
+         operation, subject_kind, window_kind, subject_hash, window_started_at
+       ) do update
+          set request_count = sandbox_request_rate_limits.request_count + 1,
+              updated_at = excluded.updated_at
+        where sandbox_request_rate_limits.request_count < $7
+       returning request_count`,
+      [
+        input.operation,
+        input.subjectKind,
+        input.windowKind,
+        input.subjectHash,
+        windowStartedAt,
+        input.wallTime,
+        input.limit,
+      ],
+    );
+    if (consumed.rowCount === 1) return;
+    const retryAt = new Date(
+      windowStartedAt.getTime() +
+        (input.windowKind === "hour" ? HOUR_MS : DAY_MS),
+    );
+    throw new PublicSandboxRateLimitedError(input.operation, retryAt);
+  }
+
+  async function consumeSandboxAdmission(
+    client: PoolClient,
+    input: {
+      readonly clientIp: string | undefined;
+      readonly operation: "create" | "reset";
+      readonly visitorKey: string | undefined;
+      readonly wallTime: Date;
+    },
+  ) {
+    // A signed visitor remains rate-limited even when an adapter cannot provide
+    // a trusted peer address. IP limits are additive, never a prerequisite.
+    const perVisitor =
+      input.operation === "create"
+        ? admissionLimits.createPerVisitor
+        : admissionLimits.resetPerVisitor;
+    const perIp =
+      input.operation === "create"
+        ? admissionLimits.createPerIp
+        : admissionLimits.resetPerIp;
+    const subjects: Array<{
+      limit: SandboxRequestRateLimit;
+      subjectHash: string;
+      subjectKind: "ip" | "visitor";
+    }> = [];
+    if (input.visitorKey) {
+      subjects.push({
+        limit: perVisitor,
+        subjectHash: hash(input.visitorKey),
+        subjectKind: "visitor",
+      });
+    }
+    if (input.clientIp) {
+      subjects.push({
+        limit: perIp,
+        subjectHash: hash(input.clientIp),
+        subjectKind: "ip",
+      });
+    }
+    for (const subject of subjects) {
+      await consumeRateLimitWindow(client, {
+        limit: subject.limit.perHour,
+        operation: input.operation,
+        subjectHash: subject.subjectHash,
+        subjectKind: subject.subjectKind,
+        wallTime: input.wallTime,
+        windowKind: "hour",
+      });
+      await consumeRateLimitWindow(client, {
+        limit: subject.limit.perDay,
+        operation: input.operation,
+        subjectHash: subject.subjectHash,
+        subjectKind: subject.subjectKind,
+        wallTime: input.wallTime,
+        windowKind: "day",
+      });
+    }
+  }
+
+  async function assertSandboxCapacity(client: PoolClient, wallTime: Date) {
+    await scheduleExpiredSandboxCleanupWithClient(client, wallTime);
+    const active = await client.query<{
+      active_count: string;
+      next_expiry: Date | null;
+    }>(
+      `select count(*)::text as active_count, min(expires_at) as next_expiry
+         from sandbox_lifecycle_tasks
+        where state = 'active' and expires_at > $1`,
+      [wallTime],
+    );
+    const current = active.rows[0];
+    if (
+      Number(current?.active_count ?? "0") < admissionLimits.activeSandboxLimit
+    ) {
+      return;
+    }
+    throw new PublicSandboxCapacityExceededError(
+      current?.next_expiry ?? new Date(wallTime.getTime() + 60_000),
+    );
+  }
+
   const demoToolMethods = createSandboxDemoToolMethods(
     pool,
     {
@@ -9384,6 +9726,12 @@ export function createPublicSandboxDatabase(
         ...handoverDueHandlers(),
         ...options.dueHandlers,
       },
+      consumeResetAdmission: (client, input) =>
+        consumeSandboxAdmission(client, {
+          ...input,
+          operation: "reset",
+        }),
+      holdSandboxAdmissionLock,
       sandboxLifetimeMilliseconds: SANDBOX_LIFETIME_MS,
       wallClock,
     },
@@ -9513,12 +9861,55 @@ export function createPublicSandboxDatabase(
       );
     },
     async completeRepairImageCleanupJob(jobId) {
-      await pool.query(
-        `update repair_image_cleanup_jobs
-            set status = 'completed', completed_at = $2, last_failure = null
-          where id = $1 and status = 'pending'`,
-        [jobId, wallClock.now()],
-      );
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        const job = await client.query<{
+          object_key: string | null;
+          reason: string;
+          sandbox_id: string;
+          target_kind: "object" | "sandbox";
+        }>(
+          `select sandbox_id, target_kind, object_key, reason
+             from repair_image_cleanup_jobs
+            where id = $1 and status = 'pending'
+            for update`,
+          [jobId],
+        );
+        const jobRow = job.rows[0];
+        if (!jobRow) {
+          await client.query("commit");
+          return;
+        }
+        if (
+          jobRow.reason === "orphan-upload-intent" &&
+          jobRow.target_kind === "object" &&
+          jobRow.object_key
+        ) {
+          await client.query("select set_config('app.sandbox_id', $1, true)", [
+            jobRow.sandbox_id,
+          ]);
+          await client.query(
+            `delete from repair_upload_intents
+              where sandbox_id = $1 and quarantine_object_key = $2
+                and status <> 'consumed'`,
+            [jobRow.sandbox_id, jobRow.object_key],
+          );
+        }
+        await client.query(
+          `update repair_image_cleanup_jobs
+              set status = 'completed', completed_at = $2, last_failure = null
+            where id = $1 and status = 'pending'`,
+          [jobId, wallTime],
+        );
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async readDueRepairImageCleanupJobs(limit) {
       const jobs = await pool.query<{
@@ -9550,6 +9941,149 @@ export function createPublicSandboxDatabase(
                 last_failure = $3
           where id = $1 and status = 'pending'`,
         [input.jobId, input.availableAt, input.failure.slice(0, 500)],
+      );
+    },
+    async scheduleExpiredSandboxCleanup() {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        const scheduled = await scheduleExpiredSandboxCleanupWithClient(
+          client,
+          wallTime,
+        );
+        await client.query("commit");
+        return scheduled;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async readDueSandboxCleanupTasks(limit) {
+      await this.scheduleExpiredSandboxCleanup();
+      const tasks = await pool.query<{
+        attempts: number;
+        cleanup_phase: "blobs" | "business";
+        cleanup_reason: "expired" | "reset";
+        sandbox_id: string;
+      }>(
+        `select sandbox_id, cleanup_reason, cleanup_phase, attempts
+           from sandbox_lifecycle_tasks
+          where state in ('pending', 'retry') and available_at <= $1
+          order by available_at, cleanup_started_at, sandbox_id
+          limit $2`,
+        [wallClock.now(), Math.max(1, Math.min(100, limit))],
+      );
+      return tasks.rows.map((task) => ({
+        attempts: task.attempts,
+        phase: task.cleanup_phase,
+        reason: task.cleanup_reason,
+        sandboxId: task.sandbox_id,
+      }));
+    },
+    async markSandboxCleanupBlobsDeleted(sandboxId) {
+      const wallTime = wallClock.now();
+      await pool.query(
+        `update sandbox_lifecycle_tasks
+            set state = 'pending', cleanup_phase = 'business',
+                available_at = $2, last_failure = null, updated_at = $2
+          where sandbox_id = $1 and state in ('pending', 'retry')
+            and cleanup_phase = 'blobs'`,
+        [sandboxId, wallTime],
+      );
+    },
+    async deleteSandboxBusinessBatch(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      const batchSize = Math.max(1, Math.min(500, input.batchSize));
+      try {
+        await client.query("begin");
+        const task = await client.query<{
+          attempts: number;
+          cleanup_phase: "blobs" | "business";
+          cleanup_reason: "expired" | "reset";
+          cleanup_started_at: Date | null;
+        }>(
+          `select cleanup_reason, cleanup_phase, cleanup_started_at, attempts
+             from sandbox_lifecycle_tasks
+            where sandbox_id = $1 and state in ('pending', 'retry')
+            for update`,
+          [input.sandboxId],
+        );
+        const taskRow = task.rows[0];
+        if (!taskRow || taskRow.cleanup_phase !== "business") {
+          await client.query("commit");
+          return { completed: !taskRow, deletedRows: 0 };
+        }
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        await client.query(
+          "select set_config('app.sandbox_cleanup', 'true', true)",
+        );
+        for (const table of SANDBOX_BUSINESS_CLEANUP_TABLES) {
+          const deleted = await client.query(
+            `delete from ${table}
+              where ctid in (
+                select ctid from ${table}
+                 where sandbox_id = $1
+                 limit $2
+              )`,
+            [input.sandboxId, batchSize],
+          );
+          if ((deleted.rowCount ?? 0) > 0) {
+            await client.query(
+              `update sandbox_lifecycle_tasks
+                  set available_at = $2, updated_at = $2
+                where sandbox_id = $1`,
+              [input.sandboxId, wallTime],
+            );
+            await client.query("commit");
+            return { completed: false, deletedRows: deleted.rowCount ?? 0 };
+          }
+        }
+        await client.query(
+          `insert into sandbox_deletion_receipts (
+             id, reason, requested_at, completed_at, attempts
+           ) values ($1, $2, $3, $4, $5)`,
+          [
+            randomUUID(),
+            taskRow.cleanup_reason,
+            taskRow.cleanup_started_at ?? wallTime,
+            wallTime,
+            taskRow.attempts,
+          ],
+        );
+        await client.query(
+          "delete from sandbox_lifecycle_tasks where sandbox_id = $1",
+          [input.sandboxId],
+        );
+        await client.query("delete from sandboxes where id = $1", [
+          input.sandboxId,
+        ]);
+        await client.query("commit");
+        return { completed: true, deletedRows: 0 };
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async retrySandboxCleanupTask(input) {
+      await pool.query(
+        `update sandbox_lifecycle_tasks
+            set state = 'retry', attempts = attempts + 1, available_at = $2,
+                last_failure = $3, updated_at = $4
+          where sandbox_id = $1 and state in ('pending', 'retry')`,
+        [
+          input.sandboxId,
+          input.availableAt,
+          input.failure.slice(0, 500),
+          wallClock.now(),
+        ],
       );
     },
     async createRepairSampleImage(input) {
@@ -9723,6 +10257,17 @@ export function createPublicSandboxDatabase(
             quarantineObjectKey,
             expiresAt,
             wallTime,
+          ],
+        );
+        await client.query(
+          `insert into repair_image_cleanup_jobs (
+             id, sandbox_id, target_kind, object_key, reason, available_at
+           ) values ($1, $2, 'object', $3, 'orphan-upload-intent', $4)`,
+          [
+            randomUUID(),
+            input.sandboxId,
+            quarantineObjectKey,
+            new Date(wallTime.getTime() + HOUR_MS),
           ],
         );
         await client.query("commit");
@@ -9957,8 +10502,8 @@ export function createPublicSandboxDatabase(
         await client.query(
           `delete from repair_image_cleanup_jobs
             where sandbox_id = $1 and target_kind = 'object'
-              and object_key = $2 and status = 'pending'`,
-          [input.sandboxId, input.objectKey],
+              and object_key = any($2::text[]) and status = 'pending'`,
+          [input.sandboxId, [input.objectKey, intentRow.quarantine_object_key]],
         );
         await client.query(
           `insert into audit_events (
@@ -19806,6 +20351,15 @@ export function createPublicSandboxDatabase(
           return replayed;
         }
 
+        await consumeSandboxAdmission(client, {
+          clientIp: input.clientIp,
+          operation: "create",
+          visitorKey: input.visitorKey,
+          wallTime,
+        });
+        await holdSandboxAdmissionLock(client);
+        await assertSandboxCapacity(client, wallTime);
+
         await client.query("select set_config('app.sandbox_id', $1, true)", [
           sandboxId,
         ]);
@@ -22119,13 +22673,7 @@ export function createPublicSandboxDatabase(
           [input.sandboxId],
         );
         let sandboxRow = sandbox.rows[0];
-        if (
-          !sandboxRow ||
-          sandboxRow.invalidated_at !== null ||
-          sandboxRow.expires_at.getTime() <= wallTime.getTime()
-        ) {
-          throw new RoleContextUnavailableError();
-        }
+        assertSandboxAvailable(sandboxRow, wallTime);
         if (!sandboxRow.role_context_role && input.claimRole) {
           const claimed = await client.query<SandboxRow>(
             `update sandboxes
@@ -22245,13 +22793,7 @@ export function createPublicSandboxDatabase(
           [input.sandboxId],
         );
         const sandboxRow = sandbox.rows[0];
-        if (
-          !sandboxRow ||
-          sandboxRow.invalidated_at !== null ||
-          sandboxRow.expires_at.getTime() <= wallTime.getTime()
-        ) {
-          throw new RoleContextUnavailableError();
-        }
+        assertSandboxAvailable(sandboxRow, wallTime);
         if (
           sandboxRow.role_context_version !== input.contextVersion ||
           sandboxRow.role_context_role !== input.role
@@ -22316,13 +22858,7 @@ export function createPublicSandboxDatabase(
           [input.sandboxId],
         );
         const sandboxRow = sandbox.rows[0];
-        if (
-          !sandboxRow ||
-          sandboxRow.invalidated_at !== null ||
-          sandboxRow.expires_at.getTime() <= wallTime.getTime()
-        ) {
-          throw new RoleContextUnavailableError();
-        }
+        assertSandboxAvailable(sandboxRow, wallTime);
         if (
           sandboxRow.role_context_version !== input.contextVersion ||
           sandboxRow.role_context_role !== input.role

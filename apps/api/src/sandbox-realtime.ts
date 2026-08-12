@@ -10,6 +10,8 @@ import {
   errorBody,
   isRoleContextStale,
   isRoleContextUnavailable,
+  roleContextUnavailableBody,
+  type AppEnvironment,
   type AppServices,
 } from "./route-support.js";
 
@@ -196,7 +198,7 @@ function writesSandboxState(method: string, path: string) {
 }
 
 export function registerSandboxRealtimeInvalidationPublishing(
-  app: Hono,
+  app: Hono<AppEnvironment>,
   services: AppServices,
 ) {
   app.use("/api/v1/*", async (context, next) => {
@@ -230,7 +232,7 @@ function sseFrame(event: "connected" | "invalidated" | "reconnect") {
 }
 
 export function registerSandboxRealtimeRoutes(
-  app: Hono,
+  app: Hono<AppEnvironment>,
   services: AppServices,
 ) {
   app.get("/api/v1/demo/realtime", async (context) => {
@@ -287,8 +289,8 @@ export function registerSandboxRealtimeRoutes(
       }
       if (isRoleContextUnavailable(error)) {
         return context.json(
-          errorBody(
-            "ROLE_CONTEXT_UNAVAILABLE",
+          roleContextUnavailableBody(
+            error,
             "当前演示角色或沙箱已失效，请返回公开入口重新选择。",
             requestId,
           ),

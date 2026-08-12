@@ -10,10 +10,19 @@ import type {
   SandboxResetReadyResponse,
 } from "@jingshu/contracts";
 
-import { issueRoleSession, readRoleSession } from "./role-session.js";
+import {
+  issueRoleSession,
+  readRoleSession,
+  readRoleSessionEndReason,
+} from "./role-session.js";
+import {
+  PUBLIC_VISITOR_COOKIE,
+  readPublicVisitorKey,
+} from "./public-sandbox-routes.js";
 import {
   SESSION_COOKIE,
   UUID_V4_PATTERN,
+  clientIpFromBindings,
   csrfTokensMatch,
   errorBody,
   isPlainRecord,
@@ -21,7 +30,9 @@ import {
   isRoleContextUnavailable,
   recordRoleContextDenial,
   roleContextBody,
+  roleContextUnavailableBody,
   setRoleSessionCookie,
+  type AppEnvironment,
   type AppServices,
 } from "./route-support.js";
 
@@ -50,8 +61,8 @@ function roleContextError(
   }
   if (isRoleContextUnavailable(error)) {
     return {
-      body: errorBody(
-        "ROLE_CONTEXT_UNAVAILABLE",
+      body: roleContextUnavailableBody(
+        error,
         "当前演示角色或沙箱已失效，请返回公开入口重新选择。",
         requestId,
       ),
@@ -61,7 +72,10 @@ function roleContextError(
   return null;
 }
 
-export function registerDemoToolsRoutes(app: Hono, services: AppServices) {
+export function registerDemoToolsRoutes(
+  app: Hono<AppEnvironment>,
+  services: AppServices,
+) {
   app.get("/api/v1/demo/time", async (context) => {
     const requestId = randomUUID();
     context.header("X-Request-Id", requestId);
@@ -77,17 +91,16 @@ export function registerDemoToolsRoutes(app: Hono, services: AppServices) {
         503,
       );
     }
-    const session = readRoleSession(
-      getCookie(context, SESSION_COOKIE),
-      services.sessionSecret,
-      services.wallClock.now().getTime(),
-    );
+    const sessionToken = getCookie(context, SESSION_COOKIE);
+    const now = services.wallClock.now().getTime();
+    const session = readRoleSession(sessionToken, services.sessionSecret, now);
     if (!session) {
       return context.json(
         errorBody(
           "ROLE_CONTEXT_REQUIRED",
           "演示角色上下文已失效，请返回公开入口重新选择。",
           requestId,
+          readRoleSessionEndReason(sessionToken, services.sessionSecret, now),
         ),
         401,
       );
@@ -146,17 +159,16 @@ export function registerDemoToolsRoutes(app: Hono, services: AppServices) {
         503,
       );
     }
-    const session = readRoleSession(
-      getCookie(context, SESSION_COOKIE),
-      services.sessionSecret,
-      services.wallClock.now().getTime(),
-    );
+    const sessionToken = getCookie(context, SESSION_COOKIE);
+    const now = services.wallClock.now().getTime();
+    const session = readRoleSession(sessionToken, services.sessionSecret, now);
     if (!session) {
       return context.json(
         errorBody(
           "ROLE_CONTEXT_REQUIRED",
           "演示角色上下文已失效，请返回公开入口重新选择。",
           requestId,
+          readRoleSessionEndReason(sessionToken, services.sessionSecret, now),
         ),
         401,
       );
@@ -305,19 +317,32 @@ export function registerDemoToolsRoutes(app: Hono, services: AppServices) {
         503,
       );
     }
-    const session = readRoleSession(
-      getCookie(context, SESSION_COOKIE),
-      services.sessionSecret,
-      services.wallClock.now().getTime(),
-    );
+    const sessionToken = getCookie(context, SESSION_COOKIE);
+    const now = services.wallClock.now().getTime();
+    const session = readRoleSession(sessionToken, services.sessionSecret, now);
     if (!session) {
       return context.json(
         errorBody(
           "ROLE_CONTEXT_REQUIRED",
           "演示角色上下文已失效，请返回公开入口重新选择。",
           requestId,
+          readRoleSessionEndReason(sessionToken, services.sessionSecret, now),
         ),
         401,
+      );
+    }
+    const visitorKey = readPublicVisitorKey(
+      getCookie(context, PUBLIC_VISITOR_COOKIE),
+      services.sessionSecret,
+    );
+    if (!visitorKey) {
+      return context.json(
+        errorBody(
+          "PUBLIC_VISITOR_CONTEXT_REQUIRED",
+          "访客上下文已失效，请返回公开入口重新选择后再重置。",
+          requestId,
+        ),
+        428,
       );
     }
     const origin = context.req.header("Origin");
@@ -380,24 +405,17 @@ export function registerDemoToolsRoutes(app: Hono, services: AppServices) {
     }
 
     try {
+      const clientIp = clientIpFromBindings(context.env?.clientIp);
       const result = await services.sandboxDatabase.resetSandbox({
+        ...(clientIp ? { clientIp } : {}),
         contextVersion: session.contextVersion,
         idempotencyKey,
         personaId: session.personaId,
         requestId,
         role: session.role,
         sandboxId: session.sandboxId,
+        visitorKey,
       });
-      if (services.repairImageStorage) {
-        await services.repairImageStorage
-          .deleteSandbox(session.sandboxId)
-          .then(() =>
-            services.sandboxDatabase?.completeRepairImageCleanupForSandbox(
-              session.sandboxId,
-            ),
-          )
-          .catch(() => undefined);
-      }
       const nextSession = issueRoleSession(
         result.roleContext,
         services.sessionSecret,
@@ -427,6 +445,7 @@ export function registerDemoToolsRoutes(app: Hono, services: AppServices) {
           context: roleContextBody(
             result.roleContext,
             nextSession.payload.csrfToken,
+            services.wallClock.now(),
           ),
         } satisfies SandboxResetReadyResponse,
         result.replayed ? 200 : 201,
@@ -442,6 +461,35 @@ export function registerDemoToolsRoutes(app: Hono, services: AppServices) {
             requestId,
           ),
           409,
+        );
+      }
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "PUBLIC_SANDBOX_RATE_LIMITED" &&
+        "retryAt" in error &&
+        error.retryAt instanceof Date
+      ) {
+        context.header(
+          "Retry-After",
+          String(
+            Math.max(
+              1,
+              Math.ceil(
+                (error.retryAt.getTime() - services.wallClock.now().getTime()) /
+                  1_000,
+              ),
+            ),
+          ),
+        );
+        return context.json(
+          errorBody(
+            "SANDBOX_RESET_RATE_LIMITED",
+            "重置请求过于频繁；当前沙箱未被替换，请稍后安全重试。",
+            requestId,
+          ),
+          429,
         );
       }
       return context.json(

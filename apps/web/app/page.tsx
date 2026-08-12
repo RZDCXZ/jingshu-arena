@@ -22,6 +22,7 @@ import type {
   PublicRole,
   PublicSandboxReadyResponse,
   RoleContextReadyResponse,
+  SandboxEndReason,
 } from "@jingshu/contracts";
 
 import jingshuMark from "../../../product-ui/management-system/design-prototype/public/assets/jingshu-mark.png";
@@ -39,6 +40,8 @@ type CreationStage =
   | "ready"
   | "rate-limited"
   | "readonly"
+  | "capacity-readonly"
+  | "sandbox-ended"
   | "shell"
   | "error"
   | "timeout";
@@ -64,6 +67,13 @@ function isEndedRoleContext(error: ApiErrorResponse | null) {
     error?.error?.code === "ROLE_CONTEXT_REQUIRED" ||
     error?.error?.code === "ROLE_CONTEXT_UNAVAILABLE"
   );
+}
+
+function sandboxEndReasonFromApi(
+  error: ApiErrorResponse | null,
+): SandboxEndReason | null {
+  const reason = error?.error?.sandboxEndReason;
+  return reason === "expired" || reason === "reset" ? reason : null;
 }
 
 function isInfrastructureUnavailable(
@@ -675,15 +685,22 @@ function RateLimitedView({
 
 function ReadonlySeedSnapshot({
   failure,
+  mode = "service",
   onRetry,
 }: {
   failure: FailureState;
+  mode?: "capacity" | "service";
   onRetry: () => void;
 }) {
+  const capacityReadonly = mode === "capacity";
   return (
     <main
       className="readonly-snapshot-page"
-      data-testid="readonly-seed-snapshot"
+      data-testid={
+        capacityReadonly
+          ? "capacity-readonly-snapshot"
+          : "readonly-seed-snapshot"
+      }
     >
       <PublicHeader />
       <section
@@ -691,22 +708,31 @@ function ReadonlySeedSnapshot({
         className="readonly-snapshot"
       >
         <div className="readonly-snapshot-intro" role="alert">
-          <span className="eyebrow">WEB-G07 · 随构建发布的标准种子快照</span>
+          <span className="eyebrow">
+            {capacityReadonly
+              ? "WEB-G01 · 公共演示容量保护"
+              : "WEB-G07 · 随构建发布的标准种子快照"}
+          </span>
           <div className="state-icon is-warning">
             <Database weight="duotone" />
           </div>
           <h1 id="readonly-snapshot-title">
-            服务暂时不可用，当前展示只读标准种子快照
+            {capacityReadonly
+              ? "当前公共演示容量已满，展示只读标准种子快照"
+              : "服务暂时不可用，当前展示只读标准种子快照"}
           </h1>
           <p>
-            这是一份随当前构建发布的固定合成故事，不是浏览器可写
-            Mock。所有预约、模拟支付、角色切换、时间推进和重置操作均已禁用；恢复后会重新读取服务端权威状态。
+            {capacityReadonly
+              ? "现有独立沙箱仍可继续使用。此处展示的是随当前构建发布的固定合成故事，不会占用新的可写沙箱；容量释放后可重新创建。"
+              : "这是一份随当前构建发布的固定合成故事，不是浏览器可写 Mock。所有预约、模拟支付、角色切换、时间推进和重置操作均已禁用；恢复后会重新读取服务端权威状态。"}
           </p>
           <div className="readonly-snapshot-notice">
             <LockKey weight="duotone" />
             <span>
               <strong>写入已停止</strong>
-              不会把本地修改当作已保存，也不会生成新的业务副作用。
+              {capacityReadonly
+                ? "不会占用可写容量、生成局部沙箱或把本地修改当作已保存。"
+                : "不会把本地修改当作已保存，也不会生成新的业务副作用。"}
             </span>
           </div>
           {failure.requestId ? (
@@ -718,7 +744,7 @@ function ReadonlySeedSnapshot({
             type="button"
           >
             <ArrowClockwise weight="bold" />
-            重新连接服务
+            {capacityReadonly ? "稍后重新创建独立沙箱" : "重新连接服务"}
           </button>
         </div>
 
@@ -732,7 +758,9 @@ function ReadonlySeedSnapshot({
                 {readonlySeedSnapshot.seedVersion}
               </p>
             </div>
-            <span className="readonly-status-chip">只读模式</span>
+            <span className="readonly-status-chip">
+              {capacityReadonly ? "容量保护" : "只读模式"}
+            </span>
           </header>
           <div className="readonly-store-grid">
             {readonlySeedSnapshot.stores.map(([name, hours, signal]) => (
@@ -775,6 +803,57 @@ function ReadonlySeedSnapshot({
   );
 }
 
+function SandboxEndedView({
+  onCreate,
+  onReturn,
+  reason,
+}: {
+  onCreate: () => void;
+  onReturn: () => void;
+  reason: SandboxEndReason;
+}) {
+  const expired = reason === "expired";
+
+  return (
+    <main className="state-page" data-testid="sandbox-ended">
+      <PublicHeader />
+      <section className="state-card failure-card" role="alert">
+        <div className="state-icon is-warning">
+          <Warning weight="duotone" />
+        </div>
+        <span className="eyebrow">WEB-G06 · 沙箱生命周期保护</span>
+        <h1>{expired ? "该沙箱已到期" : "此标签使用的旧沙箱已失效"}</h1>
+        <p>读取与保存已停止。私有图片与业务记录正在后台清理，无需等待。</p>
+        <div className="failure-proof">
+          <strong>
+            {expired ? "24 小时服务端期限已结束" : "另一处已重置为新的独立沙箱"}
+          </strong>
+          <span>
+            旧会话不会恢复访问权，也不会等待清理完成。创建新沙箱后会从标准种子重新开始。
+          </span>
+        </div>
+        <div className="state-actions">
+          <button
+            className="button primary-button"
+            onClick={onCreate}
+            type="button"
+          >
+            创建新的独立沙箱
+            <ArrowRight weight="bold" />
+          </button>
+          <button
+            className="button secondary-button"
+            onClick={onReturn}
+            type="button"
+          >
+            返回角色入口
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 export default function PublicEntryPage() {
   const [stage, setStage] = useState<CreationStage>("checking");
   const [selectedRole, setSelectedRole] = useState<PublicRole>("customer");
@@ -782,6 +861,8 @@ export default function PublicEntryPage() {
   const [result, setResult] = useState<PublicSandboxReadyResponse | null>(null);
   const [roleContext, setRoleContext] =
     useState<RoleContextReadyResponse | null>(null);
+  const [sandboxEndReason, setSandboxEndReason] =
+    useState<SandboxEndReason>("expired");
   const [failure, setFailure] = useState<FailureState>({
     message: "演示世界暂时无法创建，请稍后安全重试。",
   });
@@ -818,6 +899,11 @@ export default function PublicEntryPage() {
         if (!active) return;
         if (!response.ok) {
           const apiError = payload as ApiErrorResponse | null;
+          const endReason = sandboxEndReasonFromApi(apiError);
+          if (response.status === 401 && endReason) {
+            showSandboxEnded(endReason);
+            return;
+          }
           if (response.status === 401 && isEndedRoleContext(apiError)) {
             setStage("entry");
             return;
@@ -845,6 +931,7 @@ export default function PublicEntryPage() {
         if (context.status !== "ready") {
           throw new Error("The role-context response was incomplete.");
         }
+        setSelectedRole(context.role.id);
         setRoleContext(context);
         setStage("shell");
       })
@@ -866,6 +953,11 @@ export default function PublicEntryPage() {
       const { payload, response } = await requestExistingRoleContext();
       if (!response.ok) {
         const apiError = payload as ApiErrorResponse;
+        const endReason = sandboxEndReasonFromApi(apiError);
+        if (response.status === 401 && endReason) {
+          showSandboxEnded(endReason);
+          return;
+        }
         if (response.status === 401 && isEndedRoleContext(apiError)) {
           returnToEntry();
           return;
@@ -893,6 +985,7 @@ export default function PublicEntryPage() {
       if (context.status !== "ready") {
         throw new Error("The role-context response was incomplete.");
       }
+      setSelectedRole(context.role.id);
       setRoleContext(context);
       setStage("shell");
     } catch {
@@ -958,6 +1051,18 @@ export default function PublicEntryPage() {
           showRateLimited(response, apiError, "sandbox");
           return;
         }
+        if (apiError.error?.code === "PUBLIC_SANDBOX_CAPACITY_EXHAUSTED") {
+          setFailure({
+            message:
+              apiError.error?.message ??
+              "当前公共演示容量已满，请稍后重新创建独立沙箱。",
+            ...(apiError.error?.requestId
+              ? { requestId: apiError.error.requestId }
+              : {}),
+          });
+          setStage("capacity-readonly");
+          return;
+        }
         setFailure({
           message:
             apiError.error?.message ??
@@ -1008,6 +1113,14 @@ export default function PublicEntryPage() {
     setCreationKey("");
   }
 
+  function showSandboxEnded(reason: SandboxEndReason) {
+    setSandboxEndReason(reason);
+    setResult(null);
+    setRoleContext(null);
+    setCreationKey("");
+    setStage("sandbox-ended");
+  }
+
   if (stage === "checking") return <ExistingContextCheck />;
   if (stage === "context-error")
     return (
@@ -1036,6 +1149,22 @@ export default function PublicEntryPage() {
         onRetry={() => void enterRoleContext()}
       />
     );
+  if (stage === "capacity-readonly")
+    return (
+      <ReadonlySeedSnapshot
+        failure={failure}
+        mode="capacity"
+        onRetry={() => startCreation(selectedRole)}
+      />
+    );
+  if (stage === "sandbox-ended")
+    return (
+      <SandboxEndedView
+        onCreate={() => startCreation(selectedRole)}
+        onReturn={returnToEntry}
+        reason={sandboxEndReason}
+      />
+    );
   if (stage === "creating") return <CreationProgress role={selectedRole} />;
   if (stage === "ready" && result)
     return (
@@ -1050,7 +1179,8 @@ export default function PublicEntryPage() {
       <RoleContextShell
         context={roleContext}
         onContextChange={setRoleContext}
-        onContextUnavailable={returnToEntry}
+        onContextRequired={returnToEntry}
+        onContextUnavailable={showSandboxEnded}
         onServiceUnavailable={(nextFailure) => {
           setFailure(nextFailure);
           setStage("readonly");

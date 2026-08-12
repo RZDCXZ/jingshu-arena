@@ -246,6 +246,47 @@ test("a stale session on reload canonicalizes the server-current role", async ({
   expect(canonicalRefreshes).toBeGreaterThan(0);
 });
 
+for (const terminalState of [
+  {
+    code: "ROLE_CONTEXT_REQUIRED",
+    heading: "该沙箱已到期",
+    reason: "expired",
+  },
+  {
+    code: "ROLE_CONTEXT_UNAVAILABLE",
+    heading: "此标签使用的旧沙箱已失效",
+    reason: "reset",
+  },
+] as const) {
+  test(`a reloaded ${terminalState.reason} sandbox enters its distinct G06 state`, async ({
+    page,
+  }) => {
+    await page.unroute("**/api/v1/demo/context");
+    await page.route("**/api/v1/demo/context", async (route) => {
+      await route.fulfill({
+        json: {
+          error: {
+            code: terminalState.code,
+            message: "演示角色上下文已失效，请返回公开入口重新选择。",
+            requestId: "00000000-0000-4000-8000-000000000308",
+            sandboxEndReason: terminalState.reason,
+          },
+        },
+        status: 401,
+      });
+    });
+
+    await page.goto("/");
+    await expect(page.getByTestId("sandbox-ended")).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: terminalState.heading }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "创建新的独立沙箱" }),
+    ).toBeVisible();
+  });
+}
+
 test("role selection shows creation progress and the versioned three-store world", async ({
   page,
 }) => {
@@ -317,6 +358,66 @@ test("failed creation keeps the same key for a safe retry", async ({
   ).toBeVisible();
   expect(creationKeys).toHaveLength(2);
   expect(creationKeys[1]).toBe(creationKeys[0]);
+});
+
+test("capacity exhaustion shows a non-writable standard snapshot and retries with a new creation key", async ({
+  page,
+}) => {
+  const creationKeys: string[] = [];
+  let attempt = 0;
+  await page.route("**/api/v1/public/sandboxes", async (route) => {
+    attempt += 1;
+    creationKeys.push(route.request().headers()["idempotency-key"] ?? "");
+    if (attempt === 1) {
+      await route.fulfill({
+        headers: { "Retry-After": "60" },
+        json: {
+          error: {
+            code: "PUBLIC_SANDBOX_CAPACITY_EXHAUSTED",
+            message:
+              "当前公共演示容量已满。你可以查看只读标准快照，并稍后重新创建独立沙箱。",
+            requestId: "00000000-0000-4000-8000-000000000015",
+          },
+        },
+        status: 503,
+      });
+      return;
+    }
+    await route.fulfill({ json: readyWorld, status: 201 });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /进入顾客演示/u }).click();
+
+  const snapshot = page.getByTestId("capacity-readonly-snapshot");
+  await expect(snapshot).toBeVisible();
+  await expect(
+    snapshot.getByRole("heading", {
+      name: "当前公共演示容量已满，展示只读标准种子快照",
+    }),
+  ).toBeVisible();
+  await expect(
+    snapshot.getByText(
+      "不会占用可写容量、生成局部沙箱或把本地修改当作已保存。",
+    ),
+  ).toBeVisible();
+  for (const action of [
+    "创建预约（只读）",
+    "办理到店（只读）",
+    "推进业务时间（只读）",
+    "重置沙箱（只读）",
+  ]) {
+    await expect(snapshot.getByRole("button", { name: action })).toBeDisabled();
+  }
+
+  await snapshot.getByRole("button", { name: "稍后重新创建独立沙箱" }).click();
+  await expect(
+    page.getByRole("heading", { name: "沙箱已准备完成" }),
+  ).toBeVisible();
+  expect(creationKeys).toHaveLength(2);
+  expect(creationKeys[0]).toMatch(/^[0-9a-f-]{36}$/u);
+  expect(creationKeys[1]).toMatch(/^[0-9a-f-]{36}$/u);
+  expect(creationKeys[1]).not.toBe(creationKeys[0]);
 });
 
 test("rate-limited creation waits for Retry-After and retains its original key", async ({

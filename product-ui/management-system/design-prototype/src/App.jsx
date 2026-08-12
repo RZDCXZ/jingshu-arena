@@ -49,6 +49,7 @@ import {
 } from "./StaffPages.jsx";
 import {
   CustomerHandoff,
+  CapacityReadonlySnapshot,
   DataStatusModal,
   DemoChecklistDrawer,
   ExportModal,
@@ -87,13 +88,18 @@ const freshnessMeta = {
   reconnecting: ["正在重新连接", "warning"],
   polling: ["轮询更新", "info"],
   manual: ["需手动刷新", "warning"],
+  capacity: ["公共容量已满", "warning"],
   readonly: ["只读降级", "warning"],
   stale: ["旧标签失效", "danger"],
   expired: ["沙箱已到期", "danger"],
+  reset: ["旧沙箱已失效", "danger"],
   rate: ["限流恢复", "warning"],
 };
 
 export function App() {
+  const initialSandboxState = new URLSearchParams(window.location.search).get(
+    "sandboxState",
+  );
   const [role, setRole] = useState("staff");
   const [page, setPage] = useState("workbench");
   const [publicView, setPublicView] = useState(false);
@@ -120,7 +126,17 @@ export function App() {
   const [businessTime, setBusinessTime] = useState(
     new URLSearchParams(window.location.search).get("businessTime") || "19:30",
   );
-  const [dataMode, setDataMode] = useState("live");
+  const [dataMode, setDataMode] = useState(
+    ["readonly", "stale", "expired", "reset", "rate"].includes(
+      initialSandboxState,
+    )
+      ? initialSandboxState
+      : "live",
+  );
+  const [capacityReadonly, setCapacityReadonly] = useState(
+    initialSandboxState === "capacity",
+  );
+  const [capacityRole, setCapacityRole] = useState("staff");
   const [rateRetrySeconds, setRateRetrySeconds] = useState(0);
   const [toast, setToast] = useState(null);
   const [timeLoading, setTimeLoading] = useState(false);
@@ -135,7 +151,8 @@ export function App() {
 
   const meta = roleMeta[role];
   const readonly = dataMode === "readonly";
-  const blocking = dataMode === "stale" || dataMode === "expired";
+  const blocking =
+    dataMode === "stale" || dataMode === "expired" || dataMode === "reset";
   const [defaultFreshnessLabel, freshnessTone] = freshnessMeta[dataMode];
   const freshnessLabel =
     dataMode === "rate"
@@ -164,6 +181,8 @@ export function App() {
   }
 
   function createSandbox(nextRole) {
+    setCapacityReadonly(false);
+    setDataMode("live");
     setPublicView(false);
     setCustomerHandoff(false);
     setInitializingRole(nextRole);
@@ -364,8 +383,13 @@ export function App() {
   }
 
   function selectDataMode(mode) {
-    setDataMode(mode);
     setOverlay(null);
+    if (mode === "capacity") {
+      setCapacityRole(role);
+      setCapacityReadonly(true);
+      return;
+    }
+    setDataMode(mode);
     if (mode === "rate") {
       setRateRetrySeconds(18);
       setToast({
@@ -374,7 +398,10 @@ export function App() {
       });
     } else
       setToast({
-        tone: mode === "stale" || mode === "expired" ? "danger" : "info",
+        tone:
+          mode === "stale" || mode === "expired" || mode === "reset"
+            ? "danger"
+            : "info",
         text: `已切换到“${freshnessMeta[mode][0]}”状态预览`,
       });
   }
@@ -543,6 +570,16 @@ export function App() {
     queueFilter,
   ]);
 
+  if (capacityReadonly)
+    return (
+      <CapacityReadonlySnapshot
+        onRetry={() => createSandbox(capacityRole)}
+        onReturn={() => {
+          setCapacityReadonly(false);
+          setPublicView(true);
+        }}
+      />
+    );
   if (initializingRole) return <SandboxInit role={initializingRole} />;
   if (customerHandoff)
     return (
@@ -907,12 +944,20 @@ export function App() {
       {dataMode === "expired" && (
         <BlockingState
           title="当前沙箱已到期"
-          body="沙箱自创建起保留 24 小时。旧沙箱已停止读取和写入，需要创建新的标准种子沙箱。"
-          action="创建新沙箱"
-          onAction={() => {
-            setDataMode("live");
-            setPublicView(true);
-          }}
+          body="沙箱自创建起保留 24 小时。旧沙箱已停止读取和写入；私有图片与业务记录正在后台清理，无需等待。"
+          action="创建新的独立沙箱"
+          onAction={() => createSandbox(role)}
+          note="旧访问权不会因清理重试而恢复；新沙箱会从标准种子重新开始。"
+          returnFocusRef={blockingReturnFocusRef}
+        />
+      )}
+      {dataMode === "reset" && (
+        <BlockingState
+          title="此标签使用的旧沙箱已失效"
+          body="另一处已完成重置。旧沙箱的读取与保存立即停止；私有图片与业务记录正在后台清理，无需等待。"
+          action="创建新的独立沙箱"
+          onAction={() => createSandbox(role)}
+          note="不会回到旧会话或等待清理完成；新沙箱会从标准种子重新开始。"
           returnFocusRef={blockingReturnFocusRef}
         />
       )}
@@ -1005,7 +1050,14 @@ function ManagerLiveOps({
   );
 }
 
-function BlockingState({ title, body, action, onAction, returnFocusRef }) {
+function BlockingState({
+  title,
+  body,
+  action,
+  note = "未提交的表单内容仍保留在当前标签，刷新前请确认是否需要暂存。",
+  onAction,
+  returnFocusRef,
+}) {
   const dialogRef = useRef(null);
   const actionRef = useRef(null);
 
@@ -1052,9 +1104,7 @@ function BlockingState({ title, body, action, onAction, returnFocusRef }) {
           <Repeat weight="bold" />
           <span>{action}</span>
         </button>
-        <small>
-          未提交的表单内容仍保留在当前标签，刷新前请确认是否需要暂存。
-        </small>
+        <small>{note}</small>
       </div>
     </div>
   );

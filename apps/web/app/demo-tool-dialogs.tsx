@@ -21,6 +21,7 @@ import type {
   DemoTimeImpactResponse,
   DemoTimePreviewResponse,
   RoleContextReadyResponse,
+  SandboxEndReason,
   SandboxResetReadyResponse,
 } from "@jingshu/contracts";
 
@@ -80,7 +81,24 @@ function readFailure(payload: unknown, fallback: string) {
   return {
     code: failure.error?.code ?? "UNKNOWN_ERROR",
     message: failure.error?.message ?? fallback,
+    sandboxEndReason: failure.error?.sandboxEndReason,
   };
+}
+
+function unavailableSandboxReason(
+  sandboxEndReason: SandboxEndReason | undefined,
+): SandboxEndReason | undefined {
+  return sandboxEndReason === "expired" || sandboxEndReason === "reset"
+    ? sandboxEndReason
+    : undefined;
+}
+
+function retryAfterNotice(response: Response) {
+  const seconds = Number(response.headers.get("Retry-After"));
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "请稍后使用原请求安全重试。";
+  }
+  return `${Math.ceil(seconds)} 秒后可使用原请求安全重试。`;
 }
 
 export function DemoTimeDialog({
@@ -95,7 +113,7 @@ export function DemoTimeDialog({
   onAdvanced: (result: DemoTimeAdvancedResponse) => void;
   onClose: () => void;
   onStale: () => void;
-  onUnavailable: () => void;
+  onUnavailable: (reason: SandboxEndReason | undefined) => void;
   returnFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
   const [preview, setPreview] = useState<DemoTimePreviewResponse | null>(null);
@@ -145,7 +163,9 @@ export function DemoTimeDialog({
           failure.code === "ROLE_CONTEXT_UNAVAILABLE" ||
           failure.code === "ROLE_CONTEXT_REQUIRED"
         ) {
-          previewCallbacksRef.current.onUnavailable();
+          previewCallbacksRef.current.onUnavailable(
+            unavailableSandboxReason(failure.sandboxEndReason),
+          );
           previewCallbacksRef.current.onClose();
           return;
         }
@@ -225,7 +245,7 @@ export function DemoTimeDialog({
           failure.code === "ROLE_CONTEXT_UNAVAILABLE" ||
           failure.code === "ROLE_CONTEXT_REQUIRED"
         ) {
-          onUnavailable();
+          onUnavailable(unavailableSandboxReason(failure.sandboxEndReason));
           onClose();
           return;
         }
@@ -538,7 +558,7 @@ export function SandboxResetDialog({
   onClose: () => void;
   onReset: (result: SandboxResetReadyResponse) => void;
   onStale: () => void;
-  onUnavailable: () => void;
+  onUnavailable: (reason: SandboxEndReason | undefined) => void;
   returnFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
   const [stage, setStage] = useState<
@@ -594,13 +614,21 @@ export function SandboxResetDialog({
           failure.code === "ROLE_CONTEXT_UNAVAILABLE" ||
           failure.code === "ROLE_CONTEXT_REQUIRED"
         ) {
-          onUnavailable();
+          onUnavailable(unavailableSandboxReason(failure.sandboxEndReason));
           onClose();
           return;
         }
         if (failure.code === "ROLE_CONTEXT_STALE") {
           onStale();
           onClose();
+          return;
+        }
+        if (
+          response.status === 429 &&
+          failure.code === "SANDBOX_RESET_RATE_LIMITED"
+        ) {
+          setError(`${failure.message} ${retryAfterNotice(response)}`);
+          setStage("confirm");
           return;
         }
         setError(failure.message);

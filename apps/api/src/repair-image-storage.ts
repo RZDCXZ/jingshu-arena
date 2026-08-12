@@ -52,7 +52,7 @@ export class MemoryRepairImageStorage implements RepairImageStorage {
     });
   }
 
-  async sweepExpiredQuarantine(maxAgeMilliseconds = 10 * 60 * 1_000) {
+  async sweepExpiredQuarantine(maxAgeMilliseconds = 60 * 60 * 1_000) {
     const cutoff = Date.now() - maxAgeMilliseconds;
     for (const [key, object] of this.#objects) {
       if (key.startsWith("quarantine/") && object.storedAt <= cutoff) {
@@ -139,7 +139,7 @@ export class FileRepairImageStorage implements RepairImageStorage {
     }
   }
 
-  async sweepExpiredQuarantine(maxAgeMilliseconds = 10 * 60 * 1_000) {
+  async sweepExpiredQuarantine(maxAgeMilliseconds = 60 * 60 * 1_000) {
     const quarantineRoot = join(this.#root, "quarantine");
     const cutoff = Date.now() - maxAgeMilliseconds;
     let sandboxes;

@@ -9,10 +9,12 @@ export class RoleContextStaleError extends Error {
 
 export class RoleContextUnavailableError extends Error {
   readonly code = "ROLE_CONTEXT_UNAVAILABLE";
+  readonly sandboxEndReason: SandboxEndReason | undefined;
 
-  constructor() {
+  constructor(sandboxEndReason?: SandboxEndReason) {
     super("The role context is missing, invalid, expired, or replaced.");
     this.name = "RoleContextUnavailableError";
+    this.sandboxEndReason = sandboxEndReason;
   }
 }
 
@@ -31,6 +33,30 @@ export class PublicSandboxOwnershipConflictError extends Error {
   constructor() {
     super("The creation key belongs to another visitor.");
     this.name = "PublicSandboxOwnershipConflictError";
+  }
+}
+
+export class PublicSandboxCapacityExceededError extends Error {
+  readonly code = "PUBLIC_SANDBOX_CAPACITY_EXHAUSTED";
+  readonly retryAt: Date;
+
+  constructor(retryAt: Date) {
+    super("The active public sandbox capacity has been reached.");
+    this.name = "PublicSandboxCapacityExceededError";
+    this.retryAt = retryAt;
+  }
+}
+
+export class PublicSandboxRateLimitedError extends Error {
+  readonly code = "PUBLIC_SANDBOX_RATE_LIMITED";
+  readonly operation: "create" | "reset";
+  readonly retryAt: Date;
+
+  constructor(operation: "create" | "reset", retryAt: Date) {
+    super(`The public sandbox ${operation} request is rate limited.`);
+    this.name = "PublicSandboxRateLimitedError";
+    this.operation = operation;
+    this.retryAt = retryAt;
   }
 }
 
@@ -467,3 +493,4 @@ export class RepairImageConflictError extends Error {
   }
 }
 import type { ReservationStatus } from "@jingshu/domain";
+import type { SandboxEndReason } from "@jingshu/contracts";

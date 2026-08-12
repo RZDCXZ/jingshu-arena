@@ -1777,6 +1777,7 @@ export interface RoleContextReadyResponse {
   };
   readonly freshness: {
     readonly mode: "manual";
+    /** Server wall time at which this context was read; clients use it to retire an expired UI. */
     readonly observedAt: string;
   };
 }
@@ -1824,12 +1825,17 @@ export interface SandboxResetReadyResponse {
   readonly context: RoleContextReadyResponse;
 }
 
+/** Why a previously valid sandbox can no longer be used. */
+export type SandboxEndReason = "expired" | "reset";
+
 export interface ApiErrorResponse {
   readonly error: {
     readonly code: string;
     readonly currentStatus?: CustomerReservationStatus;
     readonly message: string;
     readonly requestId: string;
+    /** Present only when the server can authoritatively identify the terminal sandbox state. */
+    readonly sandboxEndReason?: SandboxEndReason;
   };
 }
 

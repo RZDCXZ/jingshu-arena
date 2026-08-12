@@ -18,6 +18,7 @@ import type { RefObject } from "react";
 import type {
   DemoTimeAdvancedResponse,
   RoleContextReadyResponse,
+  SandboxEndReason,
   SandboxResetReadyResponse,
 } from "@jingshu/contracts";
 
@@ -75,6 +76,17 @@ const realtimeStatusCopy = {
 
 type ContextRefreshSource =
   "business-time" | "manual" | "polling" | "realtime" | "replay";
+
+function unavailableSandboxReason(
+  error:
+    | {
+        sandboxEndReason?: SandboxEndReason;
+      }
+    | undefined,
+): SandboxEndReason | undefined {
+  const reason = error?.sandboxEndReason;
+  return reason === "expired" || reason === "reset" ? reason : undefined;
+}
 
 function sandboxWasRotated(
   current: RoleContextReadyResponse,
@@ -219,12 +231,14 @@ function ContextPage({
 export function RoleContextShell({
   context,
   onContextChange,
+  onContextRequired,
   onContextUnavailable,
   onServiceUnavailable,
 }: {
   context: RoleContextReadyResponse;
   onContextChange: (context: RoleContextReadyResponse) => void;
-  onContextUnavailable: () => void;
+  onContextRequired: () => void;
+  onContextUnavailable: (reason: SandboxEndReason) => void;
   onServiceUnavailable: (failure: {
     message: string;
     requestId?: string;
@@ -264,6 +278,37 @@ export function RoleContextShell({
   const recoveryFenceRef = useRef(false);
   const realtimeRefreshCountRef = useRef(0);
   const meta = roleMeta[context.role.id];
+
+  const handleContextUnavailable = useCallback(
+    (reason: SandboxEndReason | undefined) => {
+      if (reason) {
+        onContextUnavailable(reason);
+        return;
+      }
+      onContextRequired();
+    },
+    [onContextRequired, onContextUnavailable],
+  );
+
+  useEffect(() => {
+    const expiresAt = Date.parse(context.sandbox.expiresAt);
+    const observedAt = Date.parse(context.freshness.observedAt);
+    if (!Number.isFinite(expiresAt) || !Number.isFinite(observedAt)) {
+      return undefined;
+    }
+
+    // 仅按服务端签发的寿命差值安排 UI 收束，不以浏览器墙钟裁决访问权；
+    // 任一 API 仍会由服务端真实时钟再次拒绝过期上下文。
+    const timer = window.setTimeout(
+      () => handleContextUnavailable("expired"),
+      Math.max(0, expiresAt - observedAt),
+    );
+    return () => window.clearTimeout(timer);
+  }, [
+    context.freshness.observedAt,
+    context.sandbox.expiresAt,
+    handleContextUnavailable,
+  ]);
 
   const beginAuthoritativeRefresh = useCallback(() => {
     realtimeRefreshCountRef.current += 1;
@@ -332,7 +377,12 @@ export function RoleContextShell({
         const payload: unknown = await response.json();
         if (!response.ok) {
           const failure = payload as {
-            error?: { code?: string; message?: string; requestId?: string };
+            error?: {
+              code?: string;
+              message?: string;
+              requestId?: string;
+              sandboxEndReason?: SandboxEndReason;
+            };
           };
           if (failure.error?.code === "ROLE_CONTEXT_STALE") {
             recoveryFenceRef.current = false;
@@ -343,7 +393,7 @@ export function RoleContextShell({
             failure.error?.code === "ROLE_CONTEXT_UNAVAILABLE" ||
             failure.error?.code === "ROLE_CONTEXT_REQUIRED"
           ) {
-            onContextUnavailable();
+            handleContextUnavailable(unavailableSandboxReason(failure.error));
             return "unavailable";
           } else if (response.status >= 500) {
             onServiceUnavailable({
@@ -399,7 +449,7 @@ export function RoleContextShell({
       context,
       finishAuthoritativeRefresh,
       onContextChange,
-      onContextUnavailable,
+      handleContextUnavailable,
       onServiceUnavailable,
     ],
   );
@@ -419,9 +469,7 @@ export function RoleContextShell({
       event: MessageEvent<{ contextVersion?: number; type?: string }>,
     ) => {
       if (event.data?.type === "sandbox-reset") {
-        recoveryFenceRef.current = false;
-        setStaleReason("reset");
-        setStale(true);
+        onContextUnavailable("reset");
         return;
       }
       if (event.data?.type === "business-time-advanced") {
@@ -442,7 +490,7 @@ export function RoleContextShell({
       broadcastRef.current = null;
       channel.close();
     };
-  }, [context.contextVersion, refreshContext]);
+  }, [context.contextVersion, onContextUnavailable, refreshContext]);
 
   async function recoverContext() {
     setRefreshing(true);
@@ -467,13 +515,18 @@ export function RoleContextShell({
       const payload: unknown = await response.json();
       if (!response.ok) {
         const failure = payload as {
-          error?: { code?: string; message?: string; requestId?: string };
+          error?: {
+            code?: string;
+            message?: string;
+            requestId?: string;
+            sandboxEndReason?: SandboxEndReason;
+          };
         };
         if (
           failure.error?.code === "ROLE_CONTEXT_UNAVAILABLE" ||
           failure.error?.code === "ROLE_CONTEXT_REQUIRED"
         ) {
-          onContextUnavailable();
+          handleContextUnavailable(unavailableSandboxReason(failure.error));
         } else if (response.status >= 500) {
           onServiceUnavailable({
             message:
@@ -541,10 +594,6 @@ export function RoleContextShell({
     } else {
       onContextChange({
         ...context,
-        freshness: {
-          ...context.freshness,
-          observedAt: new Date().toISOString(),
-        },
         sandbox: {
           ...context.sandbox,
           businessClock: {
@@ -938,7 +987,7 @@ export function RoleContextShell({
             setStale(true);
           }}
           onSwitch={acceptSwitchedContext}
-          onUnavailable={onContextUnavailable}
+          onUnavailable={handleContextUnavailable}
           returnFocusRef={activeRoleTriggerRef}
         />
       ) : null}
@@ -952,7 +1001,7 @@ export function RoleContextShell({
             setStaleReason("role");
             setStale(true);
           }}
-          onUnavailable={onContextUnavailable}
+          onUnavailable={handleContextUnavailable}
           returnFocusRef={timeTriggerRef}
         />
       ) : null}
@@ -966,7 +1015,7 @@ export function RoleContextShell({
             setStaleReason("role");
             setStale(true);
           }}
-          onUnavailable={onContextUnavailable}
+          onUnavailable={handleContextUnavailable}
           returnFocusRef={resetTriggerRef}
         />
       ) : null}

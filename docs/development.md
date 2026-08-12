@@ -35,7 +35,7 @@ packages/domain
 ```
 
 - `apps/web` 是唯一多角色 Next.js Web 应用。
-- `apps/api` 的 Hono 核心使用 Fetch `Request` / `Response`，Node 本地入口保持为薄适配器。
+- `apps/api` 的 Hono 核心使用 Fetch `Request` / `Response`，Node 本地入口保持为薄适配器。核心只接收适配器注入的普通 `clientIp` 值：Node 入口从对端 socket 规范化该值，未来 EdgeOne 入口只能从平台受信任的连接元数据注入；公开的 `X-Forwarded-For`、`X-Real-IP` 与同类请求头永不作为配额身份。没有可信 IP 时，签名访客限额仍然生效，IP 限额仅作为附加约束。
 - `apps/miniprogram` 是原生微信小程序，本地状态不请求 Web API。
 - `packages/domain` 只容纳纯 TypeScript 领域规则；门禁禁止数据库、Node、React、Next.js、Hono 和微信运行时依赖。
 - `packages/contracts` 定义跨端公开契约。

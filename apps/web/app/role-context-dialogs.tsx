@@ -7,6 +7,7 @@ import type {
   ApiErrorResponse,
   PublicRole,
   RoleContextReadyResponse,
+  SandboxEndReason,
 } from "@jingshu/contracts";
 
 import { roleMeta } from "./role-context-model";
@@ -17,6 +18,13 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
       "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
     ),
   );
+}
+
+function unavailableSandboxReason(
+  error: Pick<ApiErrorResponse["error"], "sandboxEndReason"> | undefined,
+): SandboxEndReason | undefined {
+  const reason = error?.sandboxEndReason;
+  return reason === "expired" || reason === "reset" ? reason : undefined;
 }
 
 export function useDialogKeyboard({
@@ -78,7 +86,7 @@ export function RoleSwitchDialog({
   onClose: () => void;
   onStale: (reason: "canonical" | "switch-outcome-unknown") => void;
   onSwitch: (context: RoleContextReadyResponse) => void;
-  onUnavailable: () => void;
+  onUnavailable: (reason: SandboxEndReason | undefined) => void;
   returnFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
   const [pendingRole, setPendingRole] = useState<PublicRole | null>(null);
@@ -137,7 +145,7 @@ export function RoleSwitchDialog({
           failure.error?.code === "ROLE_CONTEXT_UNAVAILABLE" ||
           failure.error?.code === "ROLE_CONTEXT_REQUIRED"
         ) {
-          onUnavailable();
+          onUnavailable(unavailableSandboxReason(failure.error));
           onClose();
           return;
         }

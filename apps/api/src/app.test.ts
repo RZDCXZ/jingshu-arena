@@ -83,7 +83,9 @@ describe("GET /api/v1/demo/context errors", () => {
   it("distinguishes an unavailable role context from an infrastructure failure", async () => {
     const token = issueRoleSession(roleContext, sessionSecret).token;
     const unavailableApp = createApp({
-      sandboxDatabase: databaseThrowing(new RoleContextUnavailableError()),
+      sandboxDatabase: databaseThrowing(
+        new RoleContextUnavailableError("reset"),
+      ),
       sessionSecret,
     });
     const unavailable = await unavailableApp.request("/api/v1/demo/context", {
@@ -91,7 +93,10 @@ describe("GET /api/v1/demo/context errors", () => {
     });
     expect(unavailable.status).toBe(401);
     await expect(unavailable.json()).resolves.toMatchObject({
-      error: { code: "ROLE_CONTEXT_UNAVAILABLE" },
+      error: {
+        code: "ROLE_CONTEXT_UNAVAILABLE",
+        sandboxEndReason: "reset",
+      },
     });
 
     const failingApp = createApp({

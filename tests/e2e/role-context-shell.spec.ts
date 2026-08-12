@@ -118,8 +118,16 @@ function roleContext(
   csrfToken: string,
   businessTime = "2026-08-09T11:30:00.000Z",
   advancedMilliseconds = 0,
+  lifecycle?: {
+    readonly expiresAt: string;
+    readonly observedAt: string;
+  },
 ): RoleContextReadyResponse {
   const details = roleDetails[role];
+  const observedAt = lifecycle?.observedAt ?? new Date().toISOString();
+  const expiresAt =
+    lifecycle?.expiresAt ??
+    new Date(Date.parse(observedAt) + 24 * 60 * 60 * 1_000).toISOString();
   return {
     status: "ready",
     csrfToken,
@@ -135,7 +143,7 @@ function roleContext(
     sandbox: {
       schemaVersion: "4",
       seedVersion: "2026-08-09.1",
-      expiresAt: "2026-08-10T12:00:00.000Z",
+      expiresAt,
       businessClock: {
         advanceLimitMilliseconds: 86_400_000,
         advancedMilliseconds,
@@ -146,7 +154,7 @@ function roleContext(
     },
     freshness: {
       mode: "manual",
-      observedAt: new Date().toISOString(),
+      observedAt,
     },
   };
 }
@@ -3131,6 +3139,7 @@ test.beforeEach(async ({ context }) => {
             code: "ROLE_CONTEXT_REQUIRED",
             message: "演示角色上下文已失效，请返回公开入口重新选择。",
             requestId: "00000000-0000-4000-8000-000000000304",
+            sandboxEndReason: "expired",
           },
         },
         status: 401,
@@ -3145,6 +3154,7 @@ test.beforeEach(async ({ context }) => {
               code: "ROLE_CONTEXT_UNAVAILABLE",
               message: "当前演示角色或沙箱已失效，请返回公开入口重新选择。",
               requestId: "00000000-0000-4000-8000-000000000303",
+              sandboxEndReason: "reset",
             },
           },
           status: 401,
@@ -3359,6 +3369,36 @@ async function enterStaffShell(page: Page) {
   ).toBeVisible();
   await page.getByRole("button", { name: "进入店员视图" }).click();
   await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
+}
+
+async function expectExpiredSandboxView(page: Page) {
+  await expect(page.getByTestId("sandbox-ended")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "该沙箱已到期" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "读取与保存已停止。私有图片与业务记录正在后台清理，无需等待。",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "创建新的独立沙箱" }),
+  ).toBeVisible();
+}
+
+async function expectResetSandboxView(page: Page) {
+  await expect(page.getByTestId("sandbox-ended")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "此标签使用的旧沙箱已失效" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "读取与保存已停止。私有图片与业务记录正在后台清理，无需等待。",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "创建新的独立沙箱" }),
+  ).toBeVisible();
 }
 
 async function enterManagerStoreConfiguration(page: Page) {
@@ -5403,18 +5443,17 @@ test("sandbox reset requires two confirmations and invalidates old tabs", async 
   await expect(
     page.getByRole("heading", { name: "全新标准沙箱已就绪" }),
   ).toBeVisible();
-  const staleBlock = otherTab.getByRole("alertdialog", {
-    name: "当前标签的旧沙箱已失效",
-  });
-  await expect(staleBlock).toBeVisible();
+  const sandboxEnded = otherTab.getByTestId("sandbox-ended");
+  await expect(sandboxEnded).toBeVisible();
   await expect(
-    staleBlock.getByText("旧沙箱中的四角色对象和写操作均已停止"),
-  ).toBeVisible();
-  await staleBlock.getByRole("button", { name: "进入全新标准沙箱" }).click();
-  await expect(
-    otherTab.getByRole("button", {
-      name: "林澈 顾客 浏览三店 · 只管理自己的记录，打开角色切换",
+    sandboxEnded.getByRole("heading", {
+      name: "此标签使用的旧沙箱已失效",
     }),
+  ).toBeVisible();
+  await expect(
+    sandboxEnded.getByText(
+      "读取与保存已停止。私有图片与业务记录正在后台清理，无需等待。",
+    ),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "回到主演示起点" }).click();
@@ -5424,6 +5463,11 @@ test("sandbox reset requires two confirmations and invalidates old tabs", async 
     }),
   ).toBeVisible();
   await expect(resetTrigger).toBeFocused();
+
+  await sandboxEnded.getByRole("button", { name: "创建新的独立沙箱" }).click();
+  await expect(
+    otherTab.getByRole("heading", { name: "沙箱已准备完成" }),
+  ).toBeVisible();
 });
 
 test("failed sandbox reset preserves the old story and retries safely", async ({
@@ -5644,7 +5688,7 @@ test("an uncertain switch response uses the same blocking recovery path", async 
   ).toBeVisible();
 });
 
-test("an unavailable sandbox returns the shell to the public role entry", async ({
+test("a reset-invalidated sandbox immediately enters the distinct G06 old-sandbox state", async ({
   page,
 }) => {
   await enterStaffShell(page);
@@ -5661,14 +5705,71 @@ test("an unavailable sandbox returns the shell to the public role entry", async 
   await page
     .getByRole("button", { name: "店长 许知远 · 虚构人物 棱镜旗舰店" })
     .click();
-  await expect(
-    page.getByRole("heading", {
-      name: "从一次预约，看见四个角色如何共同经营。",
-    }),
-  ).toBeVisible();
+  await expectResetSandboxView(page);
 });
 
-test("an expired role session returns the shell to the public role entry", async ({
+test("the server-issued TTL retires the writable shell without waiting for another request", async ({
+  page,
+}) => {
+  const observedAt = "2026-08-09T11:30:00.000Z";
+  const expiresAt = "2026-08-09T11:30:01.000Z";
+  await page.clock.install({ time: new Date(observedAt) });
+
+  await enterStaffShell(page);
+  await page.route("**/api/v1/demo/context", async (route) => {
+    await route.fulfill({
+      json: roleContext(
+        "staff",
+        1,
+        "csrf-context-version-1-token-value",
+        undefined,
+        undefined,
+        { expiresAt, observedAt },
+      ),
+      status: 200,
+    });
+  });
+  await page.getByRole("button", { name: "手动刷新角色上下文" }).click();
+  await expect(page.getByText("角色上下文已由服务端手动确认")).toBeVisible();
+
+  await page.clock.fastForward(1_000);
+  await expectExpiredSandboxView(page);
+  await expect(page.getByRole("button", { name: "切换角色" })).toHaveCount(0);
+});
+
+test("business-time advancement does not restart the server-issued TTL countdown", async ({
+  page,
+}) => {
+  const observedAt = "2026-08-09T11:30:00.000Z";
+  const expiresAt = "2026-08-09T11:30:01.000Z";
+  await page.clock.install({ time: new Date(observedAt) });
+
+  await enterStaffShell(page);
+  await page.route("**/api/v1/demo/context", async (route) => {
+    await route.fulfill({
+      json: roleContext(
+        "staff",
+        1,
+        "csrf-context-version-1-token-value",
+        undefined,
+        undefined,
+        { expiresAt, observedAt },
+      ),
+      status: 200,
+    });
+  });
+  await page.getByRole("button", { name: "手动刷新角色上下文" }).click();
+  await page.getByRole("button", { name: /打开业务时间工具/u }).click();
+  await page.getByRole("button", { name: /向前推进 30 分钟/u }).click();
+  await page.getByRole("button", { name: "查看推进影响" }).click();
+  await page.getByRole("button", { name: "确认并原子推进" }).click();
+  await page.getByRole("button", { name: "返回当前角色" }).click();
+
+  await page.clock.fastForward(1_000);
+  await expectExpiredSandboxView(page);
+});
+
+test("an expired role session immediately enters the G06 ended state", async ({
   page,
 }) => {
   await enterStaffShell(page);
@@ -5685,14 +5786,10 @@ test("an expired role session returns the shell to the public role entry", async
   await page
     .getByRole("button", { name: "店长 许知远 · 虚构人物 棱镜旗舰店" })
     .click();
-  await expect(
-    page.getByRole("heading", {
-      name: "从一次预约，看见四个角色如何共同经营。",
-    }),
-  ).toBeVisible();
+  await expectExpiredSandboxView(page);
 });
 
-test("an expired role session discovered by manual GET refresh returns to the public entry", async ({
+test("manual refresh sends an expired role session to the G06 ended state", async ({
   page,
 }) => {
   await enterStaffShell(page);
@@ -5706,14 +5803,10 @@ test("an expired role session discovered by manual GET refresh returns to the pu
   });
 
   await page.getByRole("button", { name: "手动刷新角色上下文" }).click();
-  await expect(
-    page.getByRole("heading", {
-      name: "从一次预约，看见四个角色如何共同经营。",
-    }),
-  ).toBeVisible();
+  await expectExpiredSandboxView(page);
 });
 
-test("an expired role session discovered during stale recovery returns to the public entry", async ({
+test("stale recovery sends an expired role session to the G06 ended state", async ({
   page,
 }) => {
   await enterStaffShell(page);
@@ -5736,11 +5829,7 @@ test("an expired role session discovered during stale recovery returns to the pu
   });
   await expect(staleBlock).toBeVisible();
   await staleBlock.getByRole("button", { name: "刷新到当前角色" }).click();
-  await expect(
-    page.getByRole("heading", {
-      name: "从一次预约，看见四个角色如何共同经营。",
-    }),
-  ).toBeVisible();
+  await expectExpiredSandboxView(page);
 });
 
 test("1024 layout collapses navigation without hiding the current role or primary work", async ({

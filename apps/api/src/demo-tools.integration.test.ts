@@ -258,7 +258,7 @@ describe("sandbox demo time", () => {
       body: JSON.stringify({ mode: "half-hour" }),
       headers: {
         "Content-Type": "application/json",
-        Cookie: sandbox.sessionCookie,
+        Cookie: `${sandbox.sessionCookie}; ${sandbox.visitorCookie}`,
         "Idempotency-Key": "00000000-0000-4000-8000-000000000504",
         Origin: publicOrigin,
         "X-CSRF-Token": sandbox.context.csrfToken,
@@ -371,7 +371,7 @@ describe("sandbox reset", () => {
       body: JSON.stringify({ confirm: true }),
       headers: {
         "Content-Type": "application/json",
-        Cookie: sandbox.sessionCookie,
+        Cookie: `${sandbox.sessionCookie}; ${sandbox.visitorCookie}`,
         "Idempotency-Key": resetKey,
         Origin: publicOrigin,
         "X-CSRF-Token": sandbox.context.csrfToken,
@@ -389,7 +389,7 @@ describe("sandbox reset", () => {
             currentTime: initialWallTime,
           },
           expiresAt,
-          schemaVersion: "22",
+          schemaVersion: "23",
           seedVersion: "2026-08-11.6",
         },
       },
@@ -403,7 +403,7 @@ describe("sandbox reset", () => {
             currentTime: initialWallTime,
           },
           expiresAt,
-          schemaVersion: "22",
+          schemaVersion: "23",
           seedVersion: "2026-08-11.6",
         },
       },
@@ -419,14 +419,17 @@ describe("sandbox reset", () => {
     });
     expect(oldTab.status).toBe(401);
     await expect(oldTab.json()).resolves.toMatchObject({
-      error: { code: "ROLE_CONTEXT_UNAVAILABLE" },
+      error: {
+        code: "ROLE_CONTEXT_UNAVAILABLE",
+        sandboxEndReason: "reset",
+      },
     });
 
     const replayAfterCookieRotation = await app.request("/api/v1/demo/reset", {
       body: JSON.stringify({ confirm: true }),
       headers: {
         "Content-Type": "application/json",
-        Cookie: replacementCookie,
+        Cookie: `${replacementCookie}; ${sandbox.visitorCookie}`,
         "Idempotency-Key": resetKey,
         Origin: publicOrigin,
         "X-CSRF-Token": body.context.csrfToken,
@@ -463,7 +466,7 @@ describe("sandbox reset", () => {
       body: JSON.stringify({ confirm: true }),
       headers: {
         "Content-Type": "application/json",
-        Cookie: switchedCookie,
+        Cookie: `${switchedCookie}; ${sandbox.visitorCookie}`,
         "Idempotency-Key": resetKey,
         Origin: publicOrigin,
         "X-CSRF-Token": switchedBody.csrfToken,
@@ -542,7 +545,7 @@ describe("sandbox reset", () => {
         body: JSON.stringify({ confirm: true }),
         headers: {
           "Content-Type": "application/json",
-          Cookie: sandbox.sessionCookie,
+          Cookie: `${sandbox.sessionCookie}; ${sandbox.visitorCookie}`,
           "Idempotency-Key": resetKey,
           Origin: publicOrigin,
           "X-CSRF-Token": sandbox.context.csrfToken,

@@ -8,14 +8,16 @@ import { issueRoleSession, readRoleSession } from "./role-session.js";
 import {
   SESSION_COOKIE,
   UUID_V4_PATTERN,
+  clientIpFromBindings,
   errorBody,
   isPlainRecord,
   isPublicRole,
   setRoleSessionCookie,
+  type AppEnvironment,
   type AppServices,
 } from "./route-support.js";
 
-const VISITOR_COOKIE = "jingshu_visitor";
+export const PUBLIC_VISITOR_COOKIE = "jingshu_visitor";
 const VISITOR_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 
 function signVisitorPayload(payload: string, secret: string): Buffer {
@@ -33,7 +35,7 @@ function issueVisitorToken(visitorKey: string, secret: string): string {
   return `${payload}.${signature}`;
 }
 
-function readVisitorKey(
+export function readPublicVisitorKey(
   token: string | undefined,
   secret: string,
 ): string | null {
@@ -94,7 +96,10 @@ function isOwnershipConflict(
   );
 }
 
-export function registerPublicSandboxRoutes(app: Hono, services: AppServices) {
+export function registerPublicSandboxRoutes(
+  app: Hono<AppEnvironment>,
+  services: AppServices,
+) {
   app.get("/api/v1/public/visitor", (context) => {
     const requestId = randomUUID();
     context.header("X-Request-Id", requestId);
@@ -111,8 +116,8 @@ export function registerPublicSandboxRoutes(app: Hono, services: AppServices) {
       );
     }
 
-    const existingVisitorKey = readVisitorKey(
-      getCookie(context, VISITOR_COOKIE),
+    const existingVisitorKey = readPublicVisitorKey(
+      getCookie(context, PUBLIC_VISITOR_COOKIE),
       services.sessionSecret,
     );
     if (existingVisitorKey) return context.body(null, 204);
@@ -121,7 +126,7 @@ export function registerPublicSandboxRoutes(app: Hono, services: AppServices) {
       randomUUID(),
       services.sessionSecret,
     );
-    setCookie(context, VISITOR_COOKIE, visitorToken, {
+    setCookie(context, PUBLIC_VISITOR_COOKIE, visitorToken, {
       httpOnly: true,
       maxAge: VISITOR_MAX_AGE_SECONDS,
       path: "/",
@@ -184,8 +189,8 @@ export function registerPublicSandboxRoutes(app: Hono, services: AppServices) {
       );
     }
 
-    const visitorKey = readVisitorKey(
-      getCookie(context, VISITOR_COOKIE),
+    const visitorKey = readPublicVisitorKey(
+      getCookie(context, PUBLIC_VISITOR_COOKIE),
       services.sessionSecret,
     );
     if (!visitorKey) {
@@ -200,7 +205,9 @@ export function registerPublicSandboxRoutes(app: Hono, services: AppServices) {
     }
 
     try {
+      const clientIp = clientIpFromBindings(context.env?.clientIp);
       const result = await services.sandboxDatabase.create({
+        ...(clientIp ? { clientIp } : {}),
         creationKey,
         selectedRole: body.role,
         visitorKey,
@@ -239,6 +246,64 @@ export function registerPublicSandboxRoutes(app: Hono, services: AppServices) {
 
       return context.json(response, result.replayed ? 200 : 201);
     } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "PUBLIC_SANDBOX_CAPACITY_EXHAUSTED" &&
+        "retryAt" in error &&
+        error.retryAt instanceof Date
+      ) {
+        context.header(
+          "Retry-After",
+          String(
+            Math.max(
+              1,
+              Math.ceil(
+                (error.retryAt.getTime() - services.wallClock.now().getTime()) /
+                  1_000,
+              ),
+            ),
+          ),
+        );
+        return context.json(
+          errorBody(
+            "PUBLIC_SANDBOX_CAPACITY_EXHAUSTED",
+            "当前公共演示容量已满。你可以查看只读标准快照，并稍后重新创建独立沙箱。",
+            requestId,
+          ),
+          503,
+        );
+      }
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "PUBLIC_SANDBOX_RATE_LIMITED" &&
+        "retryAt" in error &&
+        error.retryAt instanceof Date
+      ) {
+        context.header(
+          "Retry-After",
+          String(
+            Math.max(
+              1,
+              Math.ceil(
+                (error.retryAt.getTime() - services.wallClock.now().getTime()) /
+                  1_000,
+              ),
+            ),
+          ),
+        );
+        return context.json(
+          errorBody(
+            "PUBLIC_SANDBOX_RATE_LIMITED",
+            "创建请求过于频繁；本次没有生成部分沙箱，请稍后安全重试。",
+            requestId,
+          ),
+          429,
+        );
+      }
       if (isIdempotencyConflict(error)) {
         return context.json(
           errorBody(

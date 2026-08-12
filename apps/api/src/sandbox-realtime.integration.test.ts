@@ -127,7 +127,7 @@ describe("distributed sandbox realtime invalidation", () => {
       body: JSON.stringify({ mode: "half-hour" }),
       headers: {
         "Content-Type": "application/json",
-        Cookie: switchedSessionCookie,
+        Cookie: `${switchedSessionCookie}; ${visitorCookie}`,
         "Idempotency-Key": "00000000-0000-4000-8000-000000002702",
         Origin: publicOrigin,
         "X-CSRF-Token": switchedContext.csrfToken,
@@ -143,7 +143,7 @@ describe("distributed sandbox realtime invalidation", () => {
       body: JSON.stringify({ confirm: true }),
       headers: {
         "Content-Type": "application/json",
-        Cookie: switchedSessionCookie,
+        Cookie: `${switchedSessionCookie}; ${visitorCookie}`,
         "Idempotency-Key": "00000000-0000-4000-8000-000000002703",
         Origin: publicOrigin,
         "X-CSRF-Token": switchedContext.csrfToken,

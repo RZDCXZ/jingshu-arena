@@ -103,8 +103,10 @@ export interface AdvanceDemoTimeResult {
 }
 
 export interface ResetSandboxInput extends DemoToolRoleContextInput {
+  readonly clientIp?: string;
   readonly idempotencyKey: string;
   readonly requestId: string;
+  readonly visitorKey?: string;
 }
 
 export interface ResetSandboxOutcome {
@@ -175,7 +177,16 @@ interface StoredResetResult {
 }
 
 interface DemoToolsOptions {
+  readonly consumeResetAdmission?: (
+    client: PoolClient,
+    input: {
+      readonly clientIp: string | undefined;
+      readonly visitorKey: string | undefined;
+      readonly wallTime: Date;
+    },
+  ) => Promise<void>;
   readonly dueHandlers: DemoTimeDueHandlerRegistry;
+  readonly holdSandboxAdmissionLock?: (client: PoolClient) => Promise<void>;
   readonly sandboxLifetimeMilliseconds: number;
   readonly wallClock: WallClock;
 }
@@ -237,12 +248,12 @@ async function readActiveSandbox(
     [input.sandboxId],
   );
   const sandboxRow = sandbox.rows[0];
-  if (
-    !sandboxRow ||
-    sandboxRow.invalidated_at !== null ||
-    sandboxRow.expires_at.getTime() <= wallTime.getTime()
-  ) {
-    throw new RoleContextUnavailableError();
+  if (!sandboxRow) throw new RoleContextUnavailableError();
+  if (sandboxRow.expires_at.getTime() <= wallTime.getTime()) {
+    throw new RoleContextUnavailableError("expired");
+  }
+  if (sandboxRow.invalidated_at !== null) {
+    throw new RoleContextUnavailableError("reset");
   }
   if (
     sandboxRow.role_context_version !== input.contextVersion ||
@@ -689,6 +700,13 @@ export function createSandboxDemoToolMethods(
           };
         }
 
+        await options.consumeResetAdmission?.(client, {
+          clientIp: input.clientIp,
+          visitorKey: input.visitorKey,
+          wallTime,
+        });
+        await options.holdSandboxAdmissionLock?.(client);
+
         const { persona, sandbox } = await readActiveSandbox(
           client,
           input,
@@ -758,12 +776,21 @@ export function createSandboxDemoToolMethods(
         );
         if (invalidated.rowCount !== 1) throw new RoleContextStaleError();
 
-        await client.query(
-          `insert into repair_image_cleanup_jobs (
-             id, sandbox_id, target_kind, object_key, reason, available_at
-           ) values ($1, $2, 'sandbox', null, 'sandbox-reset', $3)`,
-          [randomUUID(), input.sandboxId, wallTime],
+        const cleanupTask = await client.query(
+          `update sandbox_lifecycle_tasks
+              set state = 'pending', cleanup_reason = 'reset',
+                  cleanup_phase = 'blobs', cleanup_started_at = coalesce(
+                    cleanup_started_at, $2
+                  ), attempts = 0, available_at = $2, last_failure = null,
+                  updated_at = $2
+            where sandbox_id = $1`,
+          [input.sandboxId, wallTime],
         );
+        if (cleanupTask.rowCount !== 1) {
+          throw new Error(
+            "The replaced sandbox has no lifecycle cleanup task.",
+          );
+        }
 
         await client.query(
           `insert into audit_events (

@@ -22,6 +22,8 @@ import {
   isRoleContextStale,
   isRoleContextUnavailable,
   recordRoleContextDenial,
+  roleContextUnavailableBody,
+  type AppEnvironment,
   type AppServices,
 } from "./route-support.js";
 
@@ -72,7 +74,10 @@ function parseRoleAccessCheck(value: unknown): RoleAccessCheckRequest | null {
   };
 }
 
-export function registerRoleAccessRoutes(app: Hono, services: AppServices) {
+export function registerRoleAccessRoutes(
+  app: Hono<AppEnvironment>,
+  services: AppServices,
+) {
   app.post("/api/v1/demo/context/access", async (context) => {
     const requestId = randomUUID();
     context.header("X-Request-Id", requestId);
@@ -231,8 +236,8 @@ export function registerRoleAccessRoutes(app: Hono, services: AppServices) {
       }
       if (isRoleContextUnavailable(error)) {
         return context.json(
-          errorBody(
-            "ROLE_CONTEXT_UNAVAILABLE",
+          roleContextUnavailableBody(
+            error,
             "当前演示角色或沙箱已失效，请返回公开入口重新选择。",
             requestId,
           ),

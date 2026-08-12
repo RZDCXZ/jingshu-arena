@@ -243,6 +243,87 @@ export function SandboxInit({ role, stage = "creating" }) {
   );
 }
 
+export function CapacityReadonlySnapshot({ onRetry, onReturn }) {
+  const stores = [
+    ["棱镜旗舰店", "96 座 · 24 小时营业", "到店窗口 3"],
+    ["星桥标准店", "64 座 · 10:00–次日 02:00", "低库存 1"],
+    ["极点新店", "40 座 · 12:00–24:00", "待验证报修 1"],
+  ];
+
+  return (
+    <main className="capacity-snapshot" data-testid="capacity-readonly-snapshot">
+      <header className="public-header">
+        <Brand />
+        <span className="demo-chip">演示数据 · 只读</span>
+      </header>
+      <section className="capacity-grid" aria-labelledby="capacity-title">
+        <div className="capacity-summary" role="alert">
+          <span className="eyebrow">WEB-G01 · 公共演示容量保护</span>
+          <div className="capacity-icon">
+            <Database weight="duotone" />
+          </div>
+          <h1 id="capacity-title">当前公共演示容量已满</h1>
+          <p>
+            现有独立沙箱仍可继续使用。当前展示的是固定标准种子快照，不会占用新的可写沙箱；容量释放后可重新创建。
+          </p>
+          <div className="capacity-notice">
+            <LockKey weight="duotone" />
+            <span>
+              <strong>写入已停止</strong>
+              不会生成部分沙箱、业务副作用或被误认为已保存的本地修改。
+            </span>
+          </div>
+          <div className="capacity-summary-actions">
+            <Button tone="primary" icon={ClockClockwise} onClick={onRetry}>
+              稍后重新创建独立沙箱
+            </Button>
+            <Button tone="secondary" onClick={onReturn}>
+              返回角色入口
+            </Button>
+          </div>
+        </div>
+        <div className="capacity-content">
+          <header>
+            <div>
+              <span className="eyebrow">演示数据 · 只读</span>
+              <h2>标准三店运营快照</h2>
+              <p>上海业务时间 19:30 · 固定标准种子</p>
+            </div>
+            <StatusPill tone="warning">容量保护</StatusPill>
+          </header>
+          <div className="capacity-store-grid">
+            {stores.map(([name, hours, signal]) => (
+              <article key={name}>
+                <span>{hours}</span>
+                <h3>{name}</h3>
+                <p>{signal}</p>
+              </article>
+            ))}
+          </div>
+          <section className="capacity-actions" aria-label="已禁用的业务操作">
+            <div>
+              <strong>顾客预约</strong>
+              <span>固定座位、价格与体验券仅供查看</span>
+              <button disabled type="button">创建预约（只读）</button>
+            </div>
+            <div>
+              <strong>门店履约</strong>
+              <span>到店、订单和报修状态不会被本地改写</span>
+              <button disabled type="button">办理到店（只读）</button>
+            </div>
+            <div>
+              <strong>共享演示壳</strong>
+              <span>业务时间和沙箱生命周期保持服务端只读</span>
+              <button disabled type="button">推进业务时间（只读）</button>
+              <button disabled type="button">重置沙箱（只读）</button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 export function RoleSwitchModal({
   currentRole,
   onClose,
@@ -738,9 +819,21 @@ export function DataStatusModal({ current, onClose, onChange }) {
     ],
     ["polling", "轮询更新", "实时连接不可用，使用短轮询作为正式降级。", "info"],
     ["manual", "需手动刷新", "自动更新暂不可用，保留手动刷新入口。", "warning"],
+    [
+      "capacity",
+      "公共容量已满",
+      "新访客展示只读标准快照；现有独立沙箱继续可用。",
+      "warning",
+    ],
     ["readonly", "只读降级", "标准种子快照可读，所有写操作禁用。", "warning"],
     ["stale", "旧标签失效", "其他标签已切换角色，阻断当前标签写入。", "danger"],
     ["expired", "沙箱已到期", "旧沙箱立即停止读写，需要创建新沙箱。", "danger"],
+    [
+      "reset",
+      "旧沙箱已失效",
+      "其他标签已完成重置；旧读写立即停止并进入新建恢复。",
+      "danger",
+    ],
     [
       "rate",
       "限流恢复",

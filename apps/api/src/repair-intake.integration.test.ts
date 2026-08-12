@@ -15,6 +15,7 @@ import {
 import { createApp } from "./app.js";
 import { readRoleSession } from "./role-session.js";
 import { MemoryRepairImageStorage } from "./repair-image-storage.js";
+import { runRepairImageCleanupJobs } from "./sandbox-lifecycle-cleanup.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -82,7 +83,12 @@ async function createCustomerSession() {
   const token = decodeURIComponent(cookie.slice(cookie.indexOf("=") + 1));
   const session = readRoleSession(token, sessionSecret, wallTime.getTime());
   expect(session).not.toBeNull();
-  return { context, cookie, sandboxId: session!.sandboxId };
+  return {
+    context,
+    cookie,
+    sandboxId: session!.sandboxId,
+    visitorCookie,
+  };
 }
 
 async function createStaffSession() {
@@ -110,6 +116,7 @@ async function createStaffSession() {
     context: (await contextResponse.json()) as RoleContextReadyResponse,
     cookie,
     sandboxId: roleSession!.sandboxId,
+    visitorCookie,
   };
 }
 
@@ -132,6 +139,7 @@ async function switchRole(
     context: (await switched.json()) as RoleContextReadyResponse,
     cookie: cookiePair(switched, "jingshu_session"),
     sandboxId: session.sandboxId,
+    visitorCookie: session.visitorCookie,
   };
 }
 
@@ -140,7 +148,7 @@ function writeHeaders(
 ) {
   return {
     "Content-Type": "application/json",
-    Cookie: session.cookie,
+    Cookie: `${session.cookie}; ${session.visitorCookie}`,
     "Idempotency-Key": crypto.randomUUID(),
     Origin: publicOrigin,
     "X-CSRF-Token": session.context.csrfToken,
@@ -695,6 +703,179 @@ describe("repair intake API", () => {
     expect(crossSandboxList.status).toBe(404);
   });
 
+  it("cleans an unconsumed upload after one hour and retries storage and reference failures", async () => {
+    const session = await createInUseReservation();
+    const repairResponse = await app.request("/api/v1/customer/repairs", {
+      body: JSON.stringify({
+        description: "上传后离开页面的私有故障图片",
+        reservationId: session.reservationId,
+      }),
+      headers: writeHeaders(session),
+      method: "POST",
+    });
+    expect(repairResponse.status).toBe(201);
+    const repair = (await repairResponse.json()) as { repairId: string };
+    const image = await sharp({
+      create: {
+        background: "#1f7a8c",
+        channels: 3,
+        height: 12,
+        width: 12,
+      },
+    })
+      .jpeg()
+      .toBuffer();
+    const intentResponse = await app.request(
+      `/api/v1/repairs/${repair.repairId}/images/intents`,
+      {
+        body: JSON.stringify({
+          declaredContentType: "image/jpeg",
+          filename: "abandoned.jpg",
+          size: image.byteLength,
+        }),
+        headers: writeHeaders(session),
+        method: "POST",
+      },
+    );
+    expect(intentResponse.status).toBe(201);
+    const intent = (await intentResponse.json()) as {
+      intentId: string;
+      uploadUrl: string;
+    };
+    expect(
+      (
+        await app.request(intent.uploadUrl, {
+          body: image,
+          headers: { "Content-Type": "image/jpeg" },
+          method: "PUT",
+        })
+      ).status,
+    ).toBe(204);
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    let objectKey: string;
+    try {
+      const stored = await client.query<{ quarantine_object_key: string }>(
+        `select quarantine_object_key from repair_upload_intents
+          where sandbox_id = $1 and id = $2`,
+        [session.sandboxId, intent.intentId],
+      );
+      objectKey = stored.rows[0]!.quarantine_object_key;
+    } finally {
+      await client.end();
+    }
+    expect(await repairImageStorage.get(objectKey!)).not.toBeNull();
+
+    wallTime = new Date(fixedTime.getTime() + 59 * 60_000);
+    expect(
+      (await database.readDueRepairImageCleanupJobs(100)).some(
+        (job) => job.objectKey === objectKey,
+      ),
+    ).toBe(false);
+
+    wallTime = new Date(fixedTime.getTime() + 60 * 60_000 + 1_000);
+    const [cleanupJob] = (
+      await database.readDueRepairImageCleanupJobs(100)
+    ).filter((job) => job.objectKey === objectKey);
+    expect(cleanupJob).toMatchObject({
+      sandboxId: session.sandboxId,
+      targetKind: "object",
+    });
+    if (!cleanupJob) throw new Error("Expected the orphan-upload cleanup job.");
+
+    const cleanupDatabase = {
+      completeRepairImageCleanupJob: (jobId: string) =>
+        database.completeRepairImageCleanupJob(jobId),
+      readDueRepairImageCleanupJobs: async () => {
+        const jobs = await database.readDueRepairImageCleanupJobs(100);
+        return jobs.filter((job) => job.jobId === cleanupJob.jobId);
+      },
+      retryRepairImageCleanupJob: (input: {
+        availableAt: Date;
+        failure: string;
+        jobId: string;
+      }) => database.retryRepairImageCleanupJob(input),
+    };
+    const originalDelete = repairImageStorage.delete;
+    repairImageStorage.delete = async (key) => {
+      if (key === objectKey) {
+        throw new Error("simulated-orphan-object-delete-failure");
+      }
+      await originalDelete.call(repairImageStorage, key);
+    };
+    try {
+      await runRepairImageCleanupJobs({
+        database: cleanupDatabase,
+        repairImageStorage,
+        wallClock: { now: () => wallTime },
+      });
+    } finally {
+      repairImageStorage.delete = originalDelete;
+    }
+    expect(await repairImageStorage.get(objectKey)).not.toBeNull();
+
+    wallTime = new Date(wallTime.getTime() + 30_000);
+    const failureClient = new Client({ connectionString: databaseUrl });
+    await failureClient.connect();
+    try {
+      await failureClient.query(`
+        create or replace function reject_orphan_upload_intent_delete()
+        returns trigger language plpgsql as $$
+        begin
+          raise exception 'simulated-orphan-reference-delete-failure';
+        end;
+        $$;
+        create trigger reject_orphan_upload_intent_delete
+          before delete on repair_upload_intents
+          for each row execute function reject_orphan_upload_intent_delete();
+      `);
+      await runRepairImageCleanupJobs({
+        database: cleanupDatabase,
+        repairImageStorage,
+        wallClock: { now: () => wallTime },
+      });
+      const retained = await failureClient.query<{ count: string }>(
+        `select count(*)::text as count from repair_upload_intents
+          where sandbox_id = $1 and id = $2`,
+        [session.sandboxId, intent.intentId],
+      );
+      expect(retained.rows[0]?.count).toBe("1");
+    } finally {
+      await failureClient.query(
+        "drop trigger if exists reject_orphan_upload_intent_delete on repair_upload_intents; drop function if exists reject_orphan_upload_intent_delete();",
+      );
+      await failureClient.end();
+    }
+
+    wallTime = new Date(wallTime.getTime() + 60_000);
+    await runRepairImageCleanupJobs({
+      database: cleanupDatabase,
+      repairImageStorage,
+      wallClock: { now: () => wallTime },
+    });
+    expect(await repairImageStorage.get(objectKey)).toBeNull();
+
+    const verificationClient = new Client({ connectionString: databaseUrl });
+    await verificationClient.connect();
+    try {
+      const removed = await verificationClient.query<{ count: string }>(
+        `select count(*)::text as count from repair_upload_intents
+          where sandbox_id = $1 and id = $2`,
+        [session.sandboxId, intent.intentId],
+      );
+      expect(removed.rows[0]?.count).toBe("0");
+      const receipt = await verificationClient.query<{ count: string }>(
+        `select count(*)::text as count from repair_image_cleanup_jobs
+          where id = $1 and status = 'completed'`,
+        [cleanupJob.jobId],
+      );
+      expect(receipt.rows[0]?.count).toBe("1");
+    } finally {
+      await verificationClient.end();
+    }
+  });
+
   it("rejects forged, active, oversized, and cross-sandbox image access while cleaning quarantine", async () => {
     const session = await createInUseReservation();
     const repairResponse = await app.request("/api/v1/customer/repairs", {
@@ -998,7 +1179,7 @@ describe("repair intake API", () => {
       repairImageStorage
         .keys()
         .some((key) => key.startsWith(`finished/${session.sandboxId}/`)),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("uses the same not-found response for missing and cross-store repair commands", async () => {

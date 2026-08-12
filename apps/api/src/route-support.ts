@@ -8,6 +8,7 @@ import {
   type PublicRole,
   type RoleAccessTargetKind,
   type RoleContextReadyResponse,
+  type SandboxEndReason,
 } from "@jingshu/contracts";
 import type {
   DatabaseRoleContext,
@@ -38,6 +39,17 @@ export interface AppServices {
   wallClock: { now(): Date };
 }
 
+/**
+ * Transport adapters may inject a normalized peer address here. The Hono core
+ * deliberately accepts only this plain value and never observes a Node socket
+ * or provider-specific request object.
+ */
+export interface AppEnvironment {
+  Bindings: {
+    clientIp?: string;
+  };
+}
+
 export function csrfTokensMatch(
   expected: string,
   supplied: string | undefined,
@@ -55,8 +67,22 @@ export function errorBody(
   code: string,
   message: string,
   requestId: string,
+  sandboxEndReason?: SandboxEndReason,
 ): ApiErrorResponse {
-  return { error: { code, message, requestId } };
+  return {
+    error: {
+      code,
+      message,
+      requestId,
+      ...(sandboxEndReason ? { sandboxEndReason } : {}),
+    },
+  };
+}
+
+export function clientIpFromBindings(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const clientIp = value.trim();
+  return clientIp.length > 0 && clientIp.length <= 64 ? clientIp : undefined;
 }
 
 export function isPlainRecord(
@@ -80,9 +106,10 @@ export function isRoleContextStale(
   );
 }
 
-export function isRoleContextUnavailable(
-  error: unknown,
-): error is { code: "ROLE_CONTEXT_UNAVAILABLE" } {
+export function isRoleContextUnavailable(error: unknown): error is {
+  code: "ROLE_CONTEXT_UNAVAILABLE";
+  sandboxEndReason?: SandboxEndReason;
+} {
   return (
     typeof error === "object" &&
     error !== null &&
@@ -91,9 +118,31 @@ export function isRoleContextUnavailable(
   );
 }
 
+export function sandboxEndReasonFromError(
+  error: unknown,
+): SandboxEndReason | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const reason = (error as { sandboxEndReason?: unknown }).sandboxEndReason;
+  return reason === "expired" || reason === "reset" ? reason : undefined;
+}
+
+export function roleContextUnavailableBody(
+  error: unknown,
+  message: string,
+  requestId: string,
+): ApiErrorResponse {
+  return errorBody(
+    "ROLE_CONTEXT_UNAVAILABLE",
+    message,
+    requestId,
+    sandboxEndReasonFromError(error),
+  );
+}
+
 export function roleContextBody(
   context: DatabaseRoleContext,
   csrfToken: string,
+  observedAt: Date,
 ): RoleContextReadyResponse {
   const labels = {
     customer: "顾客",
@@ -145,7 +194,7 @@ export function roleContextBody(
     },
     freshness: {
       mode: "manual",
-      observedAt: new Date().toISOString(),
+      observedAt: observedAt.toISOString(),
     },
   };
 }

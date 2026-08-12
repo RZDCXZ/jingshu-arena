@@ -14,6 +14,8 @@ import {
   isRoleContextStale,
   isRoleContextUnavailable,
   recordRoleContextDenial,
+  roleContextUnavailableBody,
+  type AppEnvironment,
   type AppServices,
 } from "./route-support.js";
 
@@ -36,8 +38,8 @@ function customerReadFailure(error: unknown, requestId: string) {
   }
   if (isRoleContextUnavailable(error)) {
     return {
-      body: errorBody(
-        "ROLE_CONTEXT_UNAVAILABLE",
+      body: roleContextUnavailableBody(
+        error,
         "当前演示角色或沙箱已失效，请返回公开入口重新选择。",
         requestId,
       ),
@@ -55,7 +57,7 @@ function customerReadFailure(error: unknown, requestId: string) {
 }
 
 export function registerCustomerMembershipRoutes(
-  app: Hono,
+  app: Hono<AppEnvironment>,
   services: AppServices,
 ) {
   async function customerSession(context: Context, requestId: string) {

@@ -5,7 +5,7 @@ import type { PublicSandboxDatabase } from "@jingshu/database";
 import { registerPublicSandboxRoutes } from "./public-sandbox-routes.js";
 import { registerRoleAccessRoutes } from "./role-access-routes.js";
 import { registerRoleContextRoutes } from "./role-context-routes.js";
-import type { AppServices } from "./route-support.js";
+import type { AppEnvironment, AppServices } from "./route-support.js";
 import { registerDemoToolsRoutes } from "./demo-tools-routes.js";
 import { registerCustomerSeatBrowseRoutes } from "./customer-seat-browse-routes.js";
 import { registerCustomerMembershipRoutes } from "./customer-membership-routes.js";
@@ -45,7 +45,7 @@ interface AppOptions {
 }
 
 export function createApp(options: AppOptions = {}) {
-  const app = new Hono();
+  const app = new Hono<AppEnvironment>();
   const services: AppServices = {
     allowedOrigins: new Set(
       options.allowedOrigins ?? [

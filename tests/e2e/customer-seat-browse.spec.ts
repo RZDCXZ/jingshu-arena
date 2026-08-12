@@ -18,6 +18,10 @@ import type {
 } from "@jingshu/contracts";
 
 const businessTime = "2026-08-10T11:47:23.000Z";
+const customerContextObservedAt = new Date().toISOString();
+const customerContextExpiresAt = new Date(
+  Date.parse(customerContextObservedAt) + 86_400_000,
+).toISOString();
 
 const customerContext: RoleContextReadyResponse = {
   capabilities: ["customer:manage-own-records"],
@@ -25,7 +29,7 @@ const customerContext: RoleContextReadyResponse = {
   csrfToken: "csrf-customer-ticket-06-token-value",
   freshness: {
     mode: "manual",
-    observedAt: new Date().toISOString(),
+    observedAt: customerContextObservedAt,
   },
   persona: { displayName: "林澈", protected: true },
   role: { id: "customer", label: "顾客" },
@@ -37,7 +41,7 @@ const customerContext: RoleContextReadyResponse = {
       remainingAdvanceMilliseconds: 86_400_000,
       timeZone: "Asia/Shanghai",
     },
-    expiresAt: "2026-08-11T11:47:23.000Z",
+    expiresAt: customerContextExpiresAt,
     schemaVersion: "22",
     seedVersion: "2026-08-11.6",
   },

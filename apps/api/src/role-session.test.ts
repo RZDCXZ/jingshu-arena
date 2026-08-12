@@ -7,6 +7,7 @@ import type { DatabaseRoleContext } from "@jingshu/database";
 import {
   issueRoleSession,
   readRoleSession,
+  readRoleSessionEndReason,
   readRoleSessionWithLegacyFallback,
 } from "./role-session.js";
 
@@ -65,6 +66,10 @@ describe("signed role session", () => {
     );
 
     expect(readRoleSession(expired.token, secret)).toBeNull();
+    expect(readRoleSessionEndReason(expired.token, secret)).toBe("expired");
+    expect(readRoleSessionEndReason(`${expired.token}tampered`, secret)).toBe(
+      undefined,
+    );
   });
 
   it("evaluates expiry against the caller's application clock", () => {
