@@ -5909,6 +5909,7 @@ test("the server-issued TTL retires the writable shell without waiting for anoth
   const observedAt = "2026-08-09T11:30:00.000Z";
   const expiresAt = "2026-08-09T11:30:01.000Z";
   await page.clock.install({ time: new Date(observedAt) });
+  await page.clock.pauseAt(new Date(observedAt));
 
   await enterStaffShell(page);
   await page.route("**/api/v1/demo/context", async (route) => {
@@ -5938,6 +5939,7 @@ test("business-time advancement does not restart the server-issued TTL countdown
   const observedAt = "2026-08-09T11:30:00.000Z";
   const expiresAt = "2026-08-09T11:30:01.000Z";
   await page.clock.install({ time: new Date(observedAt) });
+  await page.clock.pauseAt(new Date(observedAt));
 
   await enterStaffShell(page);
   await page.route("**/api/v1/demo/context", async (route) => {
