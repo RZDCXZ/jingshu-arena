@@ -1154,23 +1154,27 @@ test("customer shell navigation keeps story destinations inside the concrete H5"
   await openCustomerH5(page);
 
   const sidebar = page.getByTestId("role-sidebar");
-  await sidebar.getByRole("button", { name: "我的预约" }).click();
+  await sidebar.getByRole("link", { name: "我的预约" }).click();
   await expect(
-    page.getByRole("heading", { name: "一条行程，看清完整结果" }),
+    page.getByRole("heading", { name: "当前行程", exact: true }),
   ).toBeVisible();
 
-  await sidebar.getByRole("button", { name: "顾客 H5" }).click();
-  await expect(page.getByRole("heading", { name: "三店浏览" })).toBeVisible();
-
-  await sidebar.getByRole("button", { name: "我的订单" }).click();
+  await sidebar.getByRole("link", { name: "顾客 H5" }).click();
   await expect(
-    page.getByRole("heading", { name: "一条行程，看清完整结果" }),
+    page.getByRole("heading", { name: "预约一个明确座位" }),
   ).toBeVisible();
 
-  await sidebar.getByRole("button", { name: "我的报修" }).click();
+  await sidebar.getByRole("link", { name: "我的订单" }).click();
   await expect(
-    page.getByRole("heading", { name: "一条行程，看清完整结果" }),
+    page.getByRole("heading", { name: "当前行程", exact: true }),
   ).toBeVisible();
+  await expect(page).toHaveURL(/\/customer\/journeys\/current\?type=order$/u);
+
+  await sidebar.getByRole("link", { name: "我的报修" }).click();
+  await expect(
+    page.getByRole("heading", { name: "当前行程", exact: true }),
+  ).toBeVisible();
+  await expect(page).toHaveURL(/\/customer\/journeys\/current\?type=repair$/u);
   await expect(page.getByTestId("customer-h5")).toBeVisible();
 });
 
@@ -1496,7 +1500,7 @@ test("WEB-C03 exposes the silver profile, four coupon states and linked growth a
 }) => {
   await page.setViewportSize({ height: 800, width: 360 });
   await openCustomerH5(page);
-  await page.getByRole("button", { name: "会员", exact: true }).click();
+  await page.getByRole("link", { name: "会员", exact: true }).click();
 
   await expect(page.getByText("白银会员", { exact: true })).toBeVisible();
   await expect(page.getByText("860", { exact: true })).toBeVisible();
@@ -1519,7 +1523,7 @@ test("WEB-C03 exposes the silver profile, four coupon states and linked growth a
     page.getByRole("button", { name: "返回统一行程" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "返回统一行程" }).click();
-  await page.getByRole("button", { name: "会员", exact: true }).click();
+  await page.getByRole("link", { name: "会员", exact: true }).click();
 
   await page.getByRole("tab", { name: /已使用 1/u }).click();
   await expect(page.getByText("历史预约体验券")).toBeVisible();
@@ -1542,10 +1546,10 @@ test("WEB-C03 operates journey tabs, reservation jumps and actionable history fi
 }) => {
   await page.setViewportSize({ height: 800, width: 360 });
   await openCustomerH5(page);
-  await page.getByRole("button", { name: "行程", exact: true }).click();
+  await page.getByRole("link", { name: "行程", exact: true }).click();
 
   await expect(
-    page.getByRole("heading", { name: "一条行程，看清完整结果" }),
+    page.getByRole("heading", { name: "当前行程", exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("tab", { name: /当前 1/u })).toHaveAttribute(
     "aria-selected",
@@ -1570,17 +1574,223 @@ test("WEB-C03 operates journey tabs, reservation jumps and actionable history fi
   await expect(page.getByText("计划结束后自动完成")).toBeVisible();
 
   const undersizedControls = await page
-    .locator(".customer-h5 button:visible:not(:disabled)")
-    .evaluateAll((buttons) =>
-      buttons
-        .map((button) => ({
-          height: button.getBoundingClientRect().height,
-          label: button.textContent ?? "",
-          width: button.getBoundingClientRect().width,
+    .locator(".customer-h5 :is(a, button):visible:not(:disabled)")
+    .evaluateAll((controls) =>
+      controls
+        .map((control) => ({
+          height: control.getBoundingClientRect().height,
+          label: control.textContent ?? "",
+          width: control.getBoundingClientRect().width,
         }))
-        .filter((button) => button.height < 44 || button.width < 44),
+        .filter((control) => control.height < 44 || control.width < 44),
     );
   expect(undersizedControls).toEqual([]);
+});
+
+test("Ticket 04 restores customer routes, applied filters, focus and browser history at 360px", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      browserErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  await page.route("**/api/v1/demo/story", async (route) => {
+    await route.fulfill({ json: { completedCount: 0 }, status: 200 });
+  });
+  await openCustomerH5(page);
+
+  await expect(page).toHaveURL(/\/customer\/reservations$/u);
+  await expect(page).toHaveTitle("预约一个明确座位｜竞枢");
+  const reservationHeading = page.getByRole("heading", {
+    name: "预约一个明确座位",
+  });
+  await expect(reservationHeading).toBeFocused();
+  await expect(
+    page.getByRole("link", { name: "预约", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+
+  await page.locator(".role-workspace").evaluate((workspace) => {
+    workspace.scrollTop = 500;
+  });
+  await page.getByRole("link", { name: "门店", exact: true }).click();
+  await expect(page).toHaveURL(/\/customer\/stores$/u);
+  await expect(page).toHaveTitle("三店浏览｜竞枢");
+  await expect(
+    page.getByRole("heading", { name: "三店浏览", exact: true }),
+  ).toBeFocused();
+  expect(
+    await page
+      .locator(".role-workspace")
+      .evaluate((workspace) => Math.round(workspace.scrollTop)),
+  ).toBe(0);
+
+  await page.getByRole("link", { name: "行程", exact: true }).click();
+  await expect(page).toHaveURL(/\/customer\/journeys\/current$/u);
+  await expect(page).toHaveTitle("当前行程｜竞枢");
+  await page.getByRole("tab", { name: /未来 1/u }).click();
+  await expect(page).toHaveURL(/\/customer\/journeys\/future$/u);
+  await expect(
+    page.getByRole("heading", { name: "未来行程", exact: true }),
+  ).toBeFocused();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/customer\/journeys\/current$/u);
+  await expect(page.getByRole("tab", { name: /当前 1/u })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await page.goForward();
+  await expect(page).toHaveURL(/\/customer\/journeys\/future$/u);
+
+  await page.getByRole("tab", { name: /历史 1/u }).click();
+  await expect(page).toHaveURL(/\/customer\/journeys\/history$/u);
+  await expect(
+    page.getByRole("heading", { name: "历史行程", exact: true }),
+  ).toBeFocused();
+  const historyLengthBeforeFilters = await page.evaluate(
+    () => window.history.length,
+  );
+  await page.getByRole("button", { name: "我的订单" }).click();
+  await expect(page).toHaveURL(/\/customer\/journeys\/history\?type=order$/u);
+  expect(await page.evaluate(() => window.history.length)).toBe(
+    historyLengthBeforeFilters,
+  );
+  await expect(page.getByRole("button", { name: "我的订单" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("button", { name: "含模拟退款" }).click();
+  await expect(page).toHaveURL(
+    /\/customer\/journeys\/history\?type=order&refunds=only$/u,
+  );
+  expect(await page.evaluate(() => window.history.length)).toBe(
+    historyLengthBeforeFilters,
+  );
+  const copiedRoute = page.url();
+  await page.reload();
+  await expect(page).toHaveURL(copiedRoute);
+  await expect(
+    page.getByRole("heading", { name: "历史行程为空" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "含模拟退款" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-04/customer-history-filter-360x800.png",
+    });
+  }
+
+  await page.getByRole("link", { name: "会员", exact: true }).click();
+  await expect(page).toHaveURL(/\/customer\/membership\/coupons\/available$/u);
+  await expect(page).toHaveTitle("可用体验券｜竞枢");
+  await page.getByRole("tab", { name: /占用中 1/u }).click();
+  await expect(page).toHaveURL(/\/customer\/membership\/coupons\/reserved$/u);
+  await expect(
+    page.getByRole("heading", { name: "占用中体验券", exact: true }),
+  ).toBeFocused();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/customer\/membership\/coupons\/available$/u);
+  await expect(page.getByRole("tab", { name: /可用 2/u })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+
+  await page.goto("/customer/membership/coupons");
+  await expect(page).toHaveURL(/\/customer\/membership\/coupons\/available$/u);
+
+  await page.locator(".role-workspace").evaluate((workspace) => {
+    workspace.scrollTop = workspace.scrollHeight;
+  });
+  const obstruction = await page.evaluate(() => {
+    const lastContent = document.querySelector<HTMLElement>(
+      ".customer-growth-list > :last-child",
+    );
+    const navigation = document.querySelector<HTMLElement>(
+      ".customer-bottom-nav",
+    );
+    if (!lastContent || !navigation) return null;
+    return {
+      contentBottom: lastContent.getBoundingClientRect().bottom,
+      navigationTop: navigation.getBoundingClientRect().top,
+    };
+  });
+  expect(obstruction).not.toBeNull();
+  expect(obstruction!.contentBottom).toBeLessThanOrEqual(
+    obstruction!.navigationTop,
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  expect(browserErrors).toEqual([]);
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.locator(".role-workspace").evaluate((workspace) => {
+      workspace.scrollTop = 0;
+    });
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-04/customer-membership-360x800.png",
+    });
+  }
+});
+
+test("Ticket 04 keeps the routed customer canvas stable in desktop and tablet shells", async ({
+  page,
+}) => {
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      browserErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  await page.route("**/api/v1/demo/story", async (route) => {
+    await route.fulfill({ json: { completedCount: 0 }, status: 200 });
+  });
+  await page.setViewportSize({ height: 1024, width: 1440 });
+  await openCustomerH5(page);
+
+  for (const viewport of [
+    { height: 1024, route: "/customer/journeys/current", width: 1440 },
+    {
+      height: 768,
+      route: "/customer/membership/coupons/reserved",
+      width: 1024,
+    },
+  ]) {
+    await page.setViewportSize({
+      height: viewport.height,
+      width: viewport.width,
+    });
+    await page.goto(viewport.route);
+    await expect(page.locator("[data-customer-route-heading]")).toBeFocused();
+    const layout = await page.evaluate(() => {
+      const canvas = document.querySelector<HTMLElement>(".customer-h5");
+      const navigation = document.querySelector<HTMLElement>(
+        ".customer-bottom-nav",
+      );
+      return {
+        canvasWidth: canvas?.getBoundingClientRect().width ?? 0,
+        navigationBottom: navigation?.getBoundingClientRect().bottom ?? 0,
+        pageScrollWidth: document.documentElement.scrollWidth,
+        viewportHeight: window.innerHeight,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    expect(layout.canvasWidth).toBeLessThanOrEqual(520);
+    expect(layout.pageScrollWidth).toBeLessThanOrEqual(layout.viewportWidth);
+    expect(layout.navigationBottom).toBeLessThanOrEqual(layout.viewportHeight);
+    if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+      await page.screenshot({
+        path: `product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-04/customer-route-${viewport.width}x${viewport.height}.png`,
+      });
+    }
+  }
+  expect(browserErrors).toEqual([]);
 });
 
 test("WEB-C04 keeps the desktop cart action within the H5 canvas and preserves its mobile fixed layout", async ({
@@ -1588,7 +1798,7 @@ test("WEB-C04 keeps the desktop cart action within the H5 canvas and preserves i
 }) => {
   await page.setViewportSize({ height: 866, width: 1327 });
   await openCustomerH5(page, { detailStatuses: ["arrived"] });
-  await page.getByRole("button", { name: "行程", exact: true }).click();
+  await page.getByRole("link", { name: "行程", exact: true }).click();
   await page.locator(".customer-journey-main").first().click();
   await page.getByRole("button", { name: "购买柜台商品" }).click();
 
@@ -1658,7 +1868,7 @@ test("WEB-C04 completes the arrived-reservation whole-cart and no-charge order f
     detailStatuses: ["arrived"],
     orderShortages: 1,
   });
-  await page.getByRole("button", { name: "行程", exact: true }).click();
+  await page.getByRole("link", { name: "行程", exact: true }).click();
   await page.locator(".customer-journey-main").first().click();
   await page.getByRole("button", { name: "购买柜台商品" }).click();
 

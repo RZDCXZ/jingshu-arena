@@ -262,10 +262,10 @@ export const WEB_ROUTE_MANIFEST: readonly WebRouteSpec[] = [
     "/customer/reservations",
     "customer",
     "page",
-    "预约",
+    "预约一个明确座位",
     ["q", "sort", "direction", "area", "machine"],
   ),
-  route("customer-stores", "/customer/stores", "customer", "page", "门店", [
+  route("customer-stores", "/customer/stores", "customer", "page", "三店浏览", [
     "q",
     "sort",
     "direction",
@@ -660,7 +660,14 @@ function normalizedQuery(spec: WebRouteSpec, input: URLSearchParams) {
   for (const name of spec.queryOrder) {
     const values = input.getAll(name);
     const value = values.at(-1);
-    if (value) query.set(name, value);
+    if (!value) continue;
+    if (spec.id.startsWith("customer-journeys-")) {
+      if (name === "type" && value !== "order" && value !== "repair") {
+        continue;
+      }
+      if (name === "refunds" && value !== "only") continue;
+    }
+    query.set(name, value);
   }
   return query;
 }

@@ -3292,7 +3292,7 @@ strong {
   padding: 4px 12px;
 }
 
-.role-sidebar nav button {
+.role-sidebar nav :is(a, button) {
   min-height: 50px;
   position: relative;
   display: flex;
@@ -3303,20 +3303,21 @@ strong {
   color: #a7b6c0;
   font-size: 14px;
   text-align: left;
+  text-decoration: none;
 }
 
-.role-sidebar nav button:hover,
-.role-sidebar nav button:focus-visible {
+.role-sidebar nav :is(a, button):hover,
+.role-sidebar nav :is(a, button):focus-visible {
   background: var(--surface);
   color: var(--text);
 }
 
-.role-sidebar nav button.is-active {
+.role-sidebar nav :is(a, button).is-active {
   background: #15252f;
   color: var(--lime);
 }
 
-.role-sidebar nav button.is-active::after {
+.role-sidebar nav :is(a, button).is-active::after {
   content: "";
   width: 3px;
   position: absolute;
@@ -3327,13 +3328,13 @@ strong {
   background: var(--lime);
 }
 
-.role-sidebar nav button svg {
+.role-sidebar nav :is(a, button) svg {
   width: 21px;
   height: 21px;
   flex: none;
 }
 
-.role-sidebar nav button span {
+.role-sidebar nav :is(a, button) span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3421,7 +3422,7 @@ strong {
 }
 
 .role-shell.is-sidebar-collapsed .role-sidebar-context > span:last-child,
-.role-shell.is-sidebar-collapsed .role-sidebar nav button span,
+.role-shell.is-sidebar-collapsed .role-sidebar nav :is(a, button) span,
 .role-shell.is-sidebar-collapsed .role-sandbox-life span {
   display: none;
 }
@@ -3430,13 +3431,13 @@ strong {
   padding-inline: 8px;
 }
 
-.role-shell.is-sidebar-collapsed .role-sidebar nav button {
+.role-shell.is-sidebar-collapsed .role-sidebar nav :is(a, button) {
   justify-content: center;
   gap: 0;
   padding: 0;
 }
 
-.role-sidebar nav button::before {
+.role-sidebar nav :is(a, button)::before {
   content: attr(data-label);
   position: absolute;
   z-index: 20;
@@ -3460,11 +3461,11 @@ strong {
   white-space: nowrap;
 }
 
-.role-shell.is-sidebar-collapsed .role-sidebar nav button:hover::before,
+.role-shell.is-sidebar-collapsed .role-sidebar nav :is(a, button):hover::before,
 .role-shell.is-sidebar-collapsed
   .role-sidebar
   nav
-  button:focus-visible::before {
+  :is(a, button):focus-visible::before {
   opacity: 1;
   transform: translate(0, -50%);
 }
@@ -6325,7 +6326,7 @@ strong {
   }
 
   .role-sidebar-context > span:last-child,
-  .role-sidebar nav button span,
+  .role-sidebar nav :is(a, button) span,
   .role-sandbox-life span {
     display: none;
   }
@@ -6334,14 +6335,14 @@ strong {
     padding-inline: 8px;
   }
 
-  .role-sidebar nav button {
+  .role-sidebar nav :is(a, button) {
     justify-content: center;
     gap: 0;
     padding: 0;
   }
 
-  .role-sidebar nav button:hover::before,
-  .role-sidebar nav button:focus-visible::before {
+  .role-sidebar nav :is(a, button):hover::before,
+  .role-sidebar nav :is(a, button):focus-visible::before {
     opacity: 1;
     transform: translate(0, -50%);
   }
@@ -6505,7 +6506,8 @@ strong {
 }
 
 .customer-h5 button:focus-visible,
-.customer-h5 input:focus-visible {
+.customer-h5 input:focus-visible,
+.customer-h5 a:focus-visible {
   outline: 2px solid var(--cyan);
   outline-offset: 2px;
 }
@@ -8410,7 +8412,7 @@ strong {
   backdrop-filter: blur(18px);
 }
 
-.customer-bottom-nav button {
+.customer-bottom-nav a {
   min-height: 60px;
   display: grid;
   place-items: center;
@@ -8418,20 +8420,16 @@ strong {
   gap: 4px;
   color: #7e939e;
   font-size: 9px;
+  text-decoration: none;
 }
 
-.customer-bottom-nav button svg {
+.customer-bottom-nav a svg {
   width: 20px;
   height: 20px;
 }
 
-.customer-bottom-nav button.is-active {
+.customer-bottom-nav a.is-active {
   color: var(--lime);
-}
-
-.customer-bottom-nav button:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
 }
 
 .customer-loading {
@@ -9389,14 +9387,16 @@ strong {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.customer-history-filters {
+.customer-history-filters,
+.customer-journey-type-filters {
   display: flex;
   justify-content: flex-end;
   gap: 7px;
   margin-top: -5px;
 }
 
-.customer-history-filters button {
+.customer-history-filters button,
+.customer-journey-type-filters button {
   min-height: 44px;
   padding: 0 12px;
   border: 1px solid #2d4652;
@@ -9405,7 +9405,8 @@ strong {
   font-size: 9px;
 }
 
-.customer-history-filters button.is-active {
+.customer-history-filters button.is-active,
+.customer-journey-type-filters button.is-active {
   border-color: #4f7d3d;
   background: #17271b;
   color: var(--lime);
@@ -9416,8 +9417,8 @@ strong {
   margin-top: 13px;
 }
 
-.customer-story-tabs button,
-.customer-coupon-tabs button {
+.customer-story-tabs a,
+.customer-coupon-tabs a {
   min-height: 44px;
   display: flex;
   align-items: center;
@@ -9429,10 +9430,11 @@ strong {
   color: #8297a1;
   font-size: 10px;
   font-weight: 740;
+  text-decoration: none;
 }
 
-.customer-story-tabs button small,
-.customer-coupon-tabs button small {
+.customer-story-tabs a small,
+.customer-coupon-tabs a small {
   min-width: 18px;
   min-height: 18px;
   display: grid;
@@ -9443,15 +9445,15 @@ strong {
   font-size: 8px;
 }
 
-.customer-story-tabs button.is-active,
-.customer-coupon-tabs button.is-active {
+.customer-story-tabs a.is-active,
+.customer-coupon-tabs a.is-active {
   border-color: #5e873a;
   background: #17271b;
   color: var(--lime);
 }
 
-.customer-story-tabs button.is-active small,
-.customer-coupon-tabs button.is-active small {
+.customer-story-tabs a.is-active small,
+.customer-coupon-tabs a.is-active small {
   background: var(--lime);
   color: #132006;
 }
@@ -9493,7 +9495,7 @@ strong {
   line-height: 1.6;
 }
 
-.customer-story-empty > button {
+.customer-story-empty > :is(a, button) {
   min-height: 44px;
   display: inline-flex;
   align-items: center;
@@ -9507,9 +9509,10 @@ strong {
   color: #132006;
   font-size: 10px;
   font-weight: 800;
+  text-decoration: none;
 }
 
-.customer-story-empty > button svg {
+.customer-story-empty > :is(a, button) svg {
   width: 17px;
   height: 17px;
 }
@@ -10580,7 +10583,7 @@ strong {
     gap: 5px;
   }
 
-  .customer-coupon-tabs button {
+  .customer-coupon-tabs a {
     gap: 3px;
     padding-inline: 4px;
     font-size: 9px;

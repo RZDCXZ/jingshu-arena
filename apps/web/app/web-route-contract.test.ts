@@ -104,6 +104,27 @@ describe("Web route contract", () => {
     ]);
   });
 
+  it("restores only approved customer journey filters and omits defaults", () => {
+    expect(
+      parseWebRoute(
+        "/customer/journeys/history?refunds=only&type=repair&unknown=drop",
+      ),
+    ).toMatchObject({
+      canonicalUrl: "/customer/journeys/history?type=repair&refunds=only",
+      needsReplace: true,
+      routeId: "customer-journeys-history",
+    });
+    expect(
+      parseWebRoute("/customer/journeys/current?type=reservation&refunds=all"),
+    ).toMatchObject({
+      canonicalUrl: "/customer/journeys/current",
+      needsReplace: true,
+    });
+    expect(
+      buildWebPath("customer-journeys-current", {}, { type: "order" }),
+    ).toBe("/customer/journeys/current?type=order");
+  });
+
   it("emits each allowed query once in the contract-wide fixed order", () => {
     const input = new URLSearchParams();
     for (const name of [...WEB_QUERY_ORDER].reverse()) input.append(name, name);

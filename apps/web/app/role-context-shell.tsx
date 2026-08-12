@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowCounterClockwise,
   ArrowClockwise,
@@ -27,6 +28,10 @@ import type {
 } from "@jingshu/contracts";
 
 import jingshuMark from "../../../product-ui/management-system/design-prototype/public/assets/jingshu-mark.png";
+import {
+  customerPagePath,
+  type CustomerRouteState,
+} from "./customer-route-model";
 import { DemoTimeDialog, SandboxResetDialog } from "./demo-tool-dialogs";
 import { DemoStoryDrawer } from "./demo-story-drawer";
 import { RoleSwitchDialog, StaleRoleDialog } from "./role-context-dialogs";
@@ -280,6 +285,7 @@ function ContextPage({
 
 export function RoleContextShell({
   context,
+  customerRoute,
   initialPage,
   onContextChange,
   onContextRequired,
@@ -289,6 +295,7 @@ export function RoleContextShell({
   routeBoundary,
 }: {
   context: RoleContextReadyResponse;
+  customerRoute?: CustomerRouteState;
   initialPage?: RolePageId;
   onContextChange: (context: RoleContextReadyResponse) => void;
   onContextRequired: () => void;
@@ -301,6 +308,7 @@ export function RoleContextShell({
   routeBoundary?:
     { readonly kind: "not-found" } | { readonly kind: "object-unavailable" };
 }) {
+  const router = useRouter();
   const [activePage, setActivePage] = useState<RolePageId>(
     initialPage ?? roleMeta[context.role.id].defaultPage,
   );
@@ -686,11 +694,19 @@ export function RoleContextShell({
   function acceptSwitchedContext(nextContext: RoleContextReadyResponse) {
     const storyTarget = pendingStoryNavigationRef.current;
     pendingStoryNavigationRef.current = null;
-    if (storyTarget?.role === nextContext.role.id) {
+    const customerStoryPath =
+      storyTarget?.role === "customer" && nextContext.role.id === "customer"
+        ? customerPagePath(storyTarget.page)
+        : null;
+    if (storyTarget?.role === nextContext.role.id && !customerStoryPath) {
       storyPageAfterSwitchRef.current = storyTarget;
     }
     onContextChange(nextContext);
-    onRoleHomeRequired?.(nextContext);
+    if (customerStoryPath) {
+      router.replace(customerStoryPath);
+    } else {
+      onRoleHomeRequired?.(nextContext);
+    }
     setFilter("");
     setStale(false);
     setStaleReason("role");
@@ -739,7 +755,11 @@ export function RoleContextShell({
       return;
     }
     if (target.role === context.role.id) {
-      setActivePage(target.page);
+      if (target.role === "customer") {
+        router.push(customerPagePath(target.page));
+      } else {
+        setActivePage(target.page);
+      }
       return;
     }
     pendingStoryNavigationRef.current = target;
@@ -904,19 +924,46 @@ export function RoleContextShell({
             </span>
           </div>
           <nav aria-label={`${context.role.label}导航`}>
-            {meta.navigation.map(([id, label, Icon]) => (
-              <button
-                aria-label={label}
-                className={activePage === id ? "is-active" : ""}
-                data-label={label}
-                key={id}
-                onClick={() => setActivePage(id)}
-                type="button"
-              >
-                <Icon weight="regular" />
-                <span>{label}</span>
-              </button>
-            ))}
+            {meta.navigation.map(([id, label, Icon]) => {
+              const customerCurrent =
+                context.role.id === "customer" && customerRoute
+                  ? id === "customer-orders"
+                    ? customerRoute.kind === "journeys" &&
+                      customerRoute.type === "order"
+                    : id === "customer-repairs"
+                      ? customerRoute.kind === "journeys" &&
+                        customerRoute.type === "repair"
+                      : id === "customer-reservations"
+                        ? customerRoute.kind === "journeys" &&
+                          customerRoute.type === null
+                        : customerRoute.kind !== "journeys"
+                  : false;
+              return context.role.id === "customer" ? (
+                <Link
+                  aria-current={customerCurrent ? "page" : undefined}
+                  aria-label={label}
+                  className={customerCurrent ? "is-active" : ""}
+                  data-label={label}
+                  href={customerPagePath(id)}
+                  key={id}
+                >
+                  <Icon weight="regular" />
+                  <span>{label}</span>
+                </Link>
+              ) : (
+                <button
+                  aria-label={label}
+                  className={activePage === id ? "is-active" : ""}
+                  data-label={label}
+                  key={id}
+                  onClick={() => setActivePage(id)}
+                  type="button"
+                >
+                  <Icon weight="regular" />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
           </nav>
           <div className="role-sidebar-footer">
             <button
@@ -968,6 +1015,7 @@ export function RoleContextShell({
               activePage === "customer-repairs") ? (
             <CustomerSeatBrowser
               csrfToken={context.csrfToken}
+              {...(customerRoute ? { route: customerRoute } : {})}
               entryPage={activePage}
               key={`customer-sandbox-${customerSandboxVersion}`}
               refreshKey={resourceRefreshKey}

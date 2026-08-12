@@ -296,6 +296,13 @@
 - 覆盖首次打开、已完成、受阻、角色切换后恢复、刷新后恢复、重置后的新沙箱起点，以及旧标签被阻断后只能创建独立沙箱的恢复路径。
 - `1440 × 1024`、`1024 × 768` 管理端抽屉与 `360 × 800` 顾客 H5/抽屉的保真度与响应式证据记录在 `design-qa.md`。
 
+## Web URL 路由 Ticket 04 — 顾客入口、行程与会员
+
+- `WEB-C00` 的预约入口与三店浏览分别由 `/customer/reservations` 和 `/customer/stores` 恢复；`/customer` 只规范化替换到预约入口。共享角色壳、顾客侧栏和 H5 底部导航均使用真实链接，页面标题、主标题与 `aria-current` 共同表达同一页面身份。
+- `WEB-C03 / MP-16` 的当前、未来、历史行程分别由 `/customer/journeys/current|future|history` 恢复；“我的预约、我的订单、我的报修”继续复用同一列表，订单和报修只写入 `type=order|repair` 已应用筛选。历史模拟退款使用 `refunds=only`，默认筛选从 URL 省略。
+- `WEB-C03 / MP-17` 的可用、占用中、已使用、已过期体验券分别由 `/customer/membership/coupons/available|reserved|redeemed|expired` 恢复，父路径只规范化替换到 `available`。
+- 稳定页面和 Tab 导航会把顾客工作区回到顶部并聚焦主标题；后退/前进、刷新和复制链接恢复同一 Tab 与筛选。覆盖状态、三档视口和无障碍证据记录在 `design-qa.md` 与 `design/evidence/web-url-routing-ticket-04/`。
+
 ## 运行与验证
 
 - 本地开发：`npm run dev -- --host 0.0.0.0 --port 4173`

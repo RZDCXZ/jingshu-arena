@@ -769,8 +769,10 @@ test("新鲜访客可只通过页面完成跨四角色主演示", async ({
 
   await page
     .getByTestId("role-sidebar")
-    .getByRole("button", { name: "我的订单" })
+    .getByRole("link", { name: "我的订单" })
     .click();
+  await expect(page).toHaveURL(/\/customer\/journeys\/current\?type=order$/u);
+  await page.locator(".customer-journey-main").first().click();
   await expect(
     page.getByRole("button", { name: "购买柜台商品" }),
   ).toBeVisible();
@@ -813,8 +815,10 @@ test("新鲜访客可只通过页面完成跨四角色主演示", async ({
   await switchRoleInShell(page, "顾客");
   await page
     .getByTestId("role-sidebar")
-    .getByRole("button", { name: "我的报修" })
+    .getByRole("link", { name: "我的报修" })
     .click();
+  await expect(page).toHaveURL(/\/customer\/journeys\/current\?type=repair$/u);
+  await page.locator(".customer-journey-main").first().click();
   await expect(
     page.getByRole("button", { name: "为当前座位报修" }),
   ).toBeVisible();

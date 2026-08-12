@@ -650,12 +650,31 @@ final result: passed
 
 ### Findings 与验证
 
-- 首轮 P1：主演示 CTA 曾只切到泛化的顾客壳页，不能把访客带到当前预约的订单或报修入口。修复后“我的订单”“我的报修”将具体打开主演示预约详情，并由详情中的真实订单/报修动作继续；`customer-seat-browse.spec.ts` 覆盖这两个落点。
+- 首轮 P1：主演示 CTA 曾只切到泛化的顾客壳页，不能把访客带到当前预约的订单或报修入口。修复后“我的订单”“我的报修”进入带 `type=order|repair` 已应用筛选的统一行程，访客选择唯一匹配行程后由预约详情中的真实订单/报修动作继续；`customer-seat-browse.spec.ts` 覆盖这两个落点。
 - 首轮 P1：替换耳机证据曾按全部备件的净数量汇总，背景或其他备件可能误判为完成。修复后只接受主演示报修关联的 `spare-headset` 一副净领用，回退后再领用才能推进解决步骤。
 - 受控差异：正式移动源保留 iPhone 设备框和本机演示边界，生产 H5 保留共享沙箱工具栏、Web 独立沙箱说明与三店浏览；两侧均以深海军蓝、青色步骤、青柠主操作和“预约一个明确座位”的优先级表达同一预约起点。
 - 没有仍需处理的 P0、P1 或 P2 差异。抽屉在三档视口保持完整标题、当前步骤、不可手工勾选的证据说明和可见下一动作；关闭、`Escape` 与焦点返回均通过。
 - 应用内浏览器以真实 Web → Hono → 临时 PostgreSQL 完成 0→11 的预约、订单、维修、导出路径，并实际重置到新沙箱 0；第二标签只显示旧沙箱失效恢复入口。浏览器控制台本轮新增操作没有 warning/error。
 - 自动化：`apps/api/src/demo-story.integration.test.ts` 从全新会话完成完整业务记录、CSV 内容、三店导出审计、旧会话 `410` 与重置后旧对象 `404`；`tests/e2e/demo-story-real.spec.ts` 在独立端口的真实 Web → Hono → 临时 PostgreSQL 中包含服务端证据回归，以及一条由新鲜访客仅通过页面完成预约、订单、维修、单店经营/审计、三店预约 CSV 和重置的路径，API 仅用于读取已提交证据；`role-context-shell.spec.ts` 的 `WEB-G03` 覆盖 1440 抽屉、角色 CTA、360 抽屉无溢出/关闭/焦点返回；`customer-seat-browse.spec.ts` 覆盖顾客端具体落点。当前 Web 立即预约规则以 `prod.md` 1.19 为准，旧种子沙箱的原规则由 PostgreSQL 兼容回归覆盖。
+
+final result: passed
+
+## Web URL 路由 Ticket 04 — 顾客入口、行程与会员
+
+### 对照源与证据
+
+- 页面职责、状态和主要文案继续使用小程序选定源 `../../miniprogram/design-prototype/design/reference/selected-reservation-first-home.png` 及 `MP-16/MP-17` 正式状态；Web 共享壳继续使用 `design/reference/selected-night-operations-console.png`。本票只把既有顾客视觉与业务状态接入稳定 URL，没有发展第三套视觉方向。
+- `360 × 800` 历史行程、订单筛选与模拟退款筛选：`design/evidence/web-url-routing-ticket-04/customer-history-filter-360x800.png`。
+- `360 × 800` 会员可用体验券：`design/evidence/web-url-routing-ticket-04/customer-membership-360x800.png`。
+- `1440 × 1024` 顾客行程与完整共享壳：`design/evidence/web-url-routing-ticket-04/customer-route-1440x1024.png`。
+- `1024 × 768` 会员占用中体验券与折叠侧栏：`design/evidence/web-url-routing-ticket-04/customer-route-1024x768.png`。
+
+### Findings 与验证
+
+- 首轮 P1：既有行程分组、历史退款筛选、体验券状态和顾客导航只保存在组件内存中，刷新、复制链接和浏览器历史无法恢复。修复后稳定页面/Tab 使用显式 App Router 页面和语义链接，`type=order|repair`、`refunds=only` 使用白名单查询参数与固定顺序；非法值和默认值通过历史替换从规范 URL 移除。
+- 首轮 P1：会员页缺少与当前体验券状态对应的主标题，稳定 Tab 变化也不会更新页面标题或焦点。修复后标题、`h1`、底部导航、侧栏和 Tab 当前状态均由同一 URL 路由状态控制；页面/Tab 变化聚焦主标题并把顾客工作区滚动到顶部。
+- `customer-seat-browse.spec.ts` 的 Ticket 04 专用回归覆盖 `/customer`、门店、三组行程、三种行程类型、历史退款、四组体验券、父路径规范化、刷新/复制、后退/前进、筛选历史替换、标题、焦点和 `aria-current`。`360 × 800` 的 `documentElement.scrollWidth <= innerWidth`，底部固定导航未遮挡末项，页面 warning/error 为 0。
+- 同一测试在 `1440 × 1024` 与 `1024 × 768` 验证顾客画布不超过 `520px`、共享壳无页面级横向溢出、底部导航位于视口内且控制台无新增 warning/error。当前 P0/P1/P2 均已清零。
 
 final result: passed
 

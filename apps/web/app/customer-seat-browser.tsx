@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Armchair,
   ArrowClockwise,
@@ -73,6 +75,11 @@ import type {
 
 import repairSample from "../../../product-ui/miniprogram/design-prototype/public/assets/repair-headset-sample.png";
 import { createBrowserUuid } from "./browser-uuid";
+import {
+  customerJourneyPath,
+  type CustomerJourneyType,
+  type CustomerRouteState,
+} from "./customer-route-model";
 
 const profileIcons = {
   competitive: GameController,
@@ -427,11 +434,14 @@ export function CustomerSeatBrowser({
   csrfToken,
   entryPage = "customer-home",
   refreshKey,
+  route,
 }: {
   csrfToken: string;
   entryPage?: CustomerEntryPage;
   refreshKey: string;
+  route?: CustomerRouteState;
 }) {
+  const router = useRouter();
   const customerRootRef = useRef<HTMLElement>(null);
   const lastRefreshKeyRef = useRef(refreshKey);
   const lastEntryPageRef = useRef<CustomerEntryPage | null>(null);
@@ -492,14 +502,17 @@ export function CustomerSeatBrowser({
   const [membershipLoading, setMembershipLoading] = useState(false);
   const [membershipFailure, setMembershipFailure] = useState("");
   const [membershipAttempt, setMembershipAttempt] = useState(0);
-  const [couponStatus, setCouponStatus] =
+  const [legacyCouponStatus] =
     useState<CustomerExperienceCouponStatus>("available");
   const [journey, setJourney] = useState<CustomerJourneyResponse | null>(null);
   const [journeyLoading, setJourneyLoading] = useState(false);
   const [journeyFailure, setJourneyFailure] = useState("");
   const [journeyAttempt, setJourneyAttempt] = useState(0);
-  const [journeyGroup, setJourneyGroup] = useState<JourneyGroup>("current");
-  const [historyFilter, setHistoryFilter] = useState<"all" | "refunds">("all");
+  const [legacyJourneyGroup, setLegacyJourneyGroup] =
+    useState<JourneyGroup>("current");
+  const [legacyHistoryFilter, setLegacyHistoryFilter] = useState<
+    "all" | "refunds"
+  >("all");
   const [orderCatalog, setOrderCatalog] =
     useState<CustomerOrderCatalogResponse | null>(null);
   const [orderCatalogLoading, setOrderCatalogLoading] = useState(false);
@@ -573,6 +586,18 @@ export function CustomerSeatBrowser({
   }, [refreshKey]);
 
   useEffect(() => {
+    if (route) {
+      pendingEntryIntentRef.current = null;
+      if (route.kind === "journeys") {
+        setView("journey");
+        setJourneyAttempt((attempt) => attempt + 1);
+      } else if (route.kind === "membership") {
+        setView("membership");
+      } else {
+        setView("conditions");
+      }
+      return;
+    }
     if (lastEntryPageRef.current === entryPage) return;
     lastEntryPageRef.current = entryPage;
 
@@ -588,11 +613,23 @@ export function CustomerSeatBrowser({
         : entryPage === "customer-repairs"
           ? "repair"
           : null;
-    setJourneyGroup("current");
-    setHistoryFilter("all");
+    setLegacyJourneyGroup("current");
+    setLegacyHistoryFilter("all");
     setView("journey");
     setJourneyAttempt((attempt) => attempt + 1);
-  }, [entryPage]);
+  }, [entryPage, route]);
+
+  useEffect(() => {
+    if (!route || !catalog) return;
+    const frame = window.requestAnimationFrame(() => {
+      const workspace = customerRootRef.current?.parentElement;
+      workspace?.scrollTo({ behavior: "auto", top: 0 });
+      customerRootRef.current
+        ?.querySelector<HTMLElement>("[data-customer-route-heading]")
+        ?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [catalog, route]);
 
   useEffect(() => {
     if (
@@ -1857,10 +1894,29 @@ export function CustomerSeatBrowser({
     orderRemainingSeconds === null
       ? "—"
       : `${String(Math.floor(orderRemainingSeconds / 60)).padStart(2, "0")}:${String(orderRemainingSeconds % 60).padStart(2, "0")}`;
-  const journeyItems =
+  const journeyGroup =
+    route?.kind === "journeys" ? route.tab : legacyJourneyGroup;
+  const historyFilter =
+    route?.kind === "journeys" && route.refunds === "only"
+      ? "refunds"
+      : legacyHistoryFilter;
+  const journeyType: CustomerJourneyType =
+    route?.kind === "journeys" ? route.type : null;
+  const untypedJourneyItems =
     journeyGroup === "history" && historyFilter === "refunds"
       ? (journey?.groups.history.filter((item) => item.refund !== null) ?? [])
       : (journey?.groups[journeyGroup] ?? []);
+  const journeyItems = untypedJourneyItems.filter((item) =>
+    journeyType === "order"
+      ? item.related.orders.length > 0 ||
+        item.status === "arrived" ||
+        item.status === "in-use"
+      : journeyType === "repair"
+        ? item.related.repairs.length > 0 || item.status === "in-use"
+        : true,
+  );
+  const couponStatus =
+    route?.kind === "membership" ? route.couponStatus : legacyCouponStatus;
   const visibleCoupons =
     membership?.coupons.filter((coupon) => coupon.status === couponStatus) ??
     [];
@@ -2656,7 +2712,7 @@ export function CustomerSeatBrowser({
                   orderCatalog.reservation.reservationId,
                 );
               } else {
-                setView("journey");
+                router.push(customerJourneyPath("current"));
               }
             }}
             type="button"
@@ -2866,7 +2922,7 @@ export function CustomerSeatBrowser({
           </button>
           <button
             className="customer-payment-secondary"
-            onClick={() => setView("journey")}
+            onClick={() => router.push(customerJourneyPath("current"))}
             type="button"
           >
             返回统一行程
@@ -2883,7 +2939,9 @@ export function CustomerSeatBrowser({
           </section>
           <section className="customer-story-hero">
             <span className="customer-eyebrow">ONE CUSTOMER JOURNEY</span>
-            <h1>一条行程，看清完整结果</h1>
+            <h1 data-customer-route-heading tabIndex={-1}>
+              {journeyGroupLabels[journeyGroup]}行程
+            </h1>
             <p>
               预约、模拟退款与成长发放按同一顾客聚合，点击任一记录可回到权威详情。
             </p>
@@ -2895,26 +2953,65 @@ export function CustomerSeatBrowser({
           >
             {(Object.keys(journeyGroupLabels) as JourneyGroup[]).map(
               (group) => (
-                <button
+                <Link
+                  aria-current={journeyGroup === group ? "page" : undefined}
                   aria-selected={journeyGroup === group}
                   className={journeyGroup === group ? "is-active" : ""}
+                  href={customerJourneyPath(group, {
+                    refunds:
+                      group === "history"
+                        ? route?.kind === "journeys"
+                          ? route.refunds
+                          : "all"
+                        : "all",
+                    type: journeyType,
+                  })}
                   key={group}
-                  onClick={() => setJourneyGroup(group)}
                   role="tab"
-                  type="button"
                 >
                   {journeyGroupLabels[group]}
                   <small>{journey?.groups[group].length ?? 0}</small>
-                </button>
+                </Link>
               ),
             )}
+          </div>
+          <div className="customer-journey-type-filters" aria-label="行程类型">
+            {(
+              [
+                [null, "我的预约"],
+                ["order", "我的订单"],
+                ["repair", "我的报修"],
+              ] as const
+            ).map(([type, label]) => (
+              <button
+                aria-pressed={journeyType === type}
+                className={journeyType === type ? "is-active" : ""}
+                key={label}
+                onClick={() =>
+                  router.replace(
+                    customerJourneyPath(journeyGroup, {
+                      refunds:
+                        route?.kind === "journeys" ? route.refunds : "all",
+                      type,
+                    }),
+                  )
+                }
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
           </div>
           {journeyGroup === "history" ? (
             <div className="customer-history-filters" aria-label="历史筛选">
               <button
                 aria-pressed={historyFilter === "all"}
                 className={historyFilter === "all" ? "is-active" : ""}
-                onClick={() => setHistoryFilter("all")}
+                onClick={() =>
+                  router.replace(
+                    customerJourneyPath("history", { type: journeyType }),
+                  )
+                }
                 type="button"
               >
                 全部历史
@@ -2922,7 +3019,14 @@ export function CustomerSeatBrowser({
               <button
                 aria-pressed={historyFilter === "refunds"}
                 className={historyFilter === "refunds" ? "is-active" : ""}
-                onClick={() => setHistoryFilter("refunds")}
+                onClick={() =>
+                  router.replace(
+                    customerJourneyPath("history", {
+                      refunds: "only",
+                      type: journeyType,
+                    }),
+                  )
+                }
                 type="button"
               >
                 含模拟退款
@@ -2973,8 +3077,10 @@ export function CustomerSeatBrowser({
               <button
                 onClick={() =>
                   journeyGroup === "history" && historyFilter === "refunds"
-                    ? setHistoryFilter("all")
-                    : setView("conditions")
+                    ? router.replace(
+                        customerJourneyPath("history", { type: journeyType }),
+                      )
+                    : router.push("/customer/reservations")
                 }
                 type="button"
               >
@@ -2998,6 +3104,13 @@ export function CustomerSeatBrowser({
               <strong>Web 独立沙箱 · 三店共享</strong>
               会员档案、成长值与体验券均为合成演示数据；不提供储值、转让、折现或手工调整。
             </span>
+          </section>
+          <section className="customer-story-hero">
+            <span className="customer-eyebrow">MEMBERSHIP COUPONS</span>
+            <h1 data-customer-route-heading tabIndex={-1}>
+              {couponStatusLabels[couponStatus]}体验券
+            </h1>
+            <p>会员等级、成长值与体验券状态均来自当前 Web 沙箱。</p>
           </section>
           {membershipLoading && !membership ? (
             <section className="customer-story-loading" aria-live="polite">
@@ -3066,13 +3179,15 @@ export function CustomerSeatBrowser({
                   role="tablist"
                 >
                   {couponStatusOrder.map((status) => (
-                    <button
+                    <Link
+                      aria-current={
+                        couponStatus === status ? "page" : undefined
+                      }
                       aria-selected={couponStatus === status}
                       className={couponStatus === status ? "is-active" : ""}
+                      href={`/customer/membership/coupons/${status}`}
                       key={status}
-                      onClick={() => setCouponStatus(status)}
                       role="tab"
-                      type="button"
                     >
                       {couponStatusLabels[status]}
                       <small>
@@ -3082,7 +3197,7 @@ export function CustomerSeatBrowser({
                           ).length
                         }
                       </small>
-                    </button>
+                    </Link>
                   ))}
                 </div>
                 {visibleCoupons.length > 0 ? (
@@ -3147,12 +3262,9 @@ export function CustomerSeatBrowser({
                     <Ticket weight="duotone" />
                     <h2>暂无{couponStatusLabels[couponStatus]}体验券</h2>
                     <p>切换上方状态，可查看体验券的占用、使用与失效记录。</p>
-                    <button
-                      onClick={() => setCouponStatus("available")}
-                      type="button"
-                    >
+                    <Link href="/customer/membership/coupons/available">
                       查看可用体验券
-                    </button>
+                    </Link>
                   </section>
                 )}
               </section>
@@ -3214,9 +3326,19 @@ export function CustomerSeatBrowser({
           </section>
 
           <section className="customer-reservation-hero">
-            <span className="customer-eyebrow">RESERVATION FIRST</span>
-            <h1>预约一个明确座位</h1>
-            <p>先选门店、时段、区域和机型，再查看服务端推导的可订性。</p>
+            <span className="customer-eyebrow">
+              {route?.kind === "stores"
+                ? "THREE DEMO STORES"
+                : "RESERVATION FIRST"}
+            </span>
+            <h1 data-customer-route-heading tabIndex={-1}>
+              {route?.kind === "stores" ? "三店浏览" : "预约一个明确座位"}
+            </h1>
+            <p>
+              {route?.kind === "stores"
+                ? "浏览固定三店的营业时间、区域和机型，再继续预约。"
+                : "先选门店、时段、区域和机型，再查看服务端推导的可订性。"}
+            </p>
             <div className="customer-step-rail" aria-label="预约进度">
               <span className="is-active">
                 <i>1</i>选时段
@@ -3237,7 +3359,9 @@ export function CustomerSeatBrowser({
             <div className="customer-section-title">
               <div>
                 <span>{catalog.city} · 虚构地点</span>
-                <h2 id="stores-heading">三店浏览</h2>
+                <h2 id="stores-heading">
+                  {route?.kind === "stores" ? "选择演示门店" : "三店浏览"}
+                </h2>
               </div>
               <MapPin />
             </div>
@@ -4037,7 +4161,13 @@ export function CustomerSeatBrowser({
         <div className="customer-scroll-content customer-lifecycle-detail">
           <button
             className="customer-back-button"
-            onClick={() => setView(detailReturnView)}
+            onClick={() =>
+              detailReturnView === "journey"
+                ? route?.kind === "journeys"
+                  ? setView("journey")
+                  : router.push(customerJourneyPath("current"))
+                : setView(detailReturnView)
+            }
             type="button"
           >
             <CaretLeft />
@@ -4507,48 +4637,44 @@ export function CustomerSeatBrowser({
 
       {["conditions", "journey", "membership", "seats"].includes(view) ? (
         <nav className="customer-bottom-nav" aria-label="顾客 H5 导航">
-          <button
-            className={
-              view === "conditions" || view === "seats" ? "is-active" : ""
-            }
-            onClick={() => setView("conditions")}
-            type="button"
+          <Link
+            aria-current={route?.kind === "reservations" ? "page" : undefined}
+            className={route?.kind === "reservations" ? "is-active" : ""}
+            href="/customer/reservations"
           >
-            <House weight="fill" />
+            <House
+              weight={route?.kind === "reservations" ? "fill" : "regular"}
+            />
             <span>预约</span>
-          </button>
-          <button
-            onClick={() => {
-              setView("conditions");
-              window.setTimeout(
-                () =>
-                  document
-                    .getElementById("stores-heading")
-                    ?.scrollIntoView({ behavior: "smooth" }),
-                0,
-              );
-            }}
-            type="button"
+          </Link>
+          <Link
+            aria-current={route?.kind === "stores" ? "page" : undefined}
+            className={route?.kind === "stores" ? "is-active" : ""}
+            href="/customer/stores"
           >
-            <Storefront />
+            <Storefront
+              weight={route?.kind === "stores" ? "fill" : "regular"}
+            />
             <span>门店</span>
-          </button>
-          <button
-            className={view === "journey" ? "is-active" : ""}
-            onClick={() => setView("journey")}
-            type="button"
+          </Link>
+          <Link
+            aria-current={route?.kind === "journeys" ? "page" : undefined}
+            className={route?.kind === "journeys" ? "is-active" : ""}
+            href="/customer/journeys/current"
           >
-            <CalendarBlank weight={view === "journey" ? "fill" : "regular"} />
+            <CalendarBlank
+              weight={route?.kind === "journeys" ? "fill" : "regular"}
+            />
             <span>行程</span>
-          </button>
-          <button
-            className={view === "membership" ? "is-active" : ""}
-            onClick={() => setView("membership")}
-            type="button"
+          </Link>
+          <Link
+            aria-current={route?.kind === "membership" ? "page" : undefined}
+            className={route?.kind === "membership" ? "is-active" : ""}
+            href="/customer/membership/coupons/available"
           >
-            <User weight={view === "membership" ? "fill" : "regular"} />
+            <User weight={route?.kind === "membership" ? "fill" : "regular"} />
             <span>会员</span>
-          </button>
+          </Link>
         </nav>
       ) : null}
     </main>

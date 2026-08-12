@@ -1,8 +1,15 @@
 "use client";
 
 import { ArrowRight, ShieldCheck, Warning } from "@phosphor-icons/react";
-import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ReactNode } from "react";
 import type {
   ApiErrorResponse,
@@ -12,6 +19,7 @@ import type {
 } from "@jingshu/contracts";
 
 import { createBrowserUuid } from "./browser-uuid";
+import type { CustomerRouteState } from "./customer-route-model";
 import {
   CreationProgress,
   FailureView,
@@ -74,7 +82,7 @@ function pageForRoute(role: PublicRole, routeId: string): RolePageId {
   if (role === "customer") {
     if (routeId.includes("orders")) return "customer-orders";
     if (routeId.includes("repairs")) return "customer-repairs";
-    if (routeId.includes("reservations")) return "customer-reservations";
+    if (routeId.includes("journeys")) return "customer-reservations";
     return "customer-home";
   }
   if (role === "staff") {
@@ -100,6 +108,41 @@ function pageForRoute(role: PublicRole, routeId: string): RolePageId {
   if (routeId.includes("people")) return "hq-people";
   if (routeId.includes("audit")) return "hq-audit";
   return "chain-dashboard";
+}
+
+function customerRouteFor(
+  route: ParsedWebRoute,
+): CustomerRouteState | undefined {
+  if (route.status !== "matched") return undefined;
+  if (route.routeId === "customer-reservations") {
+    return { kind: "reservations" };
+  }
+  if (route.routeId === "customer-stores") return { kind: "stores" };
+  if (route.routeId.startsWith("customer-journeys-")) {
+    const tab = route.routeId.replace("customer-journeys-", "");
+    if (tab !== "current" && tab !== "future" && tab !== "history") {
+      return undefined;
+    }
+    const type = route.query.get("type");
+    return {
+      kind: "journeys",
+      refunds: route.query.get("refunds") === "only" ? "only" : "all",
+      tab,
+      type: type === "order" || type === "repair" ? type : null,
+    };
+  }
+  if (route.routeId.startsWith("customer-coupons-")) {
+    const couponStatus = route.routeId.replace("customer-coupons-", "");
+    if (
+      couponStatus === "available" ||
+      couponStatus === "reserved" ||
+      couponStatus === "redeemed" ||
+      couponStatus === "expired"
+    ) {
+      return { couponStatus, kind: "membership" };
+    }
+  }
+  return undefined;
 }
 
 function routeBoundary(route: ParsedWebRoute) {
@@ -180,7 +223,7 @@ function RoleMismatchView({
   );
 }
 
-export function RoleRouteLayout({
+function RoleRouteLayoutClient({
   children,
   role,
 }: {
@@ -189,6 +232,8 @@ export function RoleRouteLayout({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const search = searchParams.toString();
   const [route, setRoute] = useState<ParsedWebRoute>(() =>
     parseWebRoute(pathname),
   );
@@ -249,7 +294,7 @@ export function RoleRouteLayout({
     if (parsed.status === "matched" && parsed.needsReplace) {
       router.replace(parsed.canonicalUrl);
     }
-  }, [pathname, router]);
+  }, [pathname, router, search]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -469,6 +514,7 @@ export function RoleRouteLayout({
     return { heading: webRouteMetadata(route.routeId).heading, role };
   }, [role, route]);
   const resolvedBoundary = useMemo(() => routeBoundary(route), [route]);
+  const customerRoute = useMemo(() => customerRouteFor(route), [route]);
 
   if (state.kind === "checking") return <CheckingView role={role} />;
   if (state.kind === "creating") return <CreationProgress role={state.role} />;
@@ -529,6 +575,7 @@ export function RoleRouteLayout({
   return (
     <>
       <RoleContextShell
+        {...(customerRoute ? { customerRoute } : {})}
         context={state.context}
         initialPage={
           route.status === "matched"
@@ -554,5 +601,19 @@ export function RoleRouteLayout({
       />
       <div hidden>{children}</div>
     </>
+  );
+}
+
+export function RoleRouteLayout({
+  children,
+  role,
+}: {
+  children: ReactNode;
+  role: PublicRole;
+}) {
+  return (
+    <Suspense fallback={<CheckingView role={role} />}>
+      <RoleRouteLayoutClient role={role}>{children}</RoleRouteLayoutClient>
+    </Suspense>
   );
 }
