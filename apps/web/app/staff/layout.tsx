@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
-import { StaffRouteLayout } from "./staff-route-layout";
+import { RoleRouteLayout } from "../role-route-layout";
 
 export const metadata: Metadata = {
   robots: {
@@ -11,5 +11,5 @@ export const metadata: Metadata = {
 };
 
 export default function StaffLayout({ children }: { children: ReactNode }) {
-  return <StaffRouteLayout>{children}</StaffRouteLayout>;
+  return <RoleRouteLayout role="staff">{children}</RoleRouteLayout>;
 }

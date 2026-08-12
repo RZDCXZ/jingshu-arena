@@ -130,8 +130,10 @@ describe("Web route contract", () => {
     expect(webRouteMetadata("staff-workbench")).toMatchObject({
       heading: "现场脉冲",
       indexable: false,
+      kind: "page",
       role: "staff",
     });
+    expect(webRouteMetadata("staff-order-detail").kind).toBe("detail");
   });
 
   it("keeps manifest identities unique and static segments lowercase kebab-case", () => {

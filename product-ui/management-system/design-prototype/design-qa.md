@@ -34,7 +34,17 @@
 - 共享角色壳完整 Chromium 回归覆盖工作台、角色切换、跨标签失效、SSE/轮询、业务时间、重置、只读降级和既有业务表面；本票曾发现非店员角色过渡会过早卸载弹窗与焦点，现改为在尚未迁移的角色继续使用旧根表面时原位历史替换，店员规范路由保持真实 App Router。最终没有本票范围内未解决的 P0、P1 或 P2 路由、视觉或交互问题。
 - 门禁命令：`pnpm lint`、`pnpm typecheck`、`pnpm format:check`、`pnpm --filter @jingshu/web build`、`pnpm exec vitest run --config vitest.unit.config.ts apps/web/app/web-route-contract.test.ts` 和 `pnpm exec playwright test tests/e2e/role-context-shell.spec.ts`。
 
-final result: passed（仅 Ticket 01；1.20 整体仍 stale）
+## Web URL 路由 Ticket 03 服务端角色上下文与深链守卫证据
+
+- 局部结论：`passed`。本票只完成生产四角色命名空间的服务端上下文守卫、恢复与安全边界；完整页面/Tab URL 导航、筛选、未提交保护和正式原型全量迁移仍由后续票完成，因此整套 `prod.md` 1.20 QA 继续保持 `stale`。
+- 无会话直接打开合法静态深链时地址保持不变，公开入口明确标出目标角色；匹配角色创建完成后原地进入目标路径，其他角色以历史替换进入其规范首页。自动化在确认前监听目标角色业务 API，结果为 `0` 次请求。
+- 服务端角色与路径不一致时，生产页先显示不可绕过的专用状态；确认复用现有 CSRF 角色切换并保留原静态目标，取消以历史替换返回当前角色首页。其他标签切换、stale 与未知切换结果只执行服务端恢复并进入恢复角色首页，不重新提示切回旧角色，也不从旧路径猜测跨角色页面。
+- `1440 × 1024` 角色不匹配证据：[role-mismatch-1440x1024.png](design/evidence/web-url-routing-ticket-03/role-mismatch-1440x1024.png)。状态沿用炭黑/海军蓝表面、青色权限边界、琥珀警示和青柠唯一确认主动作；当前角色、目标角色、URL 非权限声明和取消去向均在首屏可见。
+- `1024 × 768` 角色域内安全边界：[scoped-not-found-1024x768.png](design/evidence/web-url-routing-ticket-03/scoped-not-found-1024x768.png)、[object-unavailable-1024x768.png](design/evidence/web-url-routing-ticket-03/object-unavailable-1024x768.png)。未知页面保留当前角色壳和真实首页链接；任意缺失/无权对象使用完全相同的“对象不存在或不可访问”标题、说明与操作，且没有发出对象详情 API 请求。
+- 两档证据均满足 `documentElement.scrollWidth <= innerWidth`，浏览器 warning/error 与 `pageerror` 为 `0`。共享壳 Chromium 全量回归覆盖既有页面、角色切换、SSE/轮询、跨标签阻断、业务时间、沙箱重置、只读降级和响应式状态；角色上下文 PostgreSQL 集成的 13 项测试继续证明恢复围栏与并发中的早到/晚到角色切换不能覆盖服务端最终结果。
+- 本票复用选定视觉源 `design/reference/selected-night-operations-console.png`，没有改变页面职责、业务数据层级或现有业务组件外观；新增页面是安全恢复职责，因此按同一视觉系统和交互优先级验收，不要求伪装成活动业务工作区。
+
+final result: passed（Ticket 01–03 局部证据；1.20 整体仍 stale）
 
 ## 局域网 HTTP 真机兼容性回归
 

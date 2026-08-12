@@ -1416,6 +1416,64 @@
   }
 }
 
+.role-mismatch-page {
+  background:
+    radial-gradient(circle at 50% 0%, rgb(255 179 71 / 9%), transparent 36%),
+    var(--bg);
+}
+
+.role-mismatch-card {
+  max-width: 680px;
+}
+
+.role-mismatch-card p strong {
+  margin: 0 0.2em;
+  color: var(--text);
+}
+
+.role-mismatch-proof {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgb(80 220 210 / 24%);
+  border-radius: var(--radius-md);
+  background: rgb(80 220 210 / 6%);
+  color: var(--muted);
+}
+
+.role-mismatch-proof svg {
+  flex: 0 0 auto;
+  color: var(--cyan);
+  font-size: 24px;
+}
+
+.role-mismatch-error {
+  color: #ff9d8e !important;
+}
+
+.role-route-boundary {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  min-height: calc(100vh - 116px);
+  padding: clamp(32px, 8vw, 104px);
+  background:
+    linear-gradient(135deg, rgb(37 211 201 / 5%), transparent 45%), var(--panel);
+}
+
+.role-route-boundary h1 {
+  margin: 10px 0 8px;
+  font-size: clamp(28px, 4vw, 48px);
+}
+
+.role-route-boundary p {
+  max-width: 580px;
+  margin: 0 0 28px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
 * {
   box-sizing: border-box;
 }

@@ -33,7 +33,6 @@ import {
   SANDBOX_RECOVERY_ROLE_KEY,
 } from "./role-context-client";
 import { publicRoleCards } from "./role-context-model";
-import { RoleContextShell } from "./role-context-shell";
 import { roleHomePath } from "./web-route-contract";
 
 const REQUEST_TIMEOUT_MS = 8_000;
@@ -49,11 +48,10 @@ type CreationStage =
   | "readonly"
   | "capacity-readonly"
   | "sandbox-ended"
-  | "shell"
   | "error"
   | "timeout";
 
-interface FailureState {
+export interface FailureState {
   message: string;
   requestId?: string;
   retryAfterSeconds?: number;
@@ -256,7 +254,13 @@ function ReadonlyOverview({
   );
 }
 
-function PublicEntry({ onCreate }: { onCreate: (role: PublicRole) => void }) {
+export function PublicEntry({
+  onCreate,
+  target,
+}: {
+  onCreate: (role: PublicRole) => void;
+  target?: { readonly heading: string; readonly role: PublicRole };
+}) {
   const [showReadonly, setShowReadonly] = useState(false);
   const readonlyTriggerRef = useRef<HTMLButtonElement>(null);
 
@@ -310,10 +314,20 @@ function PublicEntry({ onCreate }: { onCreate: (role: PublicRole) => void }) {
       <section className="public-role-section" aria-labelledby="roles-title">
         <div className="public-section-heading">
           <div>
-            <span className="eyebrow">选择一个入口</span>
-            <h2 id="roles-title">推荐从顾客开始，也可以直接查看管理端。</h2>
+            <span className="eyebrow">
+              {target ? "继续当前深链" : "选择一个入口"}
+            </span>
+            <h2 id="roles-title">
+              {target
+                ? `当前链接将前往“${target.heading}”，请选择演示角色。`
+                : "推荐从顾客开始，也可以直接查看管理端。"}
+            </h2>
           </div>
-          <span>明确选择后才创建可写沙箱</span>
+          <span>
+            {target
+              ? "匹配角色会保留当前链接；其他角色进入其首页"
+              : "明确选择后才创建可写沙箱"}
+          </span>
         </div>
         <div className="role-card-grid">
           {roles.map((role, index) => {
@@ -326,8 +340,10 @@ function PublicEntry({ onCreate }: { onCreate: (role: PublicRole) => void }) {
                 onClick={() => onCreate(role.id)}
                 type="button"
               >
-                {role.recommended ? (
-                  <span className="recommended-label">推荐起点</span>
+                {target?.role === role.id || role.recommended ? (
+                  <span className="recommended-label">
+                    {target?.role === role.id ? "匹配当前链接" : "推荐起点"}
+                  </span>
                 ) : null}
                 <Icon aria-hidden="true" weight="duotone" />
                 <span className="role-number">0{index + 1}</span>
@@ -383,7 +399,7 @@ function PublicEntry({ onCreate }: { onCreate: (role: PublicRole) => void }) {
   );
 }
 
-function CreationProgress({ role }: { role: PublicRole }) {
+export function CreationProgress({ role }: { role: PublicRole }) {
   const meta = roles.find((item) => item.id === role) ?? roles[0];
   return (
     <main className="state-page">
@@ -507,7 +523,7 @@ function ExistingContextCheck() {
   );
 }
 
-function FailureView({
+export function FailureView({
   kind,
   failure,
   onRetry,
@@ -843,8 +859,6 @@ export default function PublicEntryPage() {
   const [selectedRole, setSelectedRole] = useState<PublicRole>("customer");
   const [creationKey, setCreationKey] = useState("");
   const [result, setResult] = useState<PublicSandboxReadyResponse | null>(null);
-  const [roleContext, setRoleContext] =
-    useState<RoleContextReadyResponse | null>(null);
   const [sandboxEndReason, setSandboxEndReason] =
     useState<SandboxEndReason>("expired");
   const [failure, setFailure] = useState<FailureState>({
@@ -934,13 +948,7 @@ export default function PublicEntryPage() {
         if (context.status !== "ready") {
           throw new Error("The role-context response was incomplete.");
         }
-        if (context.role.id === "staff") {
-          router.replace(roleHomePath(context.role.id));
-          return;
-        }
-        setSelectedRole(context.role.id);
-        setRoleContext(context);
-        setStage("shell");
+        router.replace(roleHomePath(context.role.id));
       })
       .catch(() => {
         if (!active) return;
@@ -992,13 +1000,7 @@ export default function PublicEntryPage() {
       if (context.status !== "ready") {
         throw new Error("The role-context response was incomplete.");
       }
-      if (context.role.id === "staff") {
-        router.replace(roleHomePath(context.role.id));
-        return;
-      }
-      setSelectedRole(context.role.id);
-      setRoleContext(context);
-      setStage("shell");
+      router.replace(roleHomePath(context.role.id));
     } catch {
       setFailure({ message: "角色上下文暂时无法确认，请稍后安全重试。" });
       setStage("readonly");
@@ -1120,14 +1122,12 @@ export default function PublicEntryPage() {
   function returnToEntry() {
     setStage("entry");
     setResult(null);
-    setRoleContext(null);
     setCreationKey("");
   }
 
   function showSandboxEnded(reason: SandboxEndReason) {
     setSandboxEndReason(reason);
     setResult(null);
-    setRoleContext(null);
     setCreationKey("");
     setStage("sandbox-ended");
   }
@@ -1183,19 +1183,6 @@ export default function PublicEntryPage() {
         result={result}
         onBack={returnToEntry}
         onEnter={() => void enterRoleContext()}
-      />
-    );
-  if (stage === "shell" && roleContext)
-    return (
-      <RoleContextShell
-        context={roleContext}
-        onContextChange={setRoleContext}
-        onContextRequired={returnToEntry}
-        onContextUnavailable={showSandboxEnded}
-        onServiceUnavailable={(nextFailure) => {
-          setFailure(nextFailure);
-          setStage("readonly");
-        }}
       />
     );
   if (stage === "error" || stage === "timeout")

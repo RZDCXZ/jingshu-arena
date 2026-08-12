@@ -749,6 +749,7 @@ export function webRouteMetadata(routeId: string) {
   return {
     heading: spec.heading,
     indexable: spec.id === "public-root",
+    kind: spec.kind,
     role: spec.role,
     title: spec.title,
   } as const;

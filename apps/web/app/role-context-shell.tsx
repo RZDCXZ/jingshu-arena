@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import {
   ArrowCounterClockwise,
   ArrowClockwise,
@@ -53,6 +54,7 @@ import {
   type RealtimeConnectionMode,
   useSandboxRealtime,
 } from "./sandbox-realtime";
+import { roleHomePath } from "./web-route-contract";
 
 const narrowWorkbenchQuery = "(max-width: 960px)";
 
@@ -282,17 +284,22 @@ export function RoleContextShell({
   onContextChange,
   onContextRequired,
   onContextUnavailable,
+  onRoleHomeRequired,
   onServiceUnavailable,
+  routeBoundary,
 }: {
   context: RoleContextReadyResponse;
   initialPage?: RolePageId;
   onContextChange: (context: RoleContextReadyResponse) => void;
   onContextRequired: () => void;
   onContextUnavailable: (reason: SandboxEndReason) => void;
+  onRoleHomeRequired?: (context: RoleContextReadyResponse) => void;
   onServiceUnavailable: (failure: {
     message: string;
     requestId?: string;
   }) => void;
+  routeBoundary?:
+    { readonly kind: "not-found" } | { readonly kind: "object-unavailable" };
 }) {
   const [activePage, setActivePage] = useState<RolePageId>(
     initialPage ?? roleMeta[context.role.id].defaultPage,
@@ -330,6 +337,7 @@ export function RoleContextShell({
   const storyTriggerRef = useRef<HTMLButtonElement>(null);
   const timeTriggerRef = useRef<HTMLButtonElement>(null);
   const resetTriggerRef = useRef<HTMLButtonElement>(null);
+  const pendingResetContextRef = useRef<RoleContextReadyResponse | null>(null);
   const broadcastRef = useRef<BroadcastChannel | null>(null);
   const recoveryFenceRef = useRef(false);
   const realtimeRefreshCountRef = useRef(0);
@@ -644,6 +652,7 @@ export function RoleContextShell({
       }
       const recovered = payload as RoleContextReadyResponse;
       onContextChange(recovered);
+      onRoleHomeRequired?.(recovered);
       setFilter("");
       setStale(false);
       setStaleReason("role");
@@ -681,6 +690,7 @@ export function RoleContextShell({
       storyPageAfterSwitchRef.current = storyTarget;
     }
     onContextChange(nextContext);
+    onRoleHomeRequired?.(nextContext);
     setFilter("");
     setStale(false);
     setStaleReason("role");
@@ -738,7 +748,7 @@ export function RoleContextShell({
   }
 
   function acceptResetSandbox(result: SandboxResetReadyResponse) {
-    onContextChange(result.context);
+    pendingResetContextRef.current = result.context;
     setAuthoritativeRefreshVersion((version) => version + 1);
     setActivePage(roleMeta[result.context.role.id].defaultPage);
     setFilter("");
@@ -931,11 +941,31 @@ export function RoleContextShell({
           </div>
         </aside>
         <section className="role-workspace">
-          {context.role.id === "customer" &&
-          (activePage === "customer-home" ||
-            activePage === "customer-reservations" ||
-            activePage === "customer-orders" ||
-            activePage === "customer-repairs") ? (
+          {routeBoundary ? (
+            <section className="role-route-boundary" role="main">
+              <span className="eyebrow">{context.role.label}安全边界</span>
+              <h1>
+                {routeBoundary.kind === "not-found"
+                  ? "页面不存在"
+                  : "对象不存在或不可访问"}
+              </h1>
+              <p>
+                {routeBoundary.kind === "not-found"
+                  ? "该地址不属于当前角色的已知页面，未读取任何目标业务数据。"
+                  : "为避免泄露对象是否存在，缺失与无权访问会得到完全相同的结果。"}
+              </p>
+              <Link
+                className="button primary-button"
+                href={roleHomePath(context.role.id)}
+              >
+                返回{context.role.label}首页
+              </Link>
+            </section>
+          ) : context.role.id === "customer" &&
+            (activePage === "customer-home" ||
+              activePage === "customer-reservations" ||
+              activePage === "customer-orders" ||
+              activePage === "customer-repairs") ? (
             <CustomerSeatBrowser
               csrfToken={context.csrfToken}
               entryPage={activePage}
@@ -1165,7 +1195,15 @@ export function RoleContextShell({
       {demoToolDialog === "reset" && !stale && !authoritativeRefreshPending ? (
         <SandboxResetDialog
           context={context}
-          onClose={() => setDemoToolDialog(null)}
+          onClose={() => {
+            setDemoToolDialog(null);
+            const resetContext = pendingResetContextRef.current;
+            if (resetContext) {
+              pendingResetContextRef.current = null;
+              onContextChange(resetContext);
+              onRoleHomeRequired?.(resetContext);
+            }
+          }}
           onReset={acceptResetSandbox}
           onStale={() => {
             setStaleReason("role");

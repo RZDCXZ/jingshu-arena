@@ -3428,6 +3428,17 @@ async function enterStaffShell(page: Page) {
   await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
 }
 
+async function enterManagerShell(page: Page) {
+  await page.goto("/");
+  await page.getByRole("button", { name: /进入店长演示/u }).click();
+  await expect(
+    page.getByRole("heading", { name: "沙箱已准备完成" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "进入店长视图" }).click();
+  await expect(page).toHaveURL(/\/manager\/dashboard$/u);
+  await expect(page.getByRole("heading", { name: "经营看板" })).toBeVisible();
+}
+
 async function expectExpiredSandboxView(page: Page) {
   await expect(page.getByTestId("sandbox-ended")).toBeVisible();
   await expect(
@@ -4877,6 +4888,207 @@ test("repair spares, resolution, independent failure retry, and close remain sta
   );
 });
 
+test("a legal deep link without a session keeps its URL and enters the matching role without early business reads", async ({
+  page,
+}) => {
+  const earlyStaffRequests: string[] = [];
+  let targetConfirmed = false;
+  page.on("request", (request) => {
+    if (
+      !targetConfirmed &&
+      new URL(request.url()).pathname.startsWith("/api/v1/staff/")
+    ) {
+      earlyStaffRequests.push(request.url());
+    }
+  });
+
+  await page.goto("/staff/workbench");
+  await expect(page).toHaveURL(/\/staff\/workbench$/u);
+  await expect(
+    page.getByRole("heading", {
+      name: "当前链接将前往“现场脉冲”，请选择演示角色。",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("匹配当前链接", { exact: true })).toBeVisible();
+  expect(earlyStaffRequests).toEqual([]);
+
+  targetConfirmed = true;
+  await page.getByRole("button", { name: /进入店员演示/u }).click();
+  await expect(page).toHaveURL(/\/staff\/workbench$/u);
+  await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
+});
+
+test("choosing another role from a legal deep link replaces it with that role home", async ({
+  page,
+}) => {
+  await page.goto("/staff/workbench");
+  await expect(page.getByText("匹配当前链接", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /进入店长演示/u }).click();
+  await expect(page).toHaveURL(/\/manager\/dashboard$/u);
+  await expect(page.getByRole("heading", { name: "经营看板" })).toBeVisible();
+});
+
+test("a role-mismatched deep link blocks target data until confirm and cancel replaces to the current home", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 1024, width: 1440 });
+  await enterManagerShell(page);
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      browserErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  const targetRequests: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/api/v1/staff/")) {
+      targetRequests.push(request.url());
+    }
+  });
+
+  await page.goto("/staff/workbench");
+  const historyLength = await page.evaluate(() => window.history.length);
+  await expect(
+    page.getByRole("heading", { name: "当前角色与链接目标不一致" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("URL 只表达目标，不会授予角色、门店、沙箱或对象权限。"),
+  ).toBeVisible();
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      fullPage: true,
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-03/role-mismatch-1440x1024.png",
+    });
+  }
+  expect(targetRequests).toEqual([]);
+  await page.getByRole("button", { name: "留在店长首页" }).click();
+  await expect(page).toHaveURL(/\/manager\/dashboard$/u);
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+
+  await page.goto("/staff/workbench");
+  await page.getByRole("button", { name: "切换为店员并继续" }).click();
+  await expect(page).toHaveURL(/\/staff\/workbench$/u);
+  await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  expect(browserErrors).toEqual([]);
+});
+
+test("a cross-tab role change recovers a mismatched target to the server-current role home", async ({
+  context,
+  page,
+}) => {
+  await enterManagerShell(page);
+  const otherTab = await context.newPage();
+  await otherTab.goto("/manager/dashboard");
+  await expect(
+    otherTab.getByRole("button", {
+      name: "许知远 店长 棱镜旗舰店，打开角色切换",
+    }),
+  ).toBeVisible();
+
+  await page.goto("/staff/workbench");
+  await expect(
+    page.getByRole("heading", { name: "当前角色与链接目标不一致" }),
+  ).toBeVisible();
+  await otherTab.getByRole("button", { name: "切换角色" }).click();
+  await otherTab
+    .getByRole("button", { name: "总部运营 沈微 · 虚构人物 固定三店" })
+    .click();
+
+  await expect(page).toHaveURL(/\/hq\/dashboard$/u);
+  await expect(page.getByRole("heading", { name: "连锁看板" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "当前角色与链接目标不一致" }),
+  ).toHaveCount(0);
+  await otherTab.close();
+});
+
+test("an unknown mismatch switch result recovers to the server role home and never restores the old target", async ({
+  page,
+}) => {
+  await enterManagerShell(page);
+  await page.route("**/api/v1/demo/context/switch", async (route) => {
+    await route.fallback({
+      headers: {
+        ...route.request().headers(),
+        "x-test-result-unknown": "1",
+      },
+    });
+  });
+
+  await page.goto("/staff/reservations");
+  await expect(
+    page.getByRole("heading", { name: "当前角色与链接目标不一致" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "切换为店员并继续" }).click();
+  await expect(page).toHaveURL(/\/staff\/workbench$/u);
+  await expect(page).not.toHaveURL(/\/staff\/reservations$/u);
+  await expect(page.getByRole("heading", { name: "现场脉冲" })).toBeVisible();
+});
+
+test("role-scoped unknown pages and object denials use safe indistinguishable boundaries", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await enterStaffShell(page);
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      browserErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+
+  await page.goto("/staff/not-a-page");
+  await expect(page.getByRole("heading", { name: "页面不存在" })).toBeVisible();
+  const homeLink = page.getByRole("link", { name: "返回店员首页" });
+  await expect(homeLink).toHaveAttribute("href", "/staff/workbench");
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      fullPage: true,
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-03/scoped-not-found-1024x768.png",
+    });
+  }
+
+  const objectRequests: string[] = [];
+  page.on("request", (request) => {
+    if (/\/api\/v1\/staff\/orders\//u.test(new URL(request.url()).pathname)) {
+      objectRequests.push(request.url());
+    }
+  });
+  await page.goto("/staff/orders/missing-order");
+  const firstBoundary = page.locator(".role-route-boundary");
+  await expect(
+    firstBoundary.getByRole("heading", { name: "对象不存在或不可访问" }),
+  ).toBeVisible();
+  const missingCopy = await firstBoundary.innerText();
+
+  await page.goto("/staff/orders/unauthorized-order");
+  const secondBoundary = page.locator(".role-route-boundary");
+  await expect(
+    secondBoundary.getByRole("heading", { name: "对象不存在或不可访问" }),
+  ).toBeVisible();
+  expect(await secondBoundary.innerText()).toBe(missingCopy);
+  expect(objectRequests).toEqual([]);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  expect(browserErrors).toEqual([]);
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      fullPage: true,
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-03/object-unavailable-1024x768.png",
+    });
+  }
+});
+
 test("staff root and direct workbench use the canonical App Router path and shared role layout", async ({
   page,
 }) => {
@@ -5725,16 +5937,17 @@ test("sandbox reset requires two confirmations and invalidates old tabs", async 
   ).toBeVisible();
 
   await page.getByRole("button", { name: "回到主演示起点" }).click();
+  await expect(page).toHaveURL(/\/customer\/reservations$/u);
   await expect(
     page.getByRole("button", {
       name: "林澈 顾客 浏览三店 · 只管理自己的记录，打开角色切换",
     }),
   ).toBeVisible();
-  await expect(resetTrigger).toBeFocused();
 
   await sandboxEnded.getByRole("button", { name: "创建新的独立沙箱" }).click();
+  await expect(otherTab).toHaveURL(/\/staff\/workbench$/u);
   await expect(
-    otherTab.getByRole("heading", { name: "沙箱已准备完成" }),
+    otherTab.getByRole("heading", { name: "现场脉冲" }),
   ).toBeVisible();
 });
 
@@ -5883,7 +6096,8 @@ test("a role switch in another tab immediately blocks the stale shell until refr
       name: "许知远 店长 棱镜旗舰店，打开角色切换",
     }),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: "切换角色" })).toBeFocused();
+  await expect(page).toHaveURL(/\/manager\/dashboard$/u);
+  await expect(page.getByRole("heading", { name: "经营看板" })).toBeVisible();
 
   await otherTab.getByRole("button", { name: "切换角色" }).click();
   await otherTab
