@@ -9658,8 +9658,8 @@ strong {
 }
 
 .customer-journey-links > span,
-.customer-journey-links > button,
-.customer-journey-related > button {
+.customer-journey-links > :is(button, a),
+.customer-journey-related > :is(button, a) {
   min-height: 44px;
   display: flex;
   align-items: center;
@@ -9671,7 +9671,7 @@ strong {
 }
 
 .customer-journey-links > * + *,
-.customer-journey-related > button + button {
+.customer-journey-related > * + * {
   border-top: 1px solid #243944;
 }
 
@@ -9682,13 +9682,13 @@ strong {
   color: var(--lime);
 }
 
-.customer-journey-links > button > svg:last-child,
-.customer-journey-related > button > svg:last-child {
+.customer-journey-links > :is(button, a) > svg:last-child,
+.customer-journey-related > :is(button, a) > svg:last-child {
   margin-left: auto;
   color: #6e8792;
 }
 
-.customer-journey-related > button > span {
+.customer-journey-related > :is(button, a) > span {
   display: grid;
   gap: 2px;
 }
@@ -10422,6 +10422,13 @@ strong {
   margin-top: 11px;
 }
 
+.customer-order-status-card > h1 {
+  margin: 4px 0 0;
+  color: #edf8e8;
+  font-size: 21px;
+  letter-spacing: -0.04em;
+}
+
 .customer-order-status-card > div > svg {
   width: 31px;
   height: 31px;
@@ -10564,7 +10571,7 @@ strong {
   background: #0d212b;
 }
 
-.customer-related-records > button {
+.customer-related-records > :is(button, a) {
   min-height: 52px;
   display: grid;
   grid-template-columns: 23px minmax(0, 1fr) 16px;
@@ -10578,22 +10585,22 @@ strong {
   text-align: left;
 }
 
-.customer-related-records > button > svg {
+.customer-related-records > :is(button, a) > svg {
   width: 18px;
   height: 18px;
   color: var(--cyan);
 }
 
-.customer-related-records > button > span {
+.customer-related-records > :is(button, a) > span {
   display: grid;
   gap: 3px;
 }
 
-.customer-related-records > button strong {
+.customer-related-records > :is(button, a) strong {
   font-size: 9px;
 }
 
-.customer-related-records > button small {
+.customer-related-records > :is(button, a) small {
   color: #748a95;
   font-size: 8px;
 }

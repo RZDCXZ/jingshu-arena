@@ -699,6 +699,26 @@ final result: passed
 
 final result: passed
 
+## Web URL 路由 Ticket 06 — 顾客商品订单与报修
+
+### 对照源与证据
+
+- 移动页面职责、状态层级与交互继续使用小程序选定源 `../../miniprogram/design-prototype/design/reference/selected-reservation-first-home.png` 及正式 `MP-10–MP-15` 状态；桌面和平板共享壳继续使用 `design/reference/selected-night-operations-console.png`。本票只迁移既有 `WEB-C04` 商品订单和 `WEB-C02` 报修旅程的导航真相，没有修改产品视觉方向。
+- `360 × 800` 商品目录、确认、确认刷新回退、订单详情与独立模拟支付：`design/evidence/web-url-routing-ticket-06/order-catalog-360x800.png`、`order-confirm-360x800.png`、`order-confirm-recovery-360x800.png`、`order-detail-360x800.png`、`order-payment-360x800.png`。
+- `360 × 800` 报修创建、公开详情、历史关联和安全对象边界：`design/evidence/web-url-routing-ticket-06/repair-create-360x800.png`、`repair-detail-360x800.png`、`repair-history-360x800.png`、`safe-object-boundary-360x800.png`。
+- `1440 × 1024` 订单详情与完整共享壳、`1024 × 768` 报修详情与折叠侧栏：`design/evidence/web-url-routing-ticket-06/customer-object-1440x1024.png`、`customer-object-1024x768.png`。
+
+### Findings 与验证
+
+- 首轮 P1：订单目录、确认、创建结果、支付结果和报修创建/详情只通过组件 `view` 切换，复制、刷新和浏览器历史无法恢复；订单支付也没有进入契约规定的独立路径。修复后六类动态页面均由显式 App Router 页面承载，创建成功进入唯一资源详情，支付先在 `/payment` 重读合法动作，状态推进仍留在 `/customer/orders/:orderId` 详情身份。
+- 首轮 P1：动态订单/报修在共享守卫中被通用对象边界预先拦截，放行后又缺少与预约详情相同的 403/404 归一化、旧对象清空和迟到响应隔离。修复后守卫只放行已迁移详情，由对象 API 按当前服务端顾客与沙箱重新授权；无权与缺失结果同形，报修详情授权失败时不请求私有图片，跨 ID 请求序列不能把旧对象或图片写入新 URL。
+- 首轮 P1：桌面订单/报修对象页曾同时高亮“顾客 H5”和对应资源导航，不能表达单一页面身份。修复后每个对象页只有“我的订单”或“我的报修”一个 `aria-current`；页面标题、主标题、焦点、地址栏和侧栏一致。首轮 P2：无权订单详情的恢复链接目标是订单行程却写成“返回预约详情”，已改为“返回我的订单”。
+- 确认刷新回退明确说明未提交购物车和体验券未被保留；自动化同时断言购物车、券、报修描述与上传草稿未进入 URL、`localStorage` 或 `sessionStorage`。订单/报修详情、历史关联和关联预约均为可复制、可新标签打开的真实链接。
+- `customer-seat-browse.spec.ts` 的 Ticket 06 回归在 `360 × 800` 覆盖目录、确认、刷新回退、订单创建/直达/刷新、支付门禁/成功、使用中预约报修、报修创建/直达/刷新、历史后退与安全对象边界；同一旅程在 `1440 × 1024` 和 `1024 × 768` 验证顾客画布不超过 `520px`、单一侧栏高亮、标题焦点与无页面级横向溢出。截图逐张复核后 P0/P1/P2 清零，浏览器 warning/error 为 0。
+- 验证通过：Web 路由契约 10/10、顾客 Chromium 20/20、Ticket 06 证据复跑 2/2、真实 Web → Hono → 临时 PostgreSQL 十二步主演示 2/2、全仓格式、lint/工作区边界、TypeScript、敏感信息扫描与 Next.js 生产构建。`pnpm test:unit` 中 352/355 通过；唯一 3 个失败仍来自既有 `sandbox-realtime.test.ts` 把 `expiresAt` 固定为 `2026-08-12T11:30:00.000Z`，当前真实时钟已越过该值而返回 401，本票未修改实时会话链路或该测试夹具。
+
+final result: passed
+
 ## Open Questions
 
 - 无阻塞问题。

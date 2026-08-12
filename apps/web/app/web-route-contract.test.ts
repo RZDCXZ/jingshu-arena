@@ -51,6 +51,27 @@ describe("Web route contract", () => {
         reservationId: "reservation-05",
       }),
     ).toBe("/customer/reservations/reservation-05/payment");
+    expect(
+      buildWebPath("customer-reservation-order-new", {
+        reservationId: "reservation-06",
+      }),
+    ).toBe("/customer/reservations/reservation-06/orders/new");
+    expect(
+      buildWebPath("customer-reservation-order-confirm", {
+        reservationId: "reservation-06",
+      }),
+    ).toBe("/customer/reservations/reservation-06/orders/new/confirm");
+    expect(
+      buildWebPath("customer-order-payment", { orderId: "order-06" }),
+    ).toBe("/customer/orders/order-06/payment");
+    expect(
+      buildWebPath("customer-reservation-repair-new", {
+        reservationId: "reservation-06",
+      }),
+    ).toBe("/customer/reservations/reservation-06/repairs/new");
+    expect(
+      buildWebPath("customer-repair-detail", { repairId: "repair-06" }),
+    ).toBe("/customer/repairs/repair-06");
   });
 
   it("parses every generated canonical route back to the same route identity", () => {

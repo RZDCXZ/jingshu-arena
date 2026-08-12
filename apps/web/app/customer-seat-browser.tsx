@@ -77,8 +77,14 @@ import repairSample from "../../../product-ui/miniprogram/design-prototype/publi
 import { createBrowserUuid } from "./browser-uuid";
 import {
   customerJourneyPath,
+  customerOrderPath,
+  customerOrderPaymentPath,
+  customerRepairPath,
   customerReservationPath,
+  customerReservationOrderConfirmPath,
+  customerReservationOrderPath,
   customerReservationPaymentPath,
+  customerReservationRepairPath,
   type CustomerJourneyType,
   type CustomerRouteState,
 } from "./customer-route-model";
@@ -333,10 +339,8 @@ function lifecycleProgressIndex(
 
 function JourneyReservationCard({
   item,
-  onOpen,
 }: {
   item: CustomerJourneyReservation;
-  onOpen: (reservationId: string) => void;
 }) {
   const status = reservationStatusLabels[item.status];
   return (
@@ -345,10 +349,9 @@ function JourneyReservationCard({
         <span className={`is-${status.tone}`}>{status.label}</span>
         <small>{formatMoney(item.payableCents)} · 模拟金额</small>
       </div>
-      <button
+      <Link
         className="customer-journey-main"
-        onClick={() => onOpen(item.reservationId)}
-        type="button"
+        href={customerReservationPath(item.reservationId)}
       >
         <span>
           <CalendarBlank />
@@ -362,7 +365,7 @@ function JourneyReservationCard({
           {item.machineProfile.displayName}
         </p>
         <CaretRight />
-      </button>
+      </Link>
       {item.coupon || item.refund || item.growthAward ? (
         <div className="customer-journey-links">
           {item.coupon ? (
@@ -373,50 +376,42 @@ function JourneyReservationCard({
             </span>
           ) : null}
           {item.refund ? (
-            <button onClick={() => onOpen(item.reservationId)} type="button">
+            <Link href={customerReservationPath(item.reservationId)}>
               <CurrencyCny />
               模拟退款 {formatMoney(item.refund.amountCents)}
               <CaretRight />
-            </button>
+            </Link>
           ) : null}
           {item.growthAward ? (
-            <button onClick={() => onOpen(item.reservationId)} type="button">
+            <Link href={customerReservationPath(item.reservationId)}>
               <TrendUp />
               完成发放 +{item.growthAward.growthPoints} 成长值
               <CaretRight />
-            </button>
+            </Link>
           ) : null}
         </div>
       ) : null}
       {item.related.orders.length > 0 || item.related.repairs.length > 0 ? (
         <div className="customer-journey-related">
           {item.related.orders.map((order) => (
-            <button
-              key={order.id}
-              onClick={() => onOpen(item.reservationId)}
-              type="button"
-            >
+            <Link href={customerOrderPath(order.id)} key={order.id}>
               <Package />
               <span>
                 <strong>{order.label}</strong>
                 <small>{order.status}</small>
               </span>
               <CaretRight />
-            </button>
+            </Link>
           ))}
           {item.related.repairs.map((repair) => (
-            <button
-              key={repair.id}
-              onClick={() => onOpen(item.reservationId)}
-              type="button"
-            >
+            <Link href={customerRepairPath(repair.id)} key={repair.id}>
               <Wrench />
               <span>
                 <strong>{repair.label}</strong>
                 <small>{repair.status}</small>
               </span>
               <CaretRight />
-            </button>
+            </Link>
           ))}
         </div>
       ) : null}
@@ -520,6 +515,9 @@ export function CustomerSeatBrowser({
     useState<CustomerOrderCatalogResponse | null>(null);
   const [orderCatalogLoading, setOrderCatalogLoading] = useState(false);
   const [orderCatalogFailure, setOrderCatalogFailure] = useState("");
+  const [orderRouteRecoveryNotice, setOrderRouteRecoveryNotice] = useState("");
+  const orderCatalogRequestSequenceRef = useRef(0);
+  const orderDraftReservationIdRef = useRef<string | null>(null);
   const [orderCategory, setOrderCategory] = useState<
     "all" | CustomerOrderCatalogResponse["products"][number]["category"]
   >("all");
@@ -530,11 +528,13 @@ export function CustomerSeatBrowser({
   const [orderSubmitting, setOrderSubmitting] = useState(false);
   const [orderSubmissionFailure, setOrderSubmissionFailure] = useState("");
   const orderCreateKeyRef = useRef<string | null>(null);
+  const orderCreatedIdRef = useRef<string | null>(null);
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
   const [orderDetail, setOrderDetail] =
     useState<CustomerOrderDetailResponse | null>(null);
   const [orderDetailLoading, setOrderDetailLoading] = useState(false);
   const [orderDetailFailure, setOrderDetailFailure] = useState("");
+  const orderDetailRequestSequenceRef = useRef(0);
   const [orderObservedAt, setOrderObservedAt] = useState(0);
   const [orderPaymentResult, setOrderPaymentResult] =
     useState<CustomerOrderPaymentResponse | null>(null);
@@ -559,15 +559,23 @@ export function CustomerSeatBrowser({
   const [repairDetail, setRepairDetail] = useState<RepairDetailResponse | null>(
     null,
   );
+  const [repairDetailLoading, setRepairDetailLoading] = useState(false);
   const [repairDetailFailure, setRepairDetailFailure] = useState("");
   const [savedRepairImages, setSavedRepairImages] = useState<
     ReadonlyArray<RepairImageSaved>
   >([]);
   const repairKeyRef = useRef<string | null>(null);
+  const repairDetailRequestSequenceRef = useRef(0);
+  const orderCatalogRef = useRef(orderCatalog);
+  const orderCartRef = useRef(orderCart);
+  const createdRepairRef = useRef(createdRepair);
   const availabilityRef = useRef(availability);
   const selectedSeatRef = useRef(selectedSeat);
   availabilityRef.current = availability;
   selectedSeatRef.current = selectedSeat;
+  orderCatalogRef.current = orderCatalog;
+  orderCartRef.current = orderCart;
+  createdRepairRef.current = createdRepair;
 
   useEffect(() => {
     orderPaymentKeyRef.current = null;
@@ -581,14 +589,17 @@ export function CustomerSeatBrowser({
     setAvailabilityAttempt((attempt) => attempt + 1);
     setMembershipAttempt((attempt) => attempt + 1);
     setJourneyAttempt((attempt) => attempt + 1);
-    if (activeReservationId) void readReservationDetail(activeReservationId);
-    if (activeOrderId) void readOrderDetail(activeOrderId);
+    if (
+      activeReservationId &&
+      ["detail", "payment", "repair-create"].includes(view)
+    ) {
+      void readReservationDetail(activeReservationId);
+    }
+    if (activeOrderId && ["order-detail", "order-payment"].includes(view)) {
+      void readOrderDetail(activeOrderId);
+    }
     if (createdRepair && view === "repair-detail") {
-      void readRepairPublicDetail(createdRepair.repairId).catch((error) =>
-        setRepairDetailFailure(
-          error instanceof Error ? error.message : "公开处理动态暂时无法读取。",
-        ),
-      );
+      void readRepairRoute(createdRepair.repairId);
     }
   }, [refreshKey]);
 
@@ -597,6 +608,9 @@ export function CustomerSeatBrowser({
       pendingEntryIntentRef.current = null;
       if (route.kind !== "reservation-detail") {
         creationFeedbackReservationIdRef.current = null;
+      }
+      if (route.kind !== "order-detail") {
+        orderCreatedIdRef.current = null;
       }
       if (route.kind === "journeys") {
         setView("journey");
@@ -654,6 +668,73 @@ export function CustomerSeatBrowser({
         paymentKeyRef.current = null;
         setView("payment");
         void readReservationDetail(reservationId);
+      } else if (route.kind === "order-catalog") {
+        const reservationId = route.reservationId;
+        setActiveReservationId(reservationId);
+        setView("order-catalog");
+        if (
+          orderDraftReservationIdRef.current !== reservationId ||
+          orderCatalogRef.current?.reservation.reservationId !== reservationId
+        ) {
+          void openOrderCatalog(reservationId);
+        }
+      } else if (route.kind === "order-confirm") {
+        const reservationId = route.reservationId;
+        const hasCart = Object.values(orderCartRef.current).some(
+          (quantity) => quantity > 0,
+        );
+        if (
+          orderDraftReservationIdRef.current !== reservationId ||
+          orderCatalogRef.current?.reservation.reservationId !==
+            reservationId ||
+          !hasCart
+        ) {
+          setOrderRouteRecoveryNotice(
+            "未提交的购物车和商品体验券只保留在当前页面中，刷新后未被保留。",
+          );
+          setView("order-catalog");
+          router.replace(customerReservationOrderPath(reservationId));
+        } else {
+          setView("order-confirm");
+        }
+      } else if (route.kind === "order-detail") {
+        const orderId = route.orderId;
+        setActiveOrderId(orderId);
+        setOrderDetail(null);
+        setOrderDetailFailure("");
+        setOrderPaymentResult(null);
+        setOrderPaymentFailure("");
+        setOrderCancelFailure("");
+        setView("order-detail");
+        void readOrderDetail(orderId);
+      } else if (route.kind === "order-payment") {
+        const orderId = route.orderId;
+        setActiveOrderId(orderId);
+        setOrderDetail(null);
+        setOrderDetailFailure("");
+        setOrderPaymentResult(null);
+        setOrderPaymentFailure("");
+        orderPaymentKeyRef.current = null;
+        setView("order-payment");
+        void readOrderDetail(orderId);
+      } else if (route.kind === "repair-create") {
+        const reservationId = route.reservationId;
+        resetRepairDraft();
+        setActiveReservationId(reservationId);
+        setReservationDetail(null);
+        setDetailFailure("");
+        setView("repair-create");
+        void readReservationDetail(reservationId);
+      } else if (route.kind === "repair-detail") {
+        const repairId = route.repairId;
+        setView("repair-detail");
+        if (createdRepairRef.current?.repairId !== repairId) {
+          setCreatedRepair(null);
+          setRepairDetail(null);
+          setSavedRepairImages([]);
+          setRepairUploadNotice("");
+          void readRepairRoute(repairId);
+        }
       } else {
         setView("conditions");
       }
@@ -690,7 +771,18 @@ export function CustomerSeatBrowser({
         ?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [catalog, detailLoading, reservationDetail?.reservationId, route, view]);
+  }, [
+    catalog,
+    detailLoading,
+    orderCatalogLoading,
+    orderDetailLoading,
+    orderDetail?.orderId,
+    repairDetailLoading,
+    repairDetail?.repairId,
+    reservationDetail?.reservationId,
+    route,
+    view,
+  ]);
 
   useEffect(() => {
     if (
@@ -1222,6 +1314,10 @@ export function CustomerSeatBrowser({
   }
 
   async function openOrderCatalog(reservationId: string) {
+    const requestSequence = orderCatalogRequestSequenceRef.current + 1;
+    orderCatalogRequestSequenceRef.current = requestSequence;
+    orderDraftReservationIdRef.current = reservationId;
+    setActiveReservationId(reservationId);
     setOrderCatalog(null);
     setOrderCatalogLoading(true);
     setOrderCatalogFailure("");
@@ -1236,13 +1332,19 @@ export function CustomerSeatBrowser({
         `/api/v1/customer/reservations/${reservationId}/products`,
         { cache: "no-store", credentials: "same-origin" },
       );
-      const payload = (await response.json()) as
-        ApiErrorResponse | CustomerOrderCatalogResponse;
+      const payload = (await response.json().catch(() => null)) as
+        ApiErrorResponse | CustomerOrderCatalogResponse | null;
       if (!response.ok) {
+        if (response.status === 403 || response.status === 404) {
+          throw new Error("对象不存在或不可访问");
+        }
         throw new Error(
-          "error" in payload ? payload.error.message : "柜台商品暂时无法读取。",
+          payload && "error" in payload
+            ? payload.error.message
+            : "柜台商品暂时无法读取。",
         );
       }
+      if (orderCatalogRequestSequenceRef.current !== requestSequence) return;
       const result = payload as CustomerOrderCatalogResponse;
       setOrderCatalog(result);
       setSelectedOrderCouponId(
@@ -1251,11 +1353,14 @@ export function CustomerSeatBrowser({
         )?.id ?? null,
       );
     } catch (error) {
+      if (orderCatalogRequestSequenceRef.current !== requestSequence) return;
       setOrderCatalogFailure(
         error instanceof Error ? error.message : "柜台商品暂时无法读取。",
       );
     } finally {
-      setOrderCatalogLoading(false);
+      if (orderCatalogRequestSequenceRef.current === requestSequence) {
+        setOrderCatalogLoading(false);
+      }
     }
   }
 
@@ -1281,6 +1386,8 @@ export function CustomerSeatBrowser({
   }
 
   async function readOrderDetail(orderId: string) {
+    const requestSequence = orderDetailRequestSequenceRef.current + 1;
+    orderDetailRequestSequenceRef.current = requestSequence;
     setActiveOrderId(orderId);
     setOrderDetailLoading(true);
     setOrderDetailFailure("");
@@ -1289,34 +1396,37 @@ export function CustomerSeatBrowser({
         cache: "no-store",
         credentials: "same-origin",
       });
-      const payload = (await response.json()) as
-        ApiErrorResponse | CustomerOrderDetailResponse;
+      const payload = (await response.json().catch(() => null)) as
+        ApiErrorResponse | CustomerOrderDetailResponse | null;
       if (!response.ok) {
+        if (response.status === 403 || response.status === 404) {
+          throw new Error("对象不存在或不可访问");
+        }
         throw new Error(
-          "error" in payload ? payload.error.message : "商品订单暂时无法读取。",
+          payload && "error" in payload
+            ? payload.error.message
+            : "商品订单暂时无法读取。",
         );
+      }
+      if (orderDetailRequestSequenceRef.current !== requestSequence) {
+        return null;
       }
       setOrderDetail(payload as CustomerOrderDetailResponse);
       setOrderObservedAt(Date.now());
       return payload as CustomerOrderDetailResponse;
     } catch (error) {
+      if (orderDetailRequestSequenceRef.current !== requestSequence) {
+        return null;
+      }
       setOrderDetailFailure(
         error instanceof Error ? error.message : "商品订单暂时无法读取。",
       );
       return null;
     } finally {
-      setOrderDetailLoading(false);
+      if (orderDetailRequestSequenceRef.current === requestSequence) {
+        setOrderDetailLoading(false);
+      }
     }
-  }
-
-  function openRelatedOrder(orderId: string) {
-    setOrderDetail(null);
-    setOrderPaymentResult(null);
-    setOrderPaymentFailure("");
-    setOrderCancelFailure("");
-    setActiveOrderId(orderId);
-    setView("order-detail");
-    void readOrderDetail(orderId);
   }
 
   async function createOrder() {
@@ -1371,15 +1481,15 @@ export function CustomerSeatBrowser({
         );
       }
       const created = payload as CustomerPendingOrderResponse;
+      orderCreatedIdRef.current = created.orderId;
       setActiveOrderId(created.orderId);
       setOrderDetail(null);
       setOrderPaymentResult(null);
       setOrderPaymentFailure("");
       setOrderCancelFailure("");
-      setView("order-detail");
-      await readOrderDetail(created.orderId);
       setJourneyAttempt((attempt) => attempt + 1);
       setMembershipAttempt((attempt) => attempt + 1);
+      router.push(customerOrderPath(created.orderId));
     } catch (error) {
       setOrderSubmissionFailure(
         error instanceof Error
@@ -1425,7 +1535,6 @@ export function CustomerSeatBrowser({
       await readOrderDetail(activeOrderId);
       setJourneyAttempt((attempt) => attempt + 1);
       setMembershipAttempt((attempt) => attempt + 1);
-      setView("order-payment");
     } catch (error) {
       setOrderPaymentFailure(
         error instanceof Error
@@ -1477,7 +1586,7 @@ export function CustomerSeatBrowser({
     }
   }
 
-  function openRepairCreate() {
+  function resetRepairDraft() {
     setRepairDescription("");
     repairFiles.forEach((item) => URL.revokeObjectURL(item.previewUrl));
     setRepairFiles([]);
@@ -1485,15 +1594,18 @@ export function CustomerSeatBrowser({
     setRepairPermissionNotice("");
     setRepairFailure("");
     setRepairUploadNotice("");
+    createdRepairRef.current = null;
     setCreatedRepair(null);
     setRepairDetail(null);
     setRepairDetailFailure("");
     setSavedRepairImages([]);
     repairKeyRef.current = null;
-    setView("repair-create");
   }
 
-  async function readRepairImages(repairId: string) {
+  async function readRepairImages(
+    repairId: string,
+    expectedRequestSequence?: number,
+  ) {
     const response = await fetch(`/api/v1/repairs/${repairId}/images`, {
       cache: "no-store",
       credentials: "same-origin",
@@ -1506,77 +1618,103 @@ export function CustomerSeatBrowser({
       );
     }
     const images = (payload as RepairImageListResponse).images;
+    if (
+      expectedRequestSequence !== undefined &&
+      repairDetailRequestSequenceRef.current !== expectedRequestSequence
+    ) {
+      return [];
+    }
     setSavedRepairImages(images);
     return images;
   }
 
   async function readRepairPublicDetail(repairId: string) {
+    const requestSequence = repairDetailRequestSequenceRef.current + 1;
+    repairDetailRequestSequenceRef.current = requestSequence;
+    setRepairDetailLoading(true);
     setRepairDetailFailure("");
-    const response = await fetch(`/api/v1/repairs/${repairId}`, {
-      cache: "no-store",
-      credentials: "same-origin",
-    });
-    const payload = (await response.json()) as
-      ApiErrorResponse | RepairDetailResponse;
-    if (!response.ok) {
-      throw new Error(
-        "error" in payload
-          ? payload.error.message
-          : "公开处理动态暂时无法读取。",
+    try {
+      const response = await fetch(`/api/v1/repairs/${repairId}`, {
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      const payload = (await response.json().catch(() => null)) as
+        ApiErrorResponse | RepairDetailResponse | null;
+      if (!response.ok) {
+        if (response.status === 403 || response.status === 404) {
+          throw new Error("对象不存在或不可访问");
+        }
+        throw new Error(
+          payload && "error" in payload
+            ? payload.error.message
+            : "公开处理动态暂时无法读取。",
+        );
+      }
+      if (repairDetailRequestSequenceRef.current !== requestSequence) {
+        return null;
+      }
+      const nextDetail = payload as RepairDetailResponse;
+      setRepairDetail(nextDetail);
+      setActiveReservationId(nextDetail.reservationId);
+      setCreatedRepair((current) => {
+        if (current?.repairId === nextDetail.repairId) return current;
+        const restored: RepairCreatedResponse = {
+          createdAt:
+            nextDetail.publicUpdates.at(-1)?.occurredAt ??
+            nextDetail.currentTime,
+          description: nextDetail.description,
+          duplicate: true,
+          machineProfile: nextDetail.machineProfile,
+          priority: nextDetail.priority,
+          repairId: nextDetail.repairId,
+          reservationId: nextDetail.reservationId,
+          seat: nextDetail.seat,
+          source: nextDetail.source,
+          status: nextDetail.status,
+          store: nextDetail.store,
+        };
+        createdRepairRef.current = restored;
+        return restored;
+      });
+      return nextDetail;
+    } catch (error) {
+      if (repairDetailRequestSequenceRef.current !== requestSequence) {
+        return null;
+      }
+      setRepairDetailFailure(
+        error instanceof Error ? error.message : "公开处理动态暂时无法读取。",
       );
+      return null;
+    } finally {
+      if (repairDetailRequestSequenceRef.current === requestSequence) {
+        setRepairDetailLoading(false);
+      }
     }
-    const nextDetail = payload as RepairDetailResponse;
-    setRepairDetail(nextDetail);
-    return nextDetail;
   }
 
-  function openExistingRepair(
-    repair: CustomerReservationDetailResponse["related"]["repairs"][number],
-  ) {
-    if (!reservationDetail) return;
-    setCreatedRepair({
-      createdAt: reservationDetail.currentTime,
-      description: repair.label.split(" · ").slice(1).join(" · "),
-      duplicate: true,
-      machineProfile: {
-        code: reservationDetail.snapshot.machineProfile.code,
-        displayName: reservationDetail.snapshot.machineProfile.displayName,
-      },
-      priority: "normal",
-      repairId: repair.id,
-      reservationId: reservationDetail.reservationId,
-      seat: {
-        code: reservationDetail.snapshot.seat.code,
-        operationalStatus: "normal",
-      },
-      source: "customer",
-      status: repair.status,
-      store: reservationDetail.snapshot.store,
-    });
-    repairFiles.forEach((item) => URL.revokeObjectURL(item.previewUrl));
-    setRepairFiles([]);
-    setRepairSampleSelected(false);
-    setSavedRepairImages([]);
+  async function readRepairRoute(repairId: string) {
     setRepairDetail(null);
     setRepairDetailFailure("");
+    setSavedRepairImages([]);
+    const detail = await readRepairPublicDetail(repairId);
+    if (!detail) return;
+    const requestSequence = repairDetailRequestSequenceRef.current;
     setRepairUploadNotice("正在重新签发私有图片读取地址…");
-    setView("repair-detail");
-    void Promise.all([
-      readRepairImages(repair.id),
-      readRepairPublicDetail(repair.id),
-    ])
-      .then(([images]) => {
-        setRepairUploadNotice(
-          images.length > 0
-            ? `已打开现有报修，并重新授权读取 ${images.length} 张私有图片。`
-            : "已打开该座位现有的未关闭报修，没有创建重复记录。",
-        );
-      })
-      .catch((error) => {
-        setRepairDetailFailure(
-          error instanceof Error ? error.message : "报修图片暂时无法读取。",
-        );
-      });
+    try {
+      const images = await readRepairImages(repairId, requestSequence);
+      if (repairDetailRequestSequenceRef.current !== requestSequence) return;
+      setRepairUploadNotice(
+        images.length > 0
+          ? `已重新授权读取 ${images.length} 张当前沙箱内的私有图片。`
+          : "当前报修没有已保存的故障图片。",
+      );
+    } catch (error) {
+      if (repairDetailRequestSequenceRef.current !== requestSequence) return;
+      setRepairUploadNotice("报修详情已读取，私有图片地址暂时无法重新签发。");
+      setRepairDetailFailure(
+        error instanceof Error ? error.message : "报修图片暂时无法读取。",
+      );
+    }
   }
 
   function chooseRepairFiles(files: FileList | null) {
@@ -1786,6 +1924,7 @@ export function CustomerSeatBrowser({
         );
       }
       const repair = payload as RepairCreatedResponse;
+      createdRepairRef.current = repair;
       setCreatedRepair(repair);
       const saved: RepairImageSaved[] = [];
       const failures: string[] = [];
@@ -1827,7 +1966,6 @@ export function CustomerSeatBrowser({
               ? `文字报修与 ${saved.length} 张净化图片已保存。`
               : "文字报修已保存；图片为可选项。",
       );
-      setView("repair-detail");
       await readRepairPublicDetail(repair.repairId).catch((error) =>
         setRepairDetailFailure(
           error instanceof Error ? error.message : "公开处理动态暂时无法读取。",
@@ -1835,6 +1973,7 @@ export function CustomerSeatBrowser({
       );
       await readReservationDetail(activeReservationId);
       setJourneyAttempt((attempt) => attempt + 1);
+      router.push(customerRepairPath(repair.repairId));
     } catch (error) {
       setRepairFailure(
         error instanceof Error
@@ -2046,7 +2185,7 @@ export function CustomerSeatBrowser({
                               : view === "order-detail"
                                 ? "商品订单"
                                 : view === "order-payment"
-                                  ? "模拟支付结果"
+                                  ? "商品订单模拟支付"
                                   : view === "journey"
                                     ? "统一行程"
                                     : view === "membership"
@@ -2057,16 +2196,65 @@ export function CustomerSeatBrowser({
         <span className="customer-demo-badge">演示数据</span>
       </header>
 
-      {view === "repair-create" && reservationDetail ? (
+      {view === "repair-create" &&
+      (detailLoading ||
+        !reservationDetail ||
+        reservationDetail.status !== "in-use") ? (
+        <div className="customer-scroll-content customer-repair-page">
+          {detailLoading && !reservationDetail ? (
+            <section className="customer-lifecycle-loading" aria-live="polite">
+              <ArrowClockwise />
+              <h1 data-customer-route-heading tabIndex={-1}>
+                正在确认报修关联预约
+              </h1>
+              <span>只会使用服务端确认的当前顾客、门店、座位和机型。</span>
+            </section>
+          ) : detailFailure ? (
+            <section className="customer-lifecycle-loading is-error">
+              <Warning />
+              <h1 data-customer-route-heading tabIndex={-1}>
+                {detailFailure === "对象不存在或不可访问"
+                  ? "对象不存在或不可访问"
+                  : "报修关联预约暂时不可用"}
+              </h1>
+              <span>{detailFailure}</span>
+              {activeReservationId ? (
+                <button
+                  className="customer-primary-button"
+                  onClick={() =>
+                    void readReservationDetail(activeReservationId)
+                  }
+                  type="button"
+                >
+                  重新读取
+                </button>
+              ) : null}
+            </section>
+          ) : reservationDetail ? (
+            <section className="customer-lifecycle-loading is-error">
+              <Info />
+              <h1 data-customer-route-heading tabIndex={-1}>
+                当前状态不能提交报修
+              </h1>
+              <span>只有使用中的预约可以为当前座位提交报修。</span>
+              <Link
+                className="customer-primary-button"
+                href={customerReservationPath(reservationDetail.reservationId)}
+              >
+                查看关联预约
+              </Link>
+            </section>
+          ) : null}
+        </div>
+      ) : view === "repair-create" && reservationDetail ? (
         <div className="customer-scroll-content customer-repair-page has-repair-action">
-          <button
+          <Link
             className="customer-back-button"
-            onClick={() => setView("detail")}
-            type="button"
+            href={customerReservationPath(reservationDetail.reservationId)}
           >
             <CaretLeft />
             返回预约详情
-          </button>
+          </Link>
           <section className="customer-repair-context-card">
             <Wrench weight="duotone" />
             <span>
@@ -2080,7 +2268,9 @@ export function CustomerSeatBrowser({
           </section>
           <section className="customer-repair-heading">
             <span className="customer-eyebrow">REPAIR INTAKE</span>
-            <h1>描述设备故障</h1>
+            <h1 data-customer-route-heading tabIndex={-1}>
+              描述设备故障
+            </h1>
             <p>提交只会创建新报修，不会立即把座位改为维护中。</p>
           </section>
           <label className="customer-repair-description">
@@ -2222,22 +2412,52 @@ export function CustomerSeatBrowser({
             </button>
           </div>
         </div>
+      ) : view === "repair-detail" && !createdRepair ? (
+        <div className="customer-scroll-content customer-repair-page">
+          <section
+            className={`customer-lifecycle-loading ${repairDetailFailure ? "is-error" : ""}`}
+            aria-live="polite"
+          >
+            {repairDetailFailure ? <Warning /> : <ArrowClockwise />}
+            <h1 data-customer-route-heading tabIndex={-1}>
+              {repairDetailFailure === "对象不存在或不可访问"
+                ? "对象不存在或不可访问"
+                : repairDetailFailure
+                  ? "报修详情暂时不可用"
+                  : "正在读取报修详情"}
+            </h1>
+            <span>
+              {repairDetailFailure ||
+                "以服务端公开状态和当前沙箱的图片授权为准。"}
+            </span>
+            {route?.kind === "repair-detail" && repairDetailFailure ? (
+              <button
+                className="customer-primary-button"
+                onClick={() => void readRepairRoute(route.repairId)}
+                type="button"
+              >
+                重新读取
+              </button>
+            ) : null}
+          </section>
+        </div>
       ) : view === "repair-detail" && createdRepair ? (
         <div className="customer-scroll-content customer-repair-page customer-repair-result">
-          <button
-            className="customer-back-button"
-            onClick={() => setView("detail")}
-            type="button"
-          >
-            <CaretLeft />
-            返回预约详情
-          </button>
+          {createdRepair.reservationId ? (
+            <Link
+              className="customer-back-button"
+              href={customerReservationPath(createdRepair.reservationId)}
+            >
+              <CaretLeft />
+              返回预约详情
+            </Link>
+          ) : null}
           <section className="customer-repair-result-hero">
             <div>
               <CheckCircle weight="fill" />
             </div>
             <span className="customer-eyebrow">REPAIR PUBLIC STATUS</span>
-            <h1>
+            <h1 data-customer-route-heading tabIndex={-1}>
               {repairDetail?.status === "processing"
                 ? "设备正在检修"
                 : repairDetail?.status === "verification"
@@ -2514,28 +2734,43 @@ export function CustomerSeatBrowser({
           >
             <ArrowClockwise /> 刷新公开动态
           </button>
-          <button
+          <Link
             className="customer-primary-button"
-            onClick={() => setView("detail")}
-            type="button"
+            href={
+              createdRepair.reservationId
+                ? customerReservationPath(createdRepair.reservationId)
+                : customerJourneyPath("current", { type: "repair" })
+            }
           >
             查看关联预约 <CaretRight />
-          </button>
+          </Link>
         </div>
       ) : view === "order-catalog" ? (
         <div className="customer-scroll-content customer-order-page has-order-action">
-          <button
-            className="customer-back-button"
-            onClick={() => setView("detail")}
-            type="button"
-          >
-            <CaretLeft />
-            返回预约详情
-          </button>
+          {activeReservationId ? (
+            <Link
+              className="customer-back-button"
+              href={customerReservationPath(activeReservationId)}
+            >
+              <CaretLeft />
+              返回预约详情
+            </Link>
+          ) : null}
+          {orderRouteRecoveryNotice ? (
+            <section className="customer-feedback" role="status">
+              <Info />
+              <span>
+                <strong>未提交购物车未被保留</strong>
+                {orderRouteRecoveryNotice}
+              </span>
+            </section>
+          ) : null}
           {orderCatalogLoading ? (
             <section className="customer-lifecycle-loading" aria-live="polite">
               <ArrowClockwise />
-              <strong>正在读取柜台商品</strong>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                正在读取柜台商品
+              </h1>
               <span>只展示当前门店可售商品与服务端库存。</span>
             </section>
           ) : orderCatalog ? (
@@ -2550,7 +2785,9 @@ export function CustomerSeatBrowser({
               </section>
               <section className="customer-order-heading">
                 <span className="customer-eyebrow">STORE CATALOG</span>
-                <h1>柜台商品</h1>
+                <h1 data-customer-route-heading tabIndex={-1}>
+                  柜台商品
+                </h1>
                 <p>库存与门店价均由服务端确认，整单提交才会排他保留。</p>
               </section>
               <div
@@ -2629,7 +2866,11 @@ export function CustomerSeatBrowser({
           ) : (
             <section className="customer-lifecycle-loading is-error">
               <Warning />
-              <strong>柜台商品暂时不可用</strong>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                {orderCatalogFailure === "对象不存在或不可访问"
+                  ? "对象不存在或不可访问"
+                  : "柜台商品暂时不可用"}
+              </h1>
               <span>{orderCatalogFailure}</span>
               {activeReservationId ? (
                 <button
@@ -2651,7 +2892,11 @@ export function CustomerSeatBrowser({
               disabled={orderCartCount === 0}
               onClick={() => {
                 setOrderSubmissionFailure("");
-                setView("order-confirm");
+                if (activeReservationId) {
+                  router.push(
+                    customerReservationOrderConfirmPath(activeReservationId),
+                  );
+                }
               }}
               type="button"
             >
@@ -2661,17 +2906,20 @@ export function CustomerSeatBrowser({
         </div>
       ) : view === "order-confirm" && orderCatalog ? (
         <div className="customer-scroll-content customer-order-page has-order-action">
-          <button
+          <Link
             className="customer-back-button"
-            onClick={() => setView("order-catalog")}
-            type="button"
+            href={customerReservationOrderPath(
+              orderCatalog.reservation.reservationId,
+            )}
           >
             <CaretLeft />
             返回商品目录
-          </button>
+          </Link>
           <section className="customer-order-heading">
             <span className="customer-eyebrow">CONFIRM ORDER</span>
-            <h1>确认商品订单</h1>
+            <h1 data-customer-route-heading tabIndex={-1}>
+              确认商品订单
+            </h1>
             <p>
               {orderCatalog.reservation.store.displayName} · 座位
               {orderCatalog.reservation.seat.code}
@@ -2780,33 +3028,47 @@ export function CustomerSeatBrowser({
         </div>
       ) : view === "order-detail" && activeOrderId ? (
         <div className="customer-scroll-content customer-order-page">
-          <button
+          <Link
             className="customer-back-button"
-            onClick={() => {
-              if (orderCatalog?.reservation.reservationId) {
-                setView("detail");
-                void readReservationDetail(
-                  orderCatalog.reservation.reservationId,
-                );
-              } else {
-                router.push(customerJourneyPath("current"));
-              }
-            }}
-            type="button"
+            href={
+              orderDetail?.snapshot.reservation.reservationId
+                ? customerReservationPath(
+                    orderDetail.snapshot.reservation.reservationId,
+                  )
+                : orderCatalog?.reservation.reservationId
+                  ? customerReservationPath(
+                      orderCatalog.reservation.reservationId,
+                    )
+                  : customerJourneyPath("current", { type: "order" })
+            }
           >
             <CaretLeft />
-            返回预约详情
-          </button>
+            {orderDetail || orderCatalog ? "返回预约详情" : "返回我的订单"}
+          </Link>
           {orderDetailLoading && !orderDetail ? (
             <section className="customer-lifecycle-loading" aria-live="polite">
               <ArrowClockwise />
-              <strong>正在读取商品订单</strong>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                正在读取商品订单
+              </h1>
               <span>以服务端库存保留和支付结果为准。</span>
             </section>
           ) : orderDetail ? (
             <>
+              {orderCreatedIdRef.current === orderDetail.orderId ? (
+                <section className="customer-feedback" role="status">
+                  <CheckCircle />
+                  <span>
+                    <strong>商品订单已创建</strong>
+                    库存与体验券已按服务端结果排他保留；草稿未写入 URL。
+                  </span>
+                </section>
+              ) : null}
               <section className="customer-order-status-card">
                 <span className="customer-eyebrow">ORDER STATUS</span>
+                <h1 data-customer-route-heading tabIndex={-1}>
+                  商品订单详情
+                </h1>
                 <div>
                   <Package weight="duotone" />
                   <span>
@@ -2918,16 +3180,12 @@ export function CustomerSeatBrowser({
               ) : null}
               <div className="customer-lifecycle-actions">
                 {orderDetail.actions.canSimulatePayment ? (
-                  <button
+                  <Link
                     className="customer-primary-button"
-                    disabled={orderPaymentLoading}
-                    onClick={() => void simulateOrderPayment()}
-                    type="button"
+                    href={customerOrderPaymentPath(orderDetail.orderId)}
                   >
-                    {orderPaymentLoading
-                      ? "正在确认模拟支付…"
-                      : "确认模拟支付（不扣款）"}
-                  </button>
+                    确认模拟支付（不扣款）
+                  </Link>
                 ) : null}
                 {orderDetail.actions.canCancel ? (
                   <button
@@ -2953,7 +3211,11 @@ export function CustomerSeatBrowser({
           ) : (
             <section className="customer-lifecycle-loading is-error">
               <Warning />
-              <strong>商品订单暂时不可用</strong>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                {orderDetailFailure === "对象不存在或不可访问"
+                  ? "对象不存在或不可访问"
+                  : "商品订单暂时不可用"}
+              </h1>
               <span>{orderDetailFailure}</span>
               <button
                 className="customer-primary-button"
@@ -2965,45 +3227,145 @@ export function CustomerSeatBrowser({
             </section>
           )}
         </div>
-      ) : view === "order-payment" && orderPaymentResult ? (
-        <div className="customer-scroll-content customer-order-success">
-          <div className="customer-order-success-icon">
-            <CheckCircle weight="fill" />
-          </div>
-          <span className="customer-eyebrow">SIMULATED PAID</span>
-          <h1>模拟支付成功</h1>
-          <p>订单已由服务端确认；全程没有扣款，也不需要真实支付凭证。</p>
-          <section className="customer-order-success-amount">
-            <span>模拟支付金额</span>
-            <strong>
-              {formatMoney(orderPaymentResult.payment.amountCents)}
-            </strong>
-            <small>{formatWindow(orderPaymentResult.payment.occurredAt)}</small>
-          </section>
-          <section className="customer-order-atomic-note">
-            <ShieldCheck />
-            <span>
-              <strong>库存归属订单，后续独立履约</strong>
-              即使关联预约随后结束，已支付商品订单仍保留其独立结果。
-            </span>
-          </section>
-          <button
-            className="customer-primary-button"
-            onClick={() => {
-              setView("order-detail");
-              void readOrderDetail(orderPaymentResult.orderId);
-            }}
-            type="button"
+      ) : view === "order-payment" && activeOrderId ? (
+        <div className="customer-scroll-content customer-order-page">
+          <Link
+            className="customer-back-button"
+            href={customerOrderPath(activeOrderId)}
           >
-            查看商品订单
-          </button>
-          <button
-            className="customer-payment-secondary"
-            onClick={() => router.push(customerJourneyPath("current"))}
-            type="button"
-          >
-            返回统一行程
-          </button>
+            <CaretLeft />
+            返回商品订单详情
+          </Link>
+          {orderPaymentResult ? (
+            <div className="customer-order-success">
+              <div className="customer-order-success-icon">
+                <CheckCircle weight="fill" />
+              </div>
+              <span className="customer-eyebrow">SIMULATED PAID</span>
+              <h1 data-customer-route-heading tabIndex={-1}>
+                模拟支付成功
+              </h1>
+              <p>订单已由服务端确认；全程没有扣款，也不需要真实支付凭证。</p>
+              <section className="customer-order-success-amount">
+                <span>模拟支付金额</span>
+                <strong>
+                  {formatMoney(orderPaymentResult.payment.amountCents)}
+                </strong>
+                <small>
+                  {formatWindow(orderPaymentResult.payment.occurredAt)}
+                </small>
+              </section>
+              <section className="customer-order-atomic-note">
+                <ShieldCheck />
+                <span>
+                  <strong>库存归属订单，后续独立履约</strong>
+                  即使关联预约随后结束，已支付商品订单仍保留其独立结果。
+                </span>
+              </section>
+              <Link
+                className="customer-primary-button"
+                href={customerOrderPath(orderPaymentResult.orderId)}
+              >
+                查看商品订单
+              </Link>
+              <Link
+                className="customer-payment-secondary"
+                href={customerJourneyPath("current", { type: "order" })}
+              >
+                返回统一行程
+              </Link>
+            </div>
+          ) : orderDetailLoading && !orderDetail ? (
+            <section className="customer-lifecycle-loading" aria-live="polite">
+              <ArrowClockwise />
+              <h1 data-customer-route-heading tabIndex={-1}>
+                正在确认商品订单状态
+              </h1>
+              <span>读取完成前不会显示或发起模拟支付动作。</span>
+            </section>
+          ) : orderDetail ? (
+            orderDetail.actions.canSimulatePayment ? (
+              <>
+                <section className="customer-order-heading">
+                  <span className="customer-eyebrow">SIMULATED PAYMENT</span>
+                  <h1 data-customer-route-heading tabIndex={-1}>
+                    确认商品订单模拟支付
+                  </h1>
+                  <p>该操作不会扣款，也不需要真实支付凭证。</p>
+                </section>
+                <section className="customer-order-success-amount">
+                  <span>服务端快照应付金额</span>
+                  <strong>
+                    {formatMoney(orderDetail.snapshot.payableCents)}
+                  </strong>
+                  <small>
+                    {orderDetail.snapshot.reservation.storeDisplayName} · 座位
+                    {orderDetail.snapshot.reservation.seatCode}
+                  </small>
+                </section>
+                <section className="customer-order-atomic-note">
+                  <ShieldCheck />
+                  <span>
+                    <strong>支付前再次确认当前合法动作</strong>
+                    库存、体验券和十分钟保留均以服务端当前状态为准。
+                  </span>
+                </section>
+                {orderPaymentFailure ? (
+                  <section className="customer-feedback is-error" role="alert">
+                    <Warning />
+                    <span>
+                      <strong>模拟支付未完成</strong>
+                      {orderPaymentFailure}
+                    </span>
+                  </section>
+                ) : null}
+                <button
+                  className="customer-primary-button"
+                  disabled={orderPaymentLoading}
+                  onClick={() => void simulateOrderPayment()}
+                  type="button"
+                >
+                  {orderPaymentLoading
+                    ? "正在确认模拟支付…"
+                    : "确认模拟支付（不扣款）"}
+                </button>
+              </>
+            ) : (
+              <section className="customer-lifecycle-loading is-error">
+                <Info />
+                <h1 data-customer-route-heading tabIndex={-1}>
+                  当前状态不能进行模拟支付
+                </h1>
+                <span>
+                  当前状态为“{orderStatusLabels[orderDetail.status]}
+                  ”，不会发出非法支付请求。
+                </span>
+                <Link
+                  className="customer-primary-button"
+                  href={customerOrderPath(orderDetail.orderId)}
+                >
+                  查看商品订单详情
+                </Link>
+              </section>
+            )
+          ) : (
+            <section className="customer-lifecycle-loading is-error">
+              <Warning />
+              <h1 data-customer-route-heading tabIndex={-1}>
+                {orderDetailFailure === "对象不存在或不可访问"
+                  ? "对象不存在或不可访问"
+                  : "商品订单模拟支付暂时不可用"}
+              </h1>
+              <span>{orderDetailFailure}</span>
+              <button
+                className="customer-primary-button"
+                onClick={() => void readOrderDetail(activeOrderId)}
+                type="button"
+              >
+                重新读取
+              </button>
+            </section>
+          )}
         </div>
       ) : view === "journey" ? (
         <div className="customer-scroll-content customer-story-page">
@@ -3133,11 +3495,7 @@ export function CustomerSeatBrowser({
           ) : journeyItems.length > 0 ? (
             <div className="customer-journey-list">
               {journeyItems.map((item) => (
-                <JourneyReservationCard
-                  item={item}
-                  key={item.reservationId}
-                  onOpen={openJourneyReservation}
-                />
+                <JourneyReservationCard item={item} key={item.reservationId} />
               ))}
             </div>
           ) : (
@@ -4554,25 +4912,17 @@ export function CustomerSeatBrowser({
                     <Receipt />
                   </div>
                   {reservationDetail.related.orders.map((order) => (
-                    <button
-                      key={order.id}
-                      onClick={() => openRelatedOrder(order.id)}
-                      type="button"
-                    >
+                    <Link href={customerOrderPath(order.id)} key={order.id}>
                       <Package />
                       <span>
                         <strong>{order.label}</strong>
                         <small>{orderStatusLabels[order.status]}</small>
                       </span>
                       <CaretRight />
-                    </button>
+                    </Link>
                   ))}
                   {reservationDetail.related.repairs.map((repair) => (
-                    <button
-                      key={repair.id}
-                      onClick={() => openExistingRepair(repair)}
-                      type="button"
-                    >
+                    <Link href={customerRepairPath(repair.id)} key={repair.id}>
                       <Wrench />
                       <span>
                         <strong>{repair.label}</strong>
@@ -4581,7 +4931,7 @@ export function CustomerSeatBrowser({
                         </small>
                       </span>
                       <CaretRight />
-                    </button>
+                    </Link>
                   ))}
                 </section>
               ) : (
@@ -4604,33 +4954,41 @@ export function CustomerSeatBrowser({
               ) : null}
               <div className="customer-lifecycle-actions">
                 {reservationDetail.status === "in-use" ? (
-                  <button
+                  <Link
                     className="customer-primary-button"
+                    href={
+                      reservationDetail.related.repairs[0]
+                        ? customerRepairPath(
+                            reservationDetail.related.repairs[0].id,
+                          )
+                        : customerReservationRepairPath(
+                            reservationDetail.reservationId,
+                          )
+                    }
                     onClick={() => {
-                      const existing = reservationDetail.related.repairs[0];
-                      if (existing) openExistingRepair(existing);
-                      else openRepairCreate();
+                      if (!reservationDetail.related.repairs[0]) {
+                        resetRepairDraft();
+                      }
                     }}
-                    type="button"
                   >
                     <Wrench />
                     {reservationDetail.related.repairs.length > 0
                       ? "查看现有报修"
                       : "为当前座位报修"}
-                  </button>
+                  </Link>
                 ) : null}
                 {reservationDetail.status === "arrived" ||
                 reservationDetail.status === "in-use" ? (
-                  <button
+                  <Link
                     className="customer-primary-button"
-                    onClick={() =>
-                      void openOrderCatalog(reservationDetail.reservationId)
-                    }
-                    type="button"
+                    href={customerReservationOrderPath(
+                      reservationDetail.reservationId,
+                    )}
+                    onClick={() => setOrderRouteRecoveryNotice("")}
                   >
                     <Storefront />
                     购买柜台商品
-                  </button>
+                  </Link>
                 ) : null}
                 {reservationDetail.actions.canSimulatePayment ? (
                   <button

@@ -14,6 +14,8 @@ import type {
   CustomerReservationStatus,
   CustomerSeatAvailabilityResponse,
   CustomerStoreCatalogResponse,
+  RepairCreatedResponse,
+  RepairDetailResponse,
   RoleContextReadyResponse,
 } from "@jingshu/contracts";
 
@@ -56,6 +58,9 @@ const customerContext: RoleContextReadyResponse = {
     ],
   },
 };
+
+const forbiddenOrderId = "00000000-0000-4000-8000-000000000796";
+const forbiddenRepairId = "00000000-0000-4000-8000-000000000795";
 
 const catalog: CustomerStoreCatalogResponse = {
   bookingRules: {
@@ -555,6 +560,7 @@ async function openCustomerH5(
   let remainingOrderShortages = options.orderShortages ?? 0;
   let orderStatus: CustomerOrderStatus = "pending-simulated-payment";
   let activeOrder: CustomerPendingOrderResponse | null = null;
+  let activeRepair: RepairCreatedResponse | null = null;
   let activeSnapshot: CustomerPendingReservationResponse["snapshot"] | null =
     null;
   let paymentOccurredAt: string | null = null;
@@ -574,7 +580,37 @@ async function openCustomerH5(
     serveJson(route, membershipFixture),
   );
   await page.route("**/api/v1/customer/journey", (route) =>
-    serveJson(route, journeyFixture),
+    serveJson(route, {
+      ...journeyFixture,
+      groups: Object.fromEntries(
+        Object.entries(journeyFixture.groups).map(([group, items]) => [
+          group,
+          items.map((item) => ({
+            ...item,
+            related: {
+              orders: activeOrder
+                ? [
+                    {
+                      id: activeOrder.orderId,
+                      label: "脉冲气泡水等 · 柜台取货",
+                      status: orderStatus,
+                    },
+                  ]
+                : [],
+              repairs: activeRepair
+                ? [
+                    {
+                      id: activeRepair.repairId,
+                      label: `座位 ${activeRepair.seat.code} · ${activeRepair.description}`,
+                      status: activeRepair.status,
+                    },
+                  ]
+                : [],
+            },
+          })),
+        ]),
+      ) as CustomerJourneyResponse["groups"],
+    } satisfies CustomerJourneyResponse),
   );
   await page.route("**/api/v1/customer/seat-availability?**", (route) => {
     const value = availabilityFor(route.request().url());
@@ -749,7 +785,26 @@ async function openCustomerH5(
               simulated: true,
             }
           : null,
-        related: { orders: [], repairs: [] },
+        related: {
+          orders: activeOrder
+            ? [
+                {
+                  id: activeOrder.orderId,
+                  label: "脉冲气泡水等 · 柜台取货",
+                  status: orderStatus,
+                },
+              ]
+            : [],
+          repairs: activeRepair
+            ? [
+                {
+                  id: activeRepair.repairId,
+                  label: `座位 ${activeRepair.seat.code} · ${activeRepair.description}`,
+                  status: activeRepair.status,
+                },
+              ]
+            : [],
+        },
         reservationId,
         snapshot,
         status: lifecycleStatus,
@@ -980,7 +1035,21 @@ async function openCustomerH5(
     await route.fulfill({ json: activeOrder, status: 201 });
   });
   await page.route(/\/api\/v1\/customer\/orders\/[^/]+$/u, async (route) => {
-    if (!activeOrder) {
+    const orderId = route.request().url().split("/").at(-1)!;
+    if (orderId === forbiddenOrderId) {
+      await route.fulfill({
+        json: {
+          error: {
+            code: "CUSTOMER_ORDER_FORBIDDEN",
+            message: "内部订单存在，但属于另一位顾客。",
+            requestId: crypto.randomUUID(),
+          },
+        },
+        status: 403,
+      });
+      return;
+    }
+    if (!activeOrder || orderId !== activeOrder.orderId) {
       await route.fulfill({ status: 404 });
       return;
     }
@@ -1070,6 +1139,88 @@ async function openCustomerH5(
       });
     },
   );
+  await page.route("**/api/v1/customer/repairs", async (route) => {
+    const body = route.request().postDataJSON() as {
+      description: string;
+      reservationId: string;
+    };
+    activeRepair = {
+      createdAt: businessTime,
+      description: body.description,
+      duplicate: false,
+      machineProfile: storySnapshot.machineProfile,
+      priority: "normal",
+      repairId: "00000000-0000-4000-8000-000000000780",
+      reservationId: body.reservationId,
+      seat: { code: storySnapshot.seat.code, operationalStatus: "normal" },
+      source: "customer",
+      status: "new",
+      store: storySnapshot.store,
+    };
+    await route.fulfill({ json: activeRepair, status: 201 });
+  });
+  await page.route(/\/api\/v1\/repairs\/[^/]+$/u, async (route) => {
+    const repairId = route.request().url().split("/").at(-1)!;
+    if (repairId === forbiddenRepairId) {
+      await route.fulfill({
+        json: {
+          error: {
+            code: "REPAIR_FORBIDDEN",
+            message: "内部报修存在，但属于另一位顾客。",
+            requestId: crypto.randomUUID(),
+          },
+        },
+        status: 403,
+      });
+      return;
+    }
+    if (!activeRepair || repairId !== activeRepair.repairId) {
+      await route.fulfill({ status: 404 });
+      return;
+    }
+    const detail: RepairDetailResponse = {
+      actions: {
+        canAssign: false,
+        canClaimSpare: false,
+        canReturnSpare: false,
+        canStart: false,
+        canSubmitResolution: false,
+        canVerify: false,
+      },
+      assignedTo: null,
+      currentTime: businessTime,
+      description: activeRepair.description,
+      impacts: [],
+      internal: null,
+      latestVerification: null,
+      machineProfile: activeRepair.machineProfile,
+      priority: activeRepair.priority,
+      publicUpdates: [
+        {
+          note: "报修已创建，等待门店确认",
+          occurredAt: activeRepair.createdAt,
+          type: "repair.created",
+        },
+      ],
+      repairId: activeRepair.repairId,
+      reservationId: activeRepair.reservationId,
+      resolution: null,
+      seat: activeRepair.seat,
+      source: activeRepair.source,
+      spares: null,
+      status: activeRepair.status,
+      store: activeRepair.store,
+    };
+    await serveJson(route, detail);
+  });
+  await page.route(/\/api\/v1\/repairs\/[^/]+\/images$/u, async (route) => {
+    const repairId = route.request().url().split("/").at(-2)!;
+    if (!activeRepair || repairId !== activeRepair.repairId) {
+      await route.fulfill({ status: 404 });
+      return;
+    }
+    await serveJson(route, { images: [], status: "ready" });
+  });
   await page.goto("/");
   await expect(page.getByTestId("customer-h5")).toBeVisible();
 }
@@ -2008,7 +2159,7 @@ test("WEB-C04 keeps the desktop cart action within the H5 canvas and preserves i
   await openCustomerH5(page, { detailStatuses: ["arrived"] });
   await page.getByRole("link", { name: "行程", exact: true }).click();
   await page.locator(".customer-journey-main").first().click();
-  await page.getByRole("button", { name: "购买柜台商品" }).click();
+  await page.getByRole("link", { name: "购买柜台商品" }).click();
 
   const desktopLayout = await page
     .locator(".customer-order-action-bar")
@@ -2078,7 +2229,7 @@ test("WEB-C04 completes the arrived-reservation whole-cart and no-charge order f
   });
   await page.getByRole("link", { name: "行程", exact: true }).click();
   await page.locator(".customer-journey-main").first().click();
-  await page.getByRole("button", { name: "购买柜台商品" }).click();
+  await page.getByRole("link", { name: "购买柜台商品" }).click();
 
   await expect(page.getByRole("heading", { name: "柜台商品" })).toBeVisible();
   await expect(page.getByText("0 件商品")).toBeVisible();
@@ -2110,6 +2261,7 @@ test("WEB-C04 completes the arrived-reservation whole-cart and no-charge order f
 
   await expect(page.getByText("待模拟支付", { exact: true })).toBeVisible();
   await expect(page.getByText(/库存保留倒计时/u)).toBeVisible();
+  await page.getByRole("link", { name: "确认模拟支付（不扣款）" }).click();
   await page.getByRole("button", { name: "确认模拟支付（不扣款）" }).click();
   await expect(
     page.getByRole("heading", { name: "模拟支付成功" }),
@@ -2121,4 +2273,288 @@ test("WEB-C04 completes the arrived-reservation whole-cart and no-charge order f
     scrollWidth: document.documentElement.scrollWidth,
   }));
   expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+});
+
+test("Ticket 06 routes customer order and repair drafts, objects, payment, history and responsive shells", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      browserErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  await page.route("**/api/v1/demo/story", (route) =>
+    serveJson(route, { completedCount: 0 }),
+  );
+  await openCustomerH5(page, { detailStatuses: ["arrived", "in-use"] });
+
+  await page.getByRole("link", { name: "行程", exact: true }).click();
+  await page.locator(".customer-journey-main").first().click();
+  const orderCatalogLink = page.getByRole("link", {
+    name: "购买柜台商品",
+  });
+  await expect(orderCatalogLink).toHaveAttribute(
+    "href",
+    `/customer/reservations/${currentStoryReservationId}/orders/new`,
+  );
+  await orderCatalogLink.click();
+  await expect(page).toHaveURL(
+    `/customer/reservations/${currentStoryReservationId}/orders/new`,
+  );
+  await expect(page).toHaveTitle("选择商品｜竞枢");
+  await expect(page.getByRole("heading", { name: "柜台商品" })).toBeVisible();
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-06/order-catalog-360x800.png",
+    });
+  }
+  await page.getByRole("button", { name: "增加脉冲气泡水" }).click();
+  await page.getByRole("button", { name: "确认购物车" }).click();
+  await expect(page).toHaveURL(
+    `/customer/reservations/${currentStoryReservationId}/orders/new/confirm`,
+  );
+  await expect(page).toHaveTitle("确认商品订单｜竞枢");
+  await expect(
+    page.getByRole("heading", { name: "确认商品订单" }),
+  ).toBeVisible();
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-06/order-confirm-360x800.png",
+    });
+  }
+  await expect(page).not.toHaveURL(/(?:cart|coupon|description|image)=/u);
+  expect(
+    await page.evaluate(() =>
+      [...Object.keys(localStorage), ...Object.keys(sessionStorage)].filter(
+        (key) => /cart|coupon|repair|upload/iu.test(key),
+      ),
+    ),
+  ).toEqual([]);
+
+  await page.reload();
+  await expect(page).toHaveURL(
+    `/customer/reservations/${currentStoryReservationId}/orders/new`,
+  );
+  await expect(
+    page.getByText("未提交购物车未被保留", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("0 件商品", { exact: true })).toBeVisible();
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-06/order-confirm-recovery-360x800.png",
+    });
+  }
+
+  await page.getByRole("button", { name: "增加脉冲气泡水" }).click();
+  await page.getByRole("button", { name: "增加夜航薯片" }).click();
+  await page.getByRole("button", { name: "确认购物车" }).click();
+  await page.getByRole("button", { name: "创建待模拟支付订单" }).click();
+  const orderId = "00000000-0000-4000-8000-000000000760";
+  await expect(page).toHaveURL(`/customer/orders/${orderId}`);
+  await expect(page).toHaveTitle("商品订单详情｜竞枢");
+  await expect(
+    page.getByRole("heading", { name: "商品订单详情" }),
+  ).toBeVisible();
+  await expect(page.getByText("商品订单已创建", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "返回预约详情" }),
+  ).toHaveAttribute(
+    "href",
+    `/customer/reservations/${currentStoryReservationId}`,
+  );
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-06/order-detail-360x800.png",
+    });
+  }
+
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "商品订单详情" }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "确认模拟支付（不扣款）" }).click();
+  await expect(page).toHaveURL(`/customer/orders/${orderId}/payment`);
+  await expect(page).toHaveTitle("商品订单模拟支付｜竞枢");
+  await expect(
+    page.getByRole("heading", { name: "确认商品订单模拟支付" }),
+  ).toBeVisible();
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-06/order-payment-360x800.png",
+    });
+  }
+  await page.getByRole("button", { name: "确认模拟支付（不扣款）" }).click();
+  await expect(page).toHaveURL(`/customer/orders/${orderId}/payment`);
+  await expect(
+    page.getByRole("heading", { name: "模拟支付成功" }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "查看商品订单" }).click();
+  await expect(page).toHaveURL(`/customer/orders/${orderId}`);
+  await expect(
+    page
+      .locator(".customer-order-status-card")
+      .getByText("模拟支付成功", { exact: true }),
+  ).toBeVisible();
+
+  await page.goto(`/customer/reservations/${currentStoryReservationId}`);
+  await expect(
+    page.locator(".customer-lifecycle-status-row").getByText("使用中", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  const repairCreateLink = page.getByRole("link", {
+    name: "为当前座位报修",
+  });
+  await expect(repairCreateLink).toHaveAttribute(
+    "href",
+    `/customer/reservations/${currentStoryReservationId}/repairs/new`,
+  );
+  await repairCreateLink.click();
+  await expect(page).toHaveURL(
+    `/customer/reservations/${currentStoryReservationId}/repairs/new`,
+  );
+  await expect(page).toHaveTitle("提交报修｜竞枢");
+  await expect(
+    page.getByRole("heading", { name: "描述设备故障" }),
+  ).toBeVisible();
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-06/repair-create-360x800.png",
+    });
+  }
+  await page
+    .getByRole("textbox", { name: /故障描述/u })
+    .fill("耳机右声道间歇无声");
+  await expect(page).not.toHaveURL(/(?:description|image|upload)=/u);
+  await page.getByRole("button", { name: "提交报修" }).click();
+  const repairId = "00000000-0000-4000-8000-000000000780";
+  await expect(page).toHaveURL(`/customer/repairs/${repairId}`);
+  await expect(page).toHaveTitle("报修详情｜竞枢");
+  await expect(page.getByRole("heading", { name: "报修已创建" })).toBeVisible();
+  await expect(
+    page.getByText("耳机右声道间歇无声", { exact: true }),
+  ).toBeVisible();
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-06/repair-detail-360x800.png",
+    });
+  }
+
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "已打开现有报修" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "返回预约详情" }),
+  ).toHaveAttribute(
+    "href",
+    `/customer/reservations/${currentStoryReservationId}`,
+  );
+  await page.goto("/customer/journeys/history?type=repair");
+  await expect(page).toHaveURL("/customer/journeys/history?type=repair");
+  await expect(page.getByRole("heading", { name: "历史行程" })).toBeVisible();
+  if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+    await page.screenshot({
+      path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-06/repair-history-360x800.png",
+    });
+  }
+  await page
+    .getByRole("link", { name: /座位 A-08/u })
+    .first()
+    .click();
+  await expect(page).toHaveURL(`/customer/repairs/${repairId}`);
+  await page.goBack();
+  await expect(page).toHaveURL("/customer/journeys/history?type=repair");
+
+  for (const viewport of [
+    { height: 1024, path: `/customer/orders/${orderId}`, width: 1440 },
+    { height: 768, path: `/customer/repairs/${repairId}`, width: 1024 },
+  ]) {
+    await page.setViewportSize({
+      height: viewport.height,
+      width: viewport.width,
+    });
+    await page.goto(viewport.path);
+    await expect(page.locator("[data-customer-route-heading]")).toBeFocused();
+    const currentSidebarLinks = page
+      .getByTestId("role-sidebar")
+      .locator('a[aria-current="page"]');
+    await expect(currentSidebarLinks).toHaveCount(1);
+    await expect(currentSidebarLinks).toHaveAccessibleName(
+      viewport.width === 1440 ? "我的订单" : "我的报修",
+    );
+    const metrics = await page.evaluate(() => ({
+      canvasWidth:
+        document
+          .querySelector<HTMLElement>(".customer-h5")
+          ?.getBoundingClientRect().width ?? 0,
+      scrollWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    }));
+    expect(metrics.canvasWidth).toBeLessThanOrEqual(520);
+    expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.viewportWidth);
+    if (process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1") {
+      await page.screenshot({
+        path: `product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-06/customer-object-${viewport.width}x${viewport.height}.png`,
+      });
+    }
+  }
+  expect(browserErrors).toEqual([]);
+});
+
+test("Ticket 06 gives missing and forbidden orders, repairs and private images one safe boundary", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 360 });
+  const forbiddenImageRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.url().includes(forbiddenRepairId) &&
+      request.url().endsWith("/images")
+    ) {
+      forbiddenImageRequests.push(request.url());
+    }
+  });
+  await openCustomerH5(page);
+
+  for (const orderId of [
+    forbiddenOrderId,
+    "00000000-0000-4000-8000-000000000794",
+  ]) {
+    for (const suffix of ["", "/payment"] as const) {
+      await page.goto(`/customer/orders/${orderId}${suffix}`);
+      await expect(
+        page.getByRole("heading", { name: "对象不存在或不可访问" }),
+      ).toBeVisible();
+      if (
+        process.env.JINGSHU_CAPTURE_ROUTING_EVIDENCE === "1" &&
+        orderId === forbiddenOrderId &&
+        suffix === ""
+      ) {
+        await page.screenshot({
+          path: "product-ui/management-system/design-prototype/design/evidence/web-url-routing-ticket-06/safe-object-boundary-360x800.png",
+        });
+      }
+      await expect(
+        page.getByText("内部订单存在，但属于另一位顾客。"),
+      ).toHaveCount(0);
+    }
+  }
+
+  for (const repairId of [
+    forbiddenRepairId,
+    "00000000-0000-4000-8000-000000000793",
+  ]) {
+    await page.goto(`/customer/repairs/${repairId}`);
+    await expect(
+      page.getByRole("heading", { name: "对象不存在或不可访问" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("内部报修存在，但属于另一位顾客。"),
+    ).toHaveCount(0);
+  }
+  expect(forbiddenImageRequests).toEqual([]);
 });

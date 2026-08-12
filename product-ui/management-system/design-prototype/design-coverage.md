@@ -312,6 +312,14 @@
 - URL 只提供预约标识；共享角色守卫先确认服务端顾客上下文，对象 API 再按当前顾客和沙箱授权。缺失与无权对象使用同一“对象不存在或不可访问”结果，切换 ID 时清空旧详情并以请求序列隔离迟到响应。
 - `360 × 800`、`1440 × 1024` 与 `1024 × 768` 的确认、详情、支付门禁、共享壳稳定性、标题焦点和无横向溢出证据记录在 `design-qa.md` 与 `design/evidence/web-url-routing-ticket-05/`。
 
+## Web URL 路由 Ticket 06 — 顾客商品订单与报修
+
+- `WEB-C04 / MP-10–MP-12` 的柜台商品目录、确认、订单详情和模拟支付分别由 `/customer/reservations/:reservationId/orders/new`、其 `/confirm` 子路径、`/customer/orders/:orderId` 与其 `/payment` 子路径承载。目录继续由服务端确认关联预约、门店、座位、商品范围和可用库存；订单状态推进只更新服务端对象，不改变唯一详情地址。
+- 未提交购物车和商品体验券只保留在当前 React 树内存。确认页刷新或直达缺少草稿时以 `replace` 回到同一预约的商品目录，并说明购物车未被保留；不从 URL、`localStorage` 或 `sessionStorage` 重建选择。
+- `WEB-C02 / MP-13–MP-15` 的报修创建与公开详情分别由 `/customer/reservations/:reservationId/repairs/new` 和 `/customer/repairs/:repairId` 承载。创建页先重读服务端预约并只为使用中状态开放，故障描述和待净化图片只存在页面内存；成功或重复报修均进入唯一资源详情。
+- 订单、报修、历史中的关联记录和关联预约均使用真实链接；直达、刷新、后退和前进重新读取当前服务端对象。缺失与无权订单/报修统一显示“对象不存在或不可访问”，无权报修不会继续请求图片列表或签发读取地址。
+- 订单和报修动态详情使用对象请求序列隔离迟到响应，切换 ID 时先清空旧数据。侧栏、页面标题、主标题、焦点与 `aria-current` 只表达一个 URL 页面身份；三档视口与完整移动旅程证据记录在 `design-qa.md` 与 `design/evidence/web-url-routing-ticket-06/`。
+
 ## 运行与验证
 
 - 本地开发：`npm run dev -- --host 0.0.0.0 --port 4173`

@@ -773,10 +773,8 @@ test("新鲜访客可只通过页面完成跨四角色主演示", async ({
     .click();
   await expect(page).toHaveURL(/\/customer\/journeys\/current\?type=order$/u);
   await page.locator(".customer-journey-main").first().click();
-  await expect(
-    page.getByRole("button", { name: "购买柜台商品" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "购买柜台商品" }).click();
+  await expect(page.getByRole("link", { name: "购买柜台商品" })).toBeVisible();
+  await page.getByRole("link", { name: "购买柜台商品" }).click();
   await expect(page.getByRole("heading", { name: "柜台商品" })).toBeVisible();
   const addProductButtons = page.getByRole("button", { name: /^增加/u });
   await addProductButtons.nth(0).click();
@@ -785,6 +783,7 @@ test("新鲜访客可只通过页面完成跨四角色主演示", async ({
   const orderCoupon = page.getByRole("button", { name: /商品立减体验券/u });
   await expect(orderCoupon).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "创建待模拟支付订单" }).click();
+  await page.getByRole("link", { name: "确认模拟支付（不扣款）" }).click();
   await page.getByRole("button", { name: "确认模拟支付（不扣款）" }).click();
   await expect(
     page.getByRole("heading", { name: "模拟支付成功" }),
@@ -820,9 +819,9 @@ test("新鲜访客可只通过页面完成跨四角色主演示", async ({
   await expect(page).toHaveURL(/\/customer\/journeys\/current\?type=repair$/u);
   await page.locator(".customer-journey-main").first().click();
   await expect(
-    page.getByRole("button", { name: "为当前座位报修" }),
+    page.getByRole("link", { name: "为当前座位报修" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "为当前座位报修" }).click();
+  await page.getByRole("link", { name: "为当前座位报修" }).click();
   await page.getByPlaceholder("例如：耳机右声道无声").fill("耳机右声道无声");
   await page.getByRole("button", { name: "提交报修" }).click();
   await expect(page.getByRole("heading", { name: "报修已创建" })).toBeVisible();

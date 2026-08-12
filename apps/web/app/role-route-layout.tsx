@@ -80,8 +80,8 @@ function isContextRequired(payload: unknown) {
 
 function pageForRoute(role: PublicRole, routeId: string): RolePageId {
   if (role === "customer") {
-    if (routeId.includes("orders")) return "customer-orders";
-    if (routeId.includes("repairs")) return "customer-repairs";
+    if (routeId.includes("order")) return "customer-orders";
+    if (routeId.includes("repair")) return "customer-repairs";
     if (routeId.includes("journeys")) return "customer-reservations";
     return "customer-home";
   }
@@ -135,6 +135,42 @@ function customerRouteFor(
       reservationId: route.params.reservationId ?? "",
     };
   }
+  if (route.routeId === "customer-reservation-order-new") {
+    return {
+      kind: "order-catalog",
+      reservationId: route.params.reservationId ?? "",
+    };
+  }
+  if (route.routeId === "customer-reservation-order-confirm") {
+    return {
+      kind: "order-confirm",
+      reservationId: route.params.reservationId ?? "",
+    };
+  }
+  if (route.routeId === "customer-order-detail") {
+    return {
+      kind: "order-detail",
+      orderId: route.params.orderId ?? "",
+    };
+  }
+  if (route.routeId === "customer-order-payment") {
+    return {
+      kind: "order-payment",
+      orderId: route.params.orderId ?? "",
+    };
+  }
+  if (route.routeId === "customer-reservation-repair-new") {
+    return {
+      kind: "repair-create",
+      reservationId: route.params.reservationId ?? "",
+    };
+  }
+  if (route.routeId === "customer-repair-detail") {
+    return {
+      kind: "repair-detail",
+      repairId: route.params.repairId ?? "",
+    };
+  }
   if (route.routeId === "customer-stores") return { kind: "stores" };
   if (route.routeId.startsWith("customer-journeys-")) {
     const tab = route.routeId.replace("customer-journeys-", "");
@@ -167,7 +203,10 @@ function routeBoundary(route: ParsedWebRoute) {
   if (route.status === "not-found") return { kind: "not-found" } as const;
   if (
     route.routeId === "customer-reservation-detail" ||
-    route.routeId === "customer-reservation-payment"
+    route.routeId === "customer-reservation-payment" ||
+    route.routeId === "customer-order-detail" ||
+    route.routeId === "customer-order-payment" ||
+    route.routeId === "customer-repair-detail"
   ) {
     return undefined;
   }

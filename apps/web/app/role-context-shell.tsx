@@ -928,15 +928,19 @@ export function RoleContextShell({
               const customerCurrent =
                 context.role.id === "customer" && customerRoute
                   ? id === "customer-orders"
-                    ? customerRoute.kind === "journeys" &&
-                      customerRoute.type === "order"
+                    ? (customerRoute.kind === "journeys" &&
+                        customerRoute.type === "order") ||
+                      customerRoute.kind.startsWith("order-")
                     : id === "customer-repairs"
-                      ? customerRoute.kind === "journeys" &&
-                        customerRoute.type === "repair"
+                      ? (customerRoute.kind === "journeys" &&
+                          customerRoute.type === "repair") ||
+                        customerRoute.kind.startsWith("repair-")
                       : id === "customer-reservations"
                         ? customerRoute.kind === "journeys" &&
                           customerRoute.type === null
-                        : customerRoute.kind !== "journeys"
+                        : customerRoute.kind !== "journeys" &&
+                          !customerRoute.kind.startsWith("order-") &&
+                          !customerRoute.kind.startsWith("repair-")
                   : false;
               return context.role.id === "customer" ? (
                 <Link
