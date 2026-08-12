@@ -127,7 +127,7 @@ async function startTemporaryPostgres() {
     ]);
     started = true;
 
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       const ready = await captureProcess("docker", [
         "exec",
@@ -161,7 +161,7 @@ async function startTemporaryPostgres() {
     );
     if (!ready) {
       throw new Error(
-        "Temporary Postgres did not become ready within 30 seconds.",
+        "Temporary Postgres did not become ready within 60 seconds.",
       );
     }
 
@@ -210,12 +210,38 @@ async function migrateDatabase(environment) {
 }
 
 async function startServices(environment) {
+  const apiPort = environment.JINGSHU_API_PORT ?? "3001";
+  const webPort = environment.JINGSHU_WEB_PORT ?? "3000";
+  const webOrigin = environment.PUBLIC_ORIGIN ?? `http://127.0.0.1:${webPort}`;
+  const apiOrigin =
+    environment.JINGSHU_API_ORIGIN ?? `http://127.0.0.1:${apiPort}`;
   const api = spawnProcess("pnpm", ["--filter", "@jingshu/api", "dev"], {
-    env: environment,
+    env: {
+      ...environment,
+      PORT: apiPort,
+      PUBLIC_ORIGIN: webOrigin,
+    },
   });
-  const web = spawnProcess("pnpm", ["--filter", "@jingshu/web", "dev"], {
-    env: environment,
-  });
+  const web = spawnProcess(
+    "pnpm",
+    [
+      "--filter",
+      "@jingshu/web",
+      "exec",
+      "next",
+      "dev",
+      "--hostname",
+      "127.0.0.1",
+      "--port",
+      webPort,
+    ],
+    {
+      env: {
+        ...environment,
+        JINGSHU_API_ORIGIN: apiOrigin,
+      },
+    },
+  );
   let resolveSignal;
   const signalPromise = new Promise((resolve) => {
     resolveSignal = resolve;

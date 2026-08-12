@@ -17,6 +17,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type {
   DemoTimeAdvancedResponse,
+  DemoStoryResponse,
+  DemoStoryStepId,
+  PublicRole,
   RoleContextReadyResponse,
   SandboxEndReason,
   SandboxResetReadyResponse,
@@ -24,6 +27,7 @@ import type {
 
 import jingshuMark from "../../../product-ui/management-system/design-prototype/public/assets/jingshu-mark.png";
 import { DemoTimeDialog, SandboxResetDialog } from "./demo-tool-dialogs";
+import { DemoStoryDrawer } from "./demo-story-drawer";
 import { RoleSwitchDialog, StaleRoleDialog } from "./role-context-dialogs";
 import { roleMeta, type RolePageId } from "./role-context-model";
 import { RoleWorkbench, type StaffReservationPreset } from "./role-workbench";
@@ -76,6 +80,50 @@ const realtimeStatusCopy = {
 
 type ContextRefreshSource =
   "business-time" | "manual" | "polling" | "realtime" | "replay";
+
+type StoryNavigation =
+  | {
+      readonly kind: "page";
+      readonly page: RolePageId;
+      readonly role: PublicRole;
+    }
+  | { readonly kind: "reset" }
+  | { readonly kind: "time" };
+
+const storyNavigation: Record<DemoStoryStepId, StoryNavigation> = {
+  "business-time-advanced": { kind: "time" },
+  "headquarters-exported": {
+    kind: "page",
+    page: "store-compare",
+    role: "hq",
+  },
+  "order-fulfilled": { kind: "page", page: "orders", role: "staff" },
+  "order-paid": { kind: "page", page: "customer-orders", role: "customer" },
+  "repair-created": {
+    kind: "page",
+    page: "customer-repairs",
+    role: "customer",
+  },
+  "repair-resolved": { kind: "page", page: "repairs", role: "staff" },
+  "repair-verified": {
+    kind: "page",
+    page: "manager-repairs",
+    role: "manager",
+  },
+  "reservation-arrived": { kind: "page", page: "workbench", role: "staff" },
+  "reservation-created": {
+    kind: "page",
+    page: "customer-home",
+    role: "customer",
+  },
+  "reservation-in-use": { kind: "page", page: "workbench", role: "staff" },
+  "reservation-paid": {
+    kind: "page",
+    page: "customer-reservations",
+    role: "customer",
+  },
+  "sandbox-reset": { kind: "reset" },
+};
 
 function unavailableSandboxReason(
   error:
@@ -262,7 +310,12 @@ export function RoleContextShell({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [stale, setStale] = useState(false);
   const [staleReason, setStaleReason] = useState<"reset" | "role">("role");
-  const [toolPanel, setToolPanel] = useState<"life" | "story" | null>(null);
+  const [toolPanel, setToolPanel] = useState<"life" | null>(null);
+  const [storyOpen, setStoryOpen] = useState(false);
+  const [storyCompletedCount, setStoryCompletedCount] = useState<number | null>(
+    null,
+  );
+  const [customerSandboxVersion, setCustomerSandboxVersion] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [authoritativeRefreshPending, setAuthoritativeRefreshPending] =
     useState(false);
@@ -272,11 +325,20 @@ export function RoleContextShell({
   const roleTriggerRef = useRef<HTMLButtonElement>(null);
   const profileTriggerRef = useRef<HTMLButtonElement>(null);
   const activeRoleTriggerRef = useRef<HTMLButtonElement>(null);
+  const storyTriggerRef = useRef<HTMLButtonElement>(null);
   const timeTriggerRef = useRef<HTMLButtonElement>(null);
   const resetTriggerRef = useRef<HTMLButtonElement>(null);
   const broadcastRef = useRef<BroadcastChannel | null>(null);
   const recoveryFenceRef = useRef(false);
   const realtimeRefreshCountRef = useRef(0);
+  const pendingStoryNavigationRef = useRef<Extract<
+    StoryNavigation,
+    { readonly kind: "page" }
+  > | null>(null);
+  const storyPageAfterSwitchRef = useRef<Extract<
+    StoryNavigation,
+    { readonly kind: "page" }
+  > | null>(null);
   const meta = roleMeta[context.role.id];
 
   const handleContextUnavailable = useCallback(
@@ -326,7 +388,12 @@ export function RoleContextShell({
   }, []);
 
   useEffect(() => {
+    const storyPage = storyPageAfterSwitchRef.current;
     setActivePage(roleMeta[context.role.id].defaultPage);
+    if (storyPage?.role === context.role.id) {
+      setActivePage(storyPage.page);
+      storyPageAfterSwitchRef.current = null;
+    }
     setFilter("");
     setReservationFiltersDirty(false);
     setReservationPreset({});
@@ -356,7 +423,34 @@ export function RoleContextShell({
     setRoleDialogOpen(false);
     setDemoToolDialog(null);
     setToolPanel(null);
+    setStoryOpen(false);
+    pendingStoryNavigationRef.current = null;
   }, [stale]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setStoryCompletedCount(null);
+    void fetch("/api/v1/demo/story", {
+      cache: "no-store",
+      credentials: "same-origin",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return (await response.json()) as DemoStoryResponse;
+      })
+      .then((story) => {
+        if (!controller.signal.aborted && story) {
+          setStoryCompletedCount(story.completedCount);
+        }
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [
+    authoritativeRefreshVersion,
+    context.contextVersion,
+    context.sandbox.fingerprint,
+  ]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -568,11 +662,22 @@ export function RoleContextShell({
   }
 
   function openRoleDialog(trigger: HTMLButtonElement) {
+    pendingStoryNavigationRef.current = null;
     activeRoleTriggerRef.current = trigger;
     setRoleDialogOpen(true);
   }
 
+  function closeRoleDialog() {
+    pendingStoryNavigationRef.current = null;
+    setRoleDialogOpen(false);
+  }
+
   function acceptSwitchedContext(nextContext: RoleContextReadyResponse) {
+    const storyTarget = pendingStoryNavigationRef.current;
+    pendingStoryNavigationRef.current = null;
+    if (storyTarget?.role === nextContext.role.id) {
+      storyPageAfterSwitchRef.current = storyTarget;
+    }
     onContextChange(nextContext);
     setFilter("");
     setStale(false);
@@ -610,6 +715,26 @@ export function RoleContextShell({
     broadcastRef.current?.postMessage({ type: "business-time-advanced" });
   }
 
+  function openStoryAction(step: DemoStoryStepId) {
+    setStoryOpen(false);
+    const target = storyNavigation[step];
+    if (target.kind === "time") {
+      setDemoToolDialog("time");
+      return;
+    }
+    if (target.kind === "reset") {
+      setDemoToolDialog("reset");
+      return;
+    }
+    if (target.role === context.role.id) {
+      setActivePage(target.page);
+      return;
+    }
+    pendingStoryNavigationRef.current = target;
+    activeRoleTriggerRef.current = storyTriggerRef.current;
+    setRoleDialogOpen(true);
+  }
+
   function acceptResetSandbox(result: SandboxResetReadyResponse) {
     onContextChange(result.context);
     setAuthoritativeRefreshVersion((version) => version + 1);
@@ -619,6 +744,9 @@ export function RoleContextShell({
     setStaleReason("role");
     recoveryFenceRef.current = false;
     setToolPanel(null);
+    setStoryOpen(false);
+    setStoryCompletedCount(0);
+    setCustomerSandboxVersion((version) => version + 1);
     setToast(
       result.context.role.id === "customer"
         ? "已创建全新标准沙箱，并回到顾客主演示起点"
@@ -631,10 +759,12 @@ export function RoleContextShell({
 
   const activePageLabel =
     meta.navigation.find(([id]) => id === activePage)?.[1] ?? meta.label;
+  const storyCompletedLabel =
+    storyCompletedCount === null ? "读取中" : `${storyCompletedCount} / 12`;
   const resourceRefreshKey = `${context.contextVersion}-${context.sandbox.businessClock.currentTime}-${authoritativeRefreshVersion}`;
   const expirationLabel = formatShanghaiTimestamp(context.sandbox.expiresAt);
   const observedAtLabel = formatShanghaiTimestamp(context.freshness.observedAt);
-  const modalOpen = roleDialogOpen || demoToolDialog !== null;
+  const modalOpen = roleDialogOpen || demoToolDialog !== null || storyOpen;
   const backgroundProps =
     stale || modalOpen || authoritativeRefreshPending
       ? ({ "aria-hidden": true, inert: true } as const)
@@ -651,10 +781,22 @@ export function RoleContextShell({
           <span className="role-business-day">上海业务时钟&nbsp; 自然流逝</span>
         </div>
         <nav aria-label="共享演示工具" className="role-topbar-tools">
-          <button onClick={() => setToolPanel("story")} type="button">
+          <button
+            aria-label={
+              storyCompletedCount === null
+                ? "打开主演示清单，正在读取服务端进度"
+                : `打开主演示清单，已完成 ${storyCompletedCount} / 12`
+            }
+            onClick={() => {
+              setToolPanel(null);
+              setStoryOpen(true);
+            }}
+            ref={storyTriggerRef}
+            type="button"
+          >
             <ListChecks />
             <span>主演示</span>
-            <strong>路线预览</strong>
+            <strong>{storyCompletedLabel}</strong>
           </button>
           <BusinessTimeButton
             currentTime={context.sandbox.businessClock.currentTime}
@@ -721,26 +863,13 @@ export function RoleContextShell({
         </button>
       </header>
 
-      {toolPanel ? (
+      {toolPanel === "life" ? (
         <div className="role-tool-panel" role="status" {...backgroundProps}>
-          {toolPanel === "story" ? (
-            <>
-              <ListChecks />
-              <span>
-                <strong>主演示路线预览</strong>{" "}
-                当前只展示跨角色入口；服务端业务事件进度由 ticket 29
-                接入后显示。
-              </span>
-            </>
-          ) : (
-            <>
-              <Clock />
-              <span>
-                <strong>沙箱生命周期</strong> 预计 {expirationLabel}{" "}
-                到期；业务时间推进不会延长寿命。
-              </span>
-            </>
-          )}
+          <Clock />
+          <span>
+            <strong>沙箱生命周期</strong> 预计 {expirationLabel}{" "}
+            到期；业务时间推进不会延长寿命。
+          </span>
           <button
             aria-label="关闭信息"
             onClick={() => setToolPanel(null)}
@@ -800,9 +929,15 @@ export function RoleContextShell({
           </div>
         </aside>
         <section className="role-workspace">
-          {context.role.id === "customer" && activePage === "customer-home" ? (
+          {context.role.id === "customer" &&
+          (activePage === "customer-home" ||
+            activePage === "customer-reservations" ||
+            activePage === "customer-orders" ||
+            activePage === "customer-repairs") ? (
             <CustomerSeatBrowser
               csrfToken={context.csrfToken}
+              entryPage={activePage}
+              key={`customer-sandbox-${customerSandboxVersion}`}
               refreshKey={resourceRefreshKey}
             />
           ) : context.role.id === "manager" &&
@@ -840,6 +975,10 @@ export function RoleContextShell({
               activePage === "manager-repairs") ? (
             <StaffRepairQueue
               csrfToken={context.csrfToken}
+              onNavigateManagerAudit={() => setActivePage("store-audit")}
+              onNavigateManagerDashboard={() =>
+                setActivePage("store-dashboard")
+              }
               onToast={setToast}
               refreshKey={resourceRefreshKey}
               role={context.role.id}
@@ -976,11 +1115,26 @@ export function RoleContextShell({
         </div>
       ) : null}
 
+      {storyOpen && !stale && !authoritativeRefreshPending ? (
+        <DemoStoryDrawer
+          onClose={() => setStoryOpen(false)}
+          onLoaded={setStoryCompletedCount}
+          onNextAction={openStoryAction}
+          onStale={() => {
+            setStaleReason("role");
+            setStale(true);
+          }}
+          onUnavailable={handleContextUnavailable}
+          refreshKey={authoritativeRefreshVersion}
+          returnFocusRef={storyTriggerRef}
+        />
+      ) : null}
+
       {roleDialogOpen && !stale && !authoritativeRefreshPending ? (
         <RoleSwitchDialog
           context={context}
           dirty={filter.length > 0 || reservationFiltersDirty}
-          onClose={() => setRoleDialogOpen(false)}
+          onClose={closeRoleDialog}
           onStale={(reason) => {
             recoveryFenceRef.current = reason === "switch-outcome-unknown";
             setStaleReason("role");

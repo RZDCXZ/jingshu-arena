@@ -352,7 +352,7 @@ describe("customer membership and journey API", () => {
     )!;
     const pending = await createReservation(session, coupon.id, "immediate");
 
-    expect((await journey(session)).groups.current).toEqual(
+    expect((await journey(session)).groups.future).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           reservationId: pending.reservationId,

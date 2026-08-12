@@ -1,5 +1,5 @@
 export const PUBLIC_SANDBOX_SCHEMA_VERSION = "23";
-export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-11.6";
+export const PUBLIC_SANDBOX_SEED_VERSION = "2026-08-12.1";
 export const SANDBOX_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 export const SANDBOX_BUSINESS_TIME_ADVANCE_LIMIT_MS = 24 * 60 * 60 * 1_000;
 
@@ -649,6 +649,32 @@ export function calculateManagerDashboardMetrics(
 
 export type CustomerReservationMode = "future" | "immediate";
 
+/**
+ * A seeded public sandbox keeps its reservation-start behavior for its full
+ * 24-hour lifetime. New seed versions may opt into a different strategy
+ * without silently changing an active, older sandbox.
+ */
+export type CustomerImmediateReservationWindowStrategy =
+  "current-half-hour-segment" | "nearest-arrival-eligible-segment";
+
+const CUSTOMER_IMMEDIATE_RESERVATION_WINDOW_STRATEGIES_BY_SEED_VERSION: Readonly<
+  Record<string, CustomerImmediateReservationWindowStrategy>
+> = {
+  // Keep this historical entry when PUBLIC_SANDBOX_SEED_VERSION advances so
+  // sandboxes created by this seed retain their behavior for their full TTL.
+  "2026-08-12.1": "nearest-arrival-eligible-segment",
+};
+
+export function customerImmediateReservationWindowStrategyForSeedVersion(
+  seedVersion: string,
+): CustomerImmediateReservationWindowStrategy {
+  return (
+    CUSTOMER_IMMEDIATE_RESERVATION_WINDOW_STRATEGIES_BY_SEED_VERSION[
+      seedVersion
+    ] ?? "current-half-hour-segment"
+  );
+}
+
 export interface StoreBusinessHours {
   readonly closesAt: string;
   readonly closesNextDay: boolean;
@@ -666,6 +692,7 @@ export type CustomerReservationWindowInvalidReason =
 interface ResolveCustomerReservationWindowInput {
   readonly businessHours: StoreBusinessHours;
   readonly durationHours: number;
+  readonly immediateReservationWindowStrategy?: CustomerImmediateReservationWindowStrategy;
   readonly mode: CustomerReservationMode;
   readonly now: Date;
   readonly requestedStartsAt?: Date;
@@ -725,8 +752,17 @@ export function resolveCustomerReservationWindow(
   const currentSegmentStart = new Date(
     Math.floor(input.now.getTime() / HALF_HOUR_MS) * HALF_HOUR_MS,
   );
+  const immediateSegmentStart = new Date(
+    input.immediateReservationWindowStrategy ===
+      "nearest-arrival-eligible-segment" &&
+      input.now.getTime() >= currentSegmentStart.getTime() + HALF_HOUR_MS / 2
+      ? currentSegmentStart.getTime() + HALF_HOUR_MS
+      : currentSegmentStart.getTime(),
+  );
   const startsAt =
-    input.mode === "immediate" ? currentSegmentStart : input.requestedStartsAt;
+    input.mode === "immediate"
+      ? immediateSegmentStart
+      : input.requestedStartsAt;
   if (
     !startsAt ||
     (input.mode === "future" && startsAt.getTime() <= input.now.getTime())

@@ -8,6 +8,7 @@ export default typescriptEslint.config(
       ".scratch/**",
       "product-ui/**",
       "**/.next/**",
+      "**/.next-demo-story*/**",
       "**/coverage/**",
       "**/dist/**",
       "**/node_modules/**",

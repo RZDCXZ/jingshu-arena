@@ -43,7 +43,7 @@ const customerContext: RoleContextReadyResponse = {
     },
     expiresAt: customerContextExpiresAt,
     schemaVersion: "22",
-    seedVersion: "2026-08-11.6",
+    seedVersion: "2026-08-12.1",
   },
   status: "ready",
   storeScope: {
@@ -62,7 +62,7 @@ const catalog: CustomerStoreCatalogResponse = {
     durationHours: { maximum: 8, minimum: 1 },
     futureDays: 7,
     halfHourAligned: true,
-    immediateUsesCurrentSegment: true,
+    immediateSelectsNearestArrivalEligibleSegment: true,
   },
   city: "栖光市",
   currentTime: businessTime,
@@ -1140,6 +1140,33 @@ test("mobile customer can browse three stores and inspect server-derived seats a
     page.getByRole("heading", { name: "竞技区 A-05" }),
   ).toBeVisible();
   await expect(page.getByText("模拟支付不会扣款")).toBeVisible();
+});
+
+test("customer shell navigation keeps story destinations inside the concrete H5", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 1024 });
+  await openCustomerH5(page);
+
+  const sidebar = page.getByTestId("role-sidebar");
+  await sidebar.getByRole("button", { name: "我的预约" }).click();
+  await expect(
+    page.getByRole("heading", { name: "一条行程，看清完整结果" }),
+  ).toBeVisible();
+
+  await sidebar.getByRole("button", { name: "顾客 H5" }).click();
+  await expect(page.getByRole("heading", { name: "三店浏览" })).toBeVisible();
+
+  await sidebar.getByRole("button", { name: "我的订单" }).click();
+  await expect(
+    page.getByRole("heading", { name: "一条行程，看清完整结果" }),
+  ).toBeVisible();
+
+  await sidebar.getByRole("button", { name: "我的报修" }).click();
+  await expect(
+    page.getByRole("heading", { name: "一条行程，看清完整结果" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("customer-h5")).toBeVisible();
 });
 
 test("condition changes requery automatically, clear stale selection, and remain usable at 360px", async ({

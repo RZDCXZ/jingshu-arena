@@ -111,7 +111,7 @@ describe("customer store and seat browsing API", () => {
         durationHours: { maximum: 8, minimum: 1 },
         futureDays: 7,
         halfHourAligned: true,
-        immediateUsesCurrentSegment: true,
+        immediateSelectsNearestArrivalEligibleSegment: true,
       },
       stores: [
         {
@@ -148,14 +148,13 @@ describe("customer store and seat browsing API", () => {
     await expect(availability.json()).resolves.toMatchObject({
       status: "ready",
       window: {
-        startsAt: "2026-08-10T11:30:00.000Z",
-        endsAt: "2026-08-10T13:30:00.000Z",
+        startsAt: "2026-08-10T12:00:00.000Z",
+        endsAt: "2026-08-10T14:00:00.000Z",
         mode: "immediate",
       },
       seats: expect.arrayContaining([
         expect.objectContaining({ availability: "available" }),
         expect.objectContaining({ availability: "reserved" }),
-        expect.objectContaining({ availability: "in-use" }),
         expect.objectContaining({ availability: "maintenance" }),
       ]),
       price: {

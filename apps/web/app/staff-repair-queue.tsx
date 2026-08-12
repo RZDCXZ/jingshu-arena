@@ -69,11 +69,15 @@ const reservationStatusLabels = {
 
 export function StaffRepairQueue({
   csrfToken,
+  onNavigateManagerAudit,
+  onNavigateManagerDashboard,
   onToast,
   refreshKey,
   role,
 }: {
   csrfToken: string;
+  onNavigateManagerAudit?: () => void;
+  onNavigateManagerDashboard?: () => void;
   onToast: (message: string) => void;
   refreshKey: string;
   role: "manager" | "staff";
@@ -841,6 +845,29 @@ export function StaffRepairQueue({
                     </>
                   ) : null}
                 </div>
+              ) : null}
+              {role === "manager" &&
+              detail.status === "closed" &&
+              onNavigateManagerAudit &&
+              onNavigateManagerDashboard ? (
+                <section className="staff-repair-detail-section">
+                  <h3>经营与审计证据</h3>
+                  <p>
+                    复核关闭已恢复座位；继续在同一门店读取经营指标和完整审计记录。
+                  </p>
+                  <div className="staff-repair-actions">
+                    <button
+                      className="is-primary"
+                      onClick={onNavigateManagerDashboard}
+                      type="button"
+                    >
+                      查看单店经营看板
+                    </button>
+                    <button onClick={onNavigateManagerAudit} type="button">
+                      查看审计与导出
+                    </button>
+                  </div>
+                </section>
               ) : null}
               {detail.status === "processing" ||
               detail.status === "verification" ? (

@@ -2,8 +2,8 @@
 
 - 状态：`current`（当前有效）
 - 检查日期：2026-08-12
-- 已验证契约版本：`product-ui/management-system/prod.md` 1.18
-- 验证范围：[`28 — 沙箱容量、自然过期与可重试清理`](../../../.scratch/jingshu-basic-rc/issues/28-sandbox-capacity-expiry-cleanup.md)；保留 ticket 27 实时失效通知、轮询与只读降级及更早结论
+- 已验证契约版本：`product-ui/management-system/prod.md` 1.19
+- 验证范围：[`29 — 基于业务证据的十二步 Web 主演示`](../../../.scratch/jingshu-basic-rc/issues/29-web-demo-story.md)、[`28 — 沙箱容量、自然过期与可重试清理`](../../../.scratch/jingshu-basic-rc/issues/28-sandbox-capacity-expiry-cleanup.md)；保留 ticket 27 实时失效通知、轮询与只读降级及更早结论
 
 ## Ticket 28 `WEB-G01/WEB-G06/WEB-G07` 对照目标与结论
 
@@ -11,7 +11,7 @@
 - 应用内浏览器以精确 `1440 × 1024 CSS px` 打开正式原型的 `capacity`、`expired` 与 `reset` 状态。容量页完整呈现三店标准种子摘要、四项禁用业务动作和恢复主按钮；两种结束态均显示完整 `alertdialog`。三页的 `documentElement.clientWidth = scrollWidth = 1440`，没有横向溢出。
 - 应用内浏览器以精确 `1024 × 768 CSS px` 完成三状态和主动作验收：容量页四项业务按钮均禁用，“稍后重新创建独立沙箱”会进入“正在准备店员视图”；自然到期和旧标签失效分别显示对应的结束文案，背景“办理到店”被阻断，两个“创建新的独立沙箱”主按钮同样进入创建准备态。三页均为 `documentElement.clientWidth = scrollWidth = 1024`，无裁切或横向溢出。
 - 应用内浏览器以 `360 × 800 CSS px` 复核容量、自然到期和旧标签失效：容量保留四项禁用动作和完整恢复主按钮；两个结束态的主按钮均在首屏可达。各状态的 `documentElement.clientWidth` 与 `scrollWidth` 相等，未出现横向溢出。
-- 本票正式原型执行 `npm run build` 与 `npm run test:sites` 均通过；三状态和创建准备态的浏览器 warning/error 均为 `0`。当前没有仍需处理的 P0、P1 或 P2 视觉或交互差异；功能职责以 `prod.md` 1.18 为唯一记录。
+- 本票正式原型执行 `npm run build` 与 `npm run test:sites` 均通过；三状态和创建准备态的浏览器 warning/error 均为 `0`。当前没有仍需处理的 P0、P1 或 P2 视觉或交互差异；功能职责以 `prod.md` 1.19 为唯一记录。
 
 final result: passed
 
@@ -374,7 +374,7 @@ final result: passed
 - 同视口实现：`design/implementation-ticket06-customer-conditions-393x852.jpg`、`design/implementation-ticket06-customer-seats-393x852.jpg`；两张截图均来自真实 Web → Hono → 临时 PostgreSQL 路径，CSS 视口与截图均为 `393 × 852`。
 - 360px 证据：`design/implementation-ticket06-customer-conditions-360x800.jpg`、`design/implementation-ticket06-customer-seats-360x800.jpg` 与 `design/implementation-ticket06-customer-seats-selected-360x800.jpg`；CSS 视口与截图均为 `360 × 800`。
 - 同一比较输入：`design/qa-ticket06-conditions-comparison.png` 与 `design/qa-ticket06-seats-comparison.png` 均为 `786 × 852`，左侧是正式信息架构源，右侧是同状态生产实现。
-- 状态对齐：两小时立即预约、旗舰店竞技型、当前半小时片段起点、区域 A、未选座位和选中 `A-05`；静态源图中的示例业务时间与金额仅作版式参考，生产结果以沙箱上海业务时钟、半小时规则和整数分服务端计算为准。
+- 状态对齐：两小时立即预约、旗舰店竞技型、到店窗口仍有效的最近半小时片段起点、区域 A、未选座位和选中 `A-05`；静态源图中的示例业务时间与金额仅作版式参考，生产结果以沙箱上海业务时钟、半小时规则和整数分服务端计算为准。
 
 ## Ticket 06 Findings
 
@@ -398,7 +398,7 @@ final result: passed
 
 - Codex 应用内浏览器：真实 `393 × 852` 和 `360 × 800` 顾客路径完成三店浏览、区域/机型筛选、座位图、`A-05` 选择及区域变更清除选择；全新标签 warning/error 为 0。
 - 性能与响应式自动化：`tests/e2e/customer-seat-browse.spec.ts` 3/3 通过；服务端可订性响应结束后首个可操作状态小于 1 秒，本地座位选择到下一帧小于 100ms，`360px` 页面和 H5 内部均无横向溢出，所有可操作按钮不小于 `44px`。
-- 真实 PostgreSQL/API：迁移与升级测试通过；三店目录、区域/机型计数、运营状态、重叠预约推导、可解释价格和非顾客拒绝集成测试通过。领域测试覆盖 06:00 经营日、当前半小时、普通/跨午夜营业边界、未来七天、周末系数与整数分片段。
+- 真实 PostgreSQL/API：迁移与升级测试通过；三店目录、区域/机型计数、运营状态、重叠预约推导、可解释价格和非顾客拒绝集成测试通过。领域测试覆盖 06:00 经营日、到店窗口截止边界、普通/跨午夜营业边界、未来七天、周末系数与整数分片段。
 
 ## Ticket 06 对比历史
 
@@ -575,6 +575,24 @@ final result: passed
 - 应用内浏览器真实沙箱验证八项指标、单店筛选、经营日范围、文本摘要、等价数据表和只读下钻；下钻明确提示切换对应门店角色处理。自动化补充覆盖聚合异常构成、键盘关闭及焦点返回。
 - 全沙箱审计门店筛选提供“全部三店”及三家固定门店；全部范围包含连锁级事件。导出确认锁定全部三店，审计预览表头唯一，生成完成态显示真实行数、文件名与审计写入说明。两档视口最终 console warning/error 均为 0。
 - API/PostgreSQL 集成测试覆盖总部/店长公式一致、三店固定顺序、三店与连锁级审计、六类导出共用结构、UTF-8 BOM、原子导出审计、跨沙箱拒绝、非总部拒绝和总部一线命令拒绝。
+
+## Ticket 29 — 十二步 Web 主演示
+
+### 对照源与证据
+
+- 正式状态源使用管理端正式原型的 `主演示 0/12` 抽屉，视觉方向继承 `design/reference/selected-night-operations-console.png`；生产实现复用同一共享角色壳、夜间表面、青色当前步骤和青柠下一动作。
+- `1440 × 1024` 同状态对照：`design/evidence/ticket-29-web-demo-story/comparison-drawer-1440x1024.png`；左右原图分别为 `formal-drawer-1440x1024.png` 和 `implementation-drawer-1440x1024.png`。
+- `1024 × 768` 同状态对照：`design/evidence/ticket-29-web-demo-story/comparison-drawer-2048x768.png`；左右原图分别为 `formal-drawer-1024x768.png` 和 `implementation-drawer-1024x768.png`。
+- 顾客 `360 × 800` 同状态对照：`design/evidence/ticket-29-web-demo-story/comparison-customer-h5-720x800.png`；左侧为正式小程序 `MP-01` 的 `source-customer-h5-360x800.png`，右侧为真实生产 `implementation-customer-h5-360x800.png`。本票新增抽屉另记录为 `implementation-drawer-360x800.png`，同一 Playwright 状态确认无横向溢出、可关闭且焦点返回，保留 H5 的固定底栏与触控目标。
+
+### Findings 与验证
+
+- 首轮 P1：主演示 CTA 曾只切到泛化的顾客壳页，不能把访客带到当前预约的订单或报修入口。修复后“我的订单”“我的报修”将具体打开主演示预约详情，并由详情中的真实订单/报修动作继续；`customer-seat-browse.spec.ts` 覆盖这两个落点。
+- 首轮 P1：替换耳机证据曾按全部备件的净数量汇总，背景或其他备件可能误判为完成。修复后只接受主演示报修关联的 `spare-headset` 一副净领用，回退后再领用才能推进解决步骤。
+- 受控差异：正式移动源保留 iPhone 设备框和本机演示边界，生产 H5 保留共享沙箱工具栏、Web 独立沙箱说明与三店浏览；两侧均以深海军蓝、青色步骤、青柠主操作和“预约一个明确座位”的优先级表达同一预约起点。
+- 没有仍需处理的 P0、P1 或 P2 差异。抽屉在三档视口保持完整标题、当前步骤、不可手工勾选的证据说明和可见下一动作；关闭、`Escape` 与焦点返回均通过。
+- 应用内浏览器以真实 Web → Hono → 临时 PostgreSQL 完成 0→11 的预约、订单、维修、导出路径，并实际重置到新沙箱 0；第二标签只显示旧沙箱失效恢复入口。浏览器控制台本轮新增操作没有 warning/error。
+- 自动化：`apps/api/src/demo-story.integration.test.ts` 从全新会话完成完整业务记录、CSV 内容、三店导出审计、旧会话 `410` 与重置后旧对象 `404`；`tests/e2e/demo-story-real.spec.ts` 在独立端口的真实 Web → Hono → 临时 PostgreSQL 中包含服务端证据回归，以及一条由新鲜访客仅通过页面完成预约、订单、维修、单店经营/审计、三店预约 CSV 和重置的路径，API 仅用于读取已提交证据；`role-context-shell.spec.ts` 的 `WEB-G03` 覆盖 1440 抽屉、角色 CTA、360 抽屉无溢出/关闭/焦点返回；`customer-seat-browse.spec.ts` 覆盖顾客端具体落点。当前 Web 立即预约规则以 `prod.md` 1.19 为准，旧种子沙箱的原规则由 PostgreSQL 兼容回归覆盖。
 
 final result: passed
 

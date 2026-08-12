@@ -96,6 +96,14 @@ const freshnessMeta = {
   rate: ["限流恢复", "warning"],
 };
 
+function initialDemoStep() {
+  const value = Number.parseInt(
+    new URLSearchParams(window.location.search).get("demoStep") ?? "",
+    10,
+  );
+  return value >= 1 && value <= 12 ? value : 3;
+}
+
 export function App() {
   const initialSandboxState = new URLSearchParams(window.location.search).get(
     "sandboxState",
@@ -122,7 +130,7 @@ export function App() {
   const [handoverConfirmed, setHandoverConfirmed] = useState(
     initialHandoverState === "confirmed",
   );
-  const [demoStep, setDemoStep] = useState(3);
+  const [demoStep, setDemoStep] = useState(initialDemoStep);
   const [businessTime, setBusinessTime] = useState(
     new URLSearchParams(window.location.search).get("businessTime") || "19:30",
   );
@@ -374,7 +382,7 @@ export function App() {
       setRepairSpareStates({});
       setRepairVerificationEvidence({});
       setHandoverSubmitted(false);
-      setDemoStep(3);
+      setDemoStep(1);
       setBusinessTime("19:30");
       setDataMode("live");
       setResetLoading(false);
@@ -618,13 +626,13 @@ export function App() {
         </div>
         <nav className="topbar-tools" aria-label="共享演示工具">
           <button
-            aria-label={`主演示 ${Math.max(3, demoStep)}/12`}
+            aria-label={`主演示 ${Math.max(0, demoStep - 1)}/12`}
             data-tooltip="主演示"
             onClick={() => setOverlay("checklist")}
           >
             <ListChecks />
             <span>主演示</span>
-            <strong>{Math.max(3, demoStep)}/12</strong>
+            <strong>{Math.max(0, demoStep - 1)}/12</strong>
           </button>
           <button
             aria-label={`业务时间 ${businessTime}`}

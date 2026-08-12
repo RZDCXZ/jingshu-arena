@@ -430,23 +430,24 @@ export function RoleSwitchModal({
 }
 
 export function DemoChecklistDrawer({ currentStep, onClose, onGoToStep }) {
+  const completedCount = Math.max(0, currentStep - 1);
   return (
     <Drawer
-      title="主演示清单"
+      title="十二步主演示清单"
       onClose={onClose}
       width="wide"
       footer={
         <div className="drawer-progress">
-          <span>已完成 {Math.max(2, currentStep)} / 12</span>
-          <progress value={Math.max(2, currentStep)} max="12" />
+          <span>已完成 {completedCount} / 12</span>
+          <progress value={completedCount} max="12" />
         </div>
       }
     >
       <p className="drawer-intro">
-        清单状态由业务事件、库存流水和导出/重置证据推导，不支持手工勾选。
+        进度只从主顾客、主对象、业务事件、库存流水、导出与重置记录推导；不能手动勾选，也不会被背景历史提前完成。
       </p>
       <ol className="demo-steps">
-        {demoSteps.map(([role, action, evidence], index) => {
+        {demoSteps.map((step, index) => {
           const number = index + 1;
           const done = number < currentStep;
           const current = number === currentStep;
@@ -457,13 +458,14 @@ export function DemoChecklistDrawer({ currentStep, onClose, onGoToStep }) {
             >
               <span className="step-number">{done ? <Check /> : number}</span>
               <div>
-                <span>{role}</span>
-                <strong>{action}</strong>
+                <span>{step.role} · {step.object}</span>
+                <strong>{step.action}</strong>
+                <small>入口 · {step.entry}</small>
                 <small>
                   {done
-                    ? evidence
+                    ? `证据已记录 · ${step.completion}`
                     : current
-                      ? "当前需要完成"
+                      ? `完成条件 · ${step.completion}`
                       : "等待前序业务事件"}
                 </small>
               </div>
@@ -473,7 +475,7 @@ export function DemoChecklistDrawer({ currentStep, onClose, onGoToStep }) {
                   icon={Play}
                   onClick={() => onGoToStep(number)}
                 >
-                  前往当前动作
+                  {step.nextAction}
                 </Button>
               )}
             </li>

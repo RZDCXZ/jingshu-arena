@@ -3,6 +3,8 @@ import type { Page, Route } from "@playwright/test";
 
 import type {
   CustomerReservationStatus,
+  DemoStoryResponse,
+  DemoStoryStepId,
   HandoverCommandResponse,
   HeadquartersAuditResponse,
   HeadquartersCatalogCommandRequest,
@@ -195,6 +197,51 @@ function sandboxReady(role: PublicRole): PublicSandboxReadyResponse {
   };
 }
 
+const demoStoryStepIds = [
+  "reservation-created",
+  "reservation-paid",
+  "reservation-arrived",
+  "reservation-in-use",
+  "order-paid",
+  "order-fulfilled",
+  "business-time-advanced",
+  "repair-created",
+  "repair-resolved",
+  "repair-verified",
+  "headquarters-exported",
+  "sandbox-reset",
+] as const satisfies ReadonlyArray<DemoStoryStepId>;
+
+function demoStoryResponse(
+  completedCount: number,
+  resetAt: string | null,
+): DemoStoryResponse {
+  return {
+    completedCount,
+    resetAt,
+    status: "ready",
+    steps: demoStoryStepIds.map((id, index) => ({
+      evidence:
+        index < completedCount
+          ? [
+              {
+                kind: "business-event",
+                occurredAt: "2026-08-09T11:30:00.000Z",
+                summary: `主演示第 ${index + 1} 步证据已记录`,
+              },
+            ]
+          : [],
+      id,
+      state:
+        index < completedCount
+          ? "completed"
+          : index === completedCount
+            ? "current"
+            : "blocked",
+    })),
+  };
+}
+
 test.beforeEach(async ({ context }) => {
   await context.addInitScript(() => {
     type RealtimeListener = (event: MessageEvent<string>) => void;
@@ -260,6 +307,8 @@ test.beforeEach(async ({ context }) => {
   let csrfToken = "csrf-context-version-1-token-value";
   let businessTime = "2026-08-09T11:30:00.000Z";
   let advancedMilliseconds = 0;
+  let demoStoryCompletedCount = 0;
+  let demoStoryResetAt: string | null = null;
   const headquartersCatalogs: MutableHeadquartersCatalogs = {
     currentTime: businessTime,
     machineProfiles: [
@@ -3234,6 +3283,12 @@ test.beforeEach(async ({ context }) => {
   await context.route("**/api/v1/demo/context", serveContext);
   await context.route("**/api/v1/demo/context/refresh", serveContext);
   await context.route("**/api/v1/demo/context/switch", serveContext);
+  await context.route("**/api/v1/demo/story", async (route) => {
+    await route.fulfill({
+      json: demoStoryResponse(demoStoryCompletedCount, demoStoryResetAt),
+      status: 200,
+    });
+  });
   await context.route("**/api/v1/demo/time", async (route) => {
     const current = new Date(businessTime);
     const halfHour = new Date(current.getTime() + 30 * 60_000).toISOString();
@@ -3330,6 +3385,8 @@ test.beforeEach(async ({ context }) => {
     csrfToken = "csrf-reset-sandbox-version-1-token-value";
     businessTime = "2026-08-09T11:30:00.000Z";
     advancedMilliseconds = 0;
+    demoStoryCompletedCount = 0;
+    demoStoryResetAt = businessTime;
     await route.fulfill({
       json: {
         status: "ready",
@@ -3430,6 +3487,59 @@ async function enterManagerAudit(page: Page) {
   await page.getByRole("button", { name: "审计与导出" }).click();
   await expect(page.getByRole("heading", { name: "审计与导出" })).toBeVisible();
 }
+
+test("WEB-G03 renders a server-derived, accessible twelve-step drawer without manual completion", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await enterStaffShell(page);
+
+  const trigger = page.getByRole("button", { name: /打开主演示清单/u });
+  await trigger.click();
+  const drawer = page.getByRole("dialog", { name: "十二步主演示清单" });
+  await expect(drawer).toBeVisible();
+  await expect(
+    drawer.getByText(
+      "进度只从主顾客、主对象、业务事件、库存流水、导出与重置记录推导",
+      {
+        exact: false,
+      },
+    ),
+  ).toBeVisible();
+  await expect(drawer.getByTestId("demo-story-step-1")).toHaveAttribute(
+    "aria-current",
+    "step",
+  );
+  await expect(drawer.getByText("顾客 · 棱镜旗舰店即时预约")).toBeVisible();
+  await expect(drawer.getByText("入口 · 顾客 H5 · 预约首页")).toBeVisible();
+  await expect(
+    drawer.getByText("完成条件 · 顾客创建竞技型两小时即时预约", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(drawer.getByRole("checkbox")).toHaveCount(0);
+
+  await drawer.getByRole("button", { name: "前往顾客 H5 创建预约" }).click();
+  await expect(
+    page.getByRole("heading", { name: "切换演示角色" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "关闭角色切换" }).click();
+
+  await trigger.click();
+  await page.setViewportSize({ width: 360, height: 800 });
+  const mobileDrawer = page.getByRole("dialog", { name: "十二步主演示清单" });
+  await expect(mobileDrawer).toBeVisible();
+  const layout = await mobileDrawer.evaluate((element) => {
+    const drawer = element as HTMLElement;
+    return {
+      clientWidth: drawer.clientWidth,
+      scrollWidth: drawer.scrollWidth,
+    };
+  });
+  expect(layout.scrollWidth).toBe(layout.clientWidth);
+  await mobileDrawer.getByRole("button", { name: "关闭主演示清单" }).click();
+  await expect(trigger).toBeFocused();
+});
 
 test("manager dashboard keeps real metrics, ranges and drilldowns in one store context", async ({
   page,
@@ -4676,6 +4786,14 @@ test("repair spares, resolution, independent failure retry, and close remain sta
   await expect(page.getByText("已关闭", { exact: true }).last()).toBeVisible();
   await expect(page.getByText("最近验证 · 成功")).toBeVisible();
   await expect(page.getByText("正常（验证后已恢复）")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "查看单店经营看板" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "查看审计与导出" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "查看单店经营看板" }).click();
+  await expect(page.getByRole("heading", { name: "经营看板" })).toBeVisible();
   await expect(page.getByRole("button", { name: "领用备件" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "提交解决说明" })).toHaveCount(
     0,

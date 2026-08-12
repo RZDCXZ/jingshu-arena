@@ -3,31 +3,26 @@ import { defineConfig, devices } from "@playwright/test";
 process.env.NO_PROXY = "*";
 process.env.no_proxy = "*";
 
-const webOrigin = process.env.JINGSHU_E2E_WEB_ORIGIN ?? "http://127.0.0.1:3000";
-const webPort = new URL(webOrigin).port || "3000";
+const webOrigin = "http://127.0.0.1:3100";
 
 export default defineConfig({
   expect: {
-    timeout: 5_000,
+    timeout: 10_000,
   },
-  fullyParallel: true,
-  workers: 4,
+  fullyParallel: false,
   reporter: process.env.CI ? "github" : "list",
   testDir: "./tests/e2e",
-  testIgnore: "**/demo-story-real.spec.ts",
+  testMatch: "demo-story-real.spec.ts",
+  timeout: 120_000,
   use: {
+    actionTimeout: 10_000,
     baseURL: webOrigin,
     launchOptions: {
       args: ["--no-proxy-server"],
     },
     trace: "retain-on-failure",
   },
-  webServer: {
-    command: `pnpm --filter @jingshu/web exec next dev --hostname 127.0.0.1 --port ${webPort}`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-    url: webOrigin,
-  },
+  workers: 1,
   projects: [
     {
       name: "chromium",

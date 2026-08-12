@@ -8,6 +8,7 @@ node_modules/
 dist/
 coverage/
 .next/
+apps/web/.next-demo-story*/
 playwright-report/
 test-results/
 *.tsbuildinfo

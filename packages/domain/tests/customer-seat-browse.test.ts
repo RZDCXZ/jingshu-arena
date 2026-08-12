@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   businessDayRange,
   businessDayKey,
+  customerImmediateReservationWindowStrategyForSeedVersion,
   deriveSeatAvailability,
   evaluateReservationCoupon,
   pricePlanClockRangesOverlap,
@@ -31,7 +32,45 @@ describe("customer reservation browsing rules", () => {
     });
   });
 
-  it("starts an immediate reservation at the current half-hour segment", () => {
+  it("keeps immediate reservation windows compatible with the sandbox seed", () => {
+    expect(
+      resolveCustomerReservationWindow({
+        businessHours: {
+          closesAt: "00:00",
+          closesNextDay: false,
+          isOpen24Hours: true,
+          opensAt: "00:00",
+        },
+        durationHours: 2,
+        immediateReservationWindowStrategy: "nearest-arrival-eligible-segment",
+        mode: "immediate",
+        now: new Date("2026-08-10T11:47:23.000Z"),
+      }),
+    ).toEqual({
+      endsAt: new Date("2026-08-10T14:00:00.000Z"),
+      startsAt: new Date("2026-08-10T12:00:00.000Z"),
+      status: "ready",
+    });
+
+    expect(
+      resolveCustomerReservationWindow({
+        businessHours: {
+          closesAt: "00:00",
+          closesNextDay: false,
+          isOpen24Hours: true,
+          opensAt: "00:00",
+        },
+        durationHours: 2,
+        immediateReservationWindowStrategy: "nearest-arrival-eligible-segment",
+        mode: "immediate",
+        now: new Date("2026-08-10T11:44:59.999Z"),
+      }),
+    ).toEqual({
+      endsAt: new Date("2026-08-10T13:30:00.000Z"),
+      startsAt: new Date("2026-08-10T11:30:00.000Z"),
+      status: "ready",
+    });
+
     expect(
       resolveCustomerReservationWindow({
         businessHours: {
@@ -49,6 +88,13 @@ describe("customer reservation browsing rules", () => {
       startsAt: new Date("2026-08-10T11:30:00.000Z"),
       status: "ready",
     });
+
+    expect(
+      customerImmediateReservationWindowStrategyForSeedVersion("2026-08-11.6"),
+    ).toBe("current-half-hour-segment");
+    expect(
+      customerImmediateReservationWindowStrategyForSeedVersion("2026-08-12.1"),
+    ).toBe("nearest-arrival-eligible-segment");
   });
 
   it("accepts a future cross-midnight window inside store hours and rejects one past closing", () => {

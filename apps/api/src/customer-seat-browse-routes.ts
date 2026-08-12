@@ -290,7 +290,9 @@ export function registerCustomerSeatBrowseRoutes(
           durationHours: { maximum: 8, minimum: 1 },
           futureDays: 7,
           halfHourAligned: true,
-          immediateUsesCurrentSegment: true,
+          immediateSelectsNearestArrivalEligibleSegment:
+            catalog.immediateReservationWindowStrategy ===
+            "nearest-arrival-eligible-segment",
         },
         city: catalog.city,
         currentTime: catalog.currentTime.toISOString(),

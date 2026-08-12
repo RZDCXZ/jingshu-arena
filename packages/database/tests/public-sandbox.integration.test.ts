@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import pg from "pg";
 
 import {
@@ -15,11 +15,19 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL is required for Postgres integration tests.");
 }
 
-const database = createPublicSandboxDatabase(databaseUrl);
+const fixedWallTime = new Date("2026-08-12T11:30:00.000Z");
+let databaseWallTime = fixedWallTime;
+const database = createPublicSandboxDatabase(databaseUrl, {
+  wallClock: { now: () => databaseWallTime },
+});
 const { Client } = pg;
 
 beforeAll(async () => {
   await migrateEmptyDatabase(databaseUrl);
+});
+
+beforeEach(() => {
+  databaseWallTime = fixedWallTime;
 });
 
 afterAll(async () => {
@@ -40,7 +48,7 @@ describe("public sandbox creation", () => {
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
       ),
       schemaVersion: "23",
-      seedVersion: "2026-08-11.6",
+      seedVersion: "2026-08-12.1",
       expiresAt: expect.any(Date),
       selectedRole: "customer",
       persona: {
@@ -77,7 +85,7 @@ describe("public sandbox creation", () => {
           /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
         ),
         schemaVersion: "23",
-        seedVersion: "2026-08-11.6",
+        seedVersion: "2026-08-12.1",
         expiresAt: expect.any(Date),
         businessClock: {
           advanceLimitMilliseconds: 86_400_000,
@@ -186,6 +194,65 @@ describe("public sandbox creation", () => {
         storeCode: "prism-flagship",
       }),
     ).rejects.toMatchObject({ reason: "price-plan-not-found" });
+  });
+
+  it("keeps an old sandbox on its original immediate-reservation rule", async () => {
+    databaseWallTime = new Date("2026-08-12T11:47:23.000Z");
+    const created = await database.create({
+      creationKey: randomUUID(),
+      selectedRole: "customer",
+      visitorKey: `visitor-${randomUUID()}`,
+    });
+    const context = {
+      contextVersion: created.roleContext.contextVersion,
+      personaId: created.roleContext.persona.id,
+      role: created.roleContext.role,
+      sandboxId: created.sandboxId,
+    } as const;
+    const request = {
+      ...context,
+      areaCode: "competitive-a",
+      durationHours: 2,
+      machineProfileCode: "competitive" as const,
+      mode: "immediate" as const,
+      storeCode: "prism-flagship",
+    };
+
+    await expect(
+      database.readCustomerSeatAvailability(request),
+    ).resolves.toMatchObject({
+      window: { startsAt: new Date("2026-08-12T12:00:00.000Z") },
+    });
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      await client.query(
+        "update sandboxes set seed_version = $1 where id = $2",
+        ["2026-08-11.6", created.sandboxId],
+      );
+    } finally {
+      await client.end();
+    }
+
+    const oldPreview = await database.readCustomerSeatAvailability(request);
+    expect(oldPreview.window.startsAt).toEqual(
+      new Date("2026-08-12T11:30:00.000Z"),
+    );
+    const availableSeat = oldPreview.seats.find(
+      (seat) => seat.availability === "available",
+    );
+    expect(availableSeat).toBeDefined();
+    const reservation = await database.createCustomerPendingReservation({
+      ...request,
+      couponId: null,
+      idempotencyKey: randomUUID(),
+      requestId: randomUUID(),
+      seatCode: availableSeat?.code ?? "",
+    });
+    expect(reservation.snapshot.window.startsAt).toEqual(
+      new Date("2026-08-12T11:30:00.000Z"),
+    );
   });
 
   it("creates one atomic ten-minute hold with immutable price and coupon snapshots and replays it", async () => {

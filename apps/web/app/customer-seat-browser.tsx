@@ -188,6 +188,12 @@ type CustomerView =
   | "repair-detail"
   | "seats";
 
+type CustomerEntryPage =
+  | "customer-home"
+  | "customer-orders"
+  | "customer-repairs"
+  | "customer-reservations";
+
 interface CustomerRepairFile {
   readonly file: File;
   readonly id: string;
@@ -418,13 +424,17 @@ const LIFECYCLE_REQUEST_TIMEOUT_MS = 8_000;
 
 export function CustomerSeatBrowser({
   csrfToken,
+  entryPage = "customer-home",
   refreshKey,
 }: {
   csrfToken: string;
+  entryPage?: CustomerEntryPage;
   refreshKey: string;
 }) {
   const customerRootRef = useRef<HTMLElement>(null);
   const lastRefreshKeyRef = useRef(refreshKey);
+  const lastEntryPageRef = useRef<CustomerEntryPage | null>(null);
+  const pendingEntryIntentRef = useRef<"order" | "repair" | null>(null);
   const [catalog, setCatalog] = useState<CustomerStoreCatalogResponse | null>(
     null,
   );
@@ -560,6 +570,28 @@ export function CustomerSeatBrowser({
       );
     }
   }, [refreshKey]);
+
+  useEffect(() => {
+    if (lastEntryPageRef.current === entryPage) return;
+    lastEntryPageRef.current = entryPage;
+
+    if (entryPage === "customer-home") {
+      pendingEntryIntentRef.current = null;
+      setView("conditions");
+      return;
+    }
+
+    pendingEntryIntentRef.current =
+      entryPage === "customer-orders"
+        ? "order"
+        : entryPage === "customer-repairs"
+          ? "repair"
+          : null;
+    setJourneyGroup("current");
+    setHistoryFilter("all");
+    setView("journey");
+    setJourneyAttempt((attempt) => attempt + 1);
+  }, [entryPage]);
 
   useEffect(() => {
     if (
@@ -710,6 +742,21 @@ export function CustomerSeatBrowser({
       });
     return () => controller.abort();
   }, [journeyAttempt, view]);
+
+  useEffect(() => {
+    const intent = pendingEntryIntentRef.current;
+    if (!intent || view !== "journey" || !journey) return;
+
+    const target = journey.groups.current.find((item) =>
+      intent === "order"
+        ? item.status === "arrived" || item.status === "in-use"
+        : item.status === "in-use",
+    );
+    pendingEntryIntentRef.current = null;
+    if (!target) return;
+
+    openJourneyReservation(target.reservationId);
+  }, [journey, view]);
 
   const store = useMemo(
     () => catalog?.stores.find((item) => item.code === storeCode) ?? null,
@@ -3280,7 +3327,10 @@ export function CustomerSeatBrowser({
             ) : (
               <div className="customer-inline-note">
                 <Clock />
-                当前半小时片段起点由服务端业务时钟确定。
+                {catalog?.bookingRules
+                  .immediateSelectsNearestArrivalEligibleSegment
+                  ? "服务端会选择到店窗口仍有效的最近半小时片段。"
+                  : "当前半小时片段起点由该沙箱创建时的服务端业务时钟确定。"}
               </div>
             )}
             <div className="customer-duration-control">

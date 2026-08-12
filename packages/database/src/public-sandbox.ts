@@ -2,8 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 
 import pg from "pg";
 import type { PoolClient } from "pg";
-import { HEADQUARTERS_FIXED_STORE_CODES } from "@jingshu/contracts";
+import {
+  DEMO_STORY_STEP_IDS,
+  HEADQUARTERS_FIXED_STORE_CODES,
+} from "@jingshu/contracts";
 import type {
+  DemoStoryEvidenceKind,
+  DemoStoryStepId,
   FrontlineReservationAction,
   ManagerAuditFilters,
   ManagerAuditResult,
@@ -26,7 +31,9 @@ import {
   attributeManagerReservationRevenue,
   buildPublicSandboxSeed,
   calculateManagerDashboardMetrics,
+  customerImmediateReservationWindowStrategyForSeedVersion,
   decideCustomerOrderLifecycle,
+  type CustomerImmediateReservationWindowStrategy,
   type CustomerReservationMode,
   decideReservationLifecycle,
   decideFrontlineReservationLifecycle,
@@ -243,11 +250,33 @@ export interface ReadRoleContextInput {
   personaId: string;
 }
 
+export type ReadDemoStoryInput = ReadRoleContextInput;
+
+export interface DatabaseDemoStoryEvidence {
+  readonly kind: DemoStoryEvidenceKind;
+  readonly occurredAt: Date;
+  readonly summary: string;
+}
+
+export interface DatabaseDemoStoryStep {
+  readonly evidence: ReadonlyArray<DatabaseDemoStoryEvidence>;
+  readonly id: DemoStoryStepId;
+  /** Whether this step and every preceding step have persisted legal evidence. */
+  readonly satisfied: boolean;
+}
+
+export interface DatabaseDemoStory {
+  /** A reset is recorded only on the replacement sandbox, whose story restarts at zero. */
+  readonly resetAt: Date | null;
+  readonly steps: ReadonlyArray<DatabaseDemoStoryStep>;
+}
+
 export type CustomerBrowseContextInput = ReadRoleContextInput;
 
 export interface DatabaseCustomerStoreCatalog {
   readonly city: string;
   readonly currentTime: Date;
+  readonly immediateReservationWindowStrategy: CustomerImmediateReservationWindowStrategy;
   readonly stores: ReadonlyArray<{
     readonly areas: ReadonlyArray<{
       readonly code: string;
@@ -2543,6 +2572,7 @@ export interface PublicSandboxDatabase extends SandboxDemoToolMethods {
   readCurrentRoleContext(
     input: ReadCurrentRoleContextInput,
   ): Promise<DatabaseRoleContext>;
+  readDemoStory(input: ReadDemoStoryInput): Promise<DatabaseDemoStory>;
   readStaffReservationDetail(
     input: ReadStaffReservationDetailInput,
   ): Promise<DatabaseStaffReservationDetail>;
@@ -5267,6 +5297,529 @@ async function assertHeadquartersContext(
   );
   if (!persona.rows[0]) throw new RoleContextUnavailableError();
   return sandboxRow;
+}
+
+async function assertDemoStoryContext(
+  client: PoolClient,
+  input: ReadDemoStoryInput,
+  wallTime: Date,
+): Promise<SandboxRow> {
+  switch (input.role) {
+    case "customer":
+      return assertCustomerBrowseContext(client, input, wallTime);
+    case "staff":
+    case "manager":
+      return (
+        await assertFrontlineContext(
+          client,
+          { ...input, role: input.role },
+          wallTime,
+        )
+      ).sandbox;
+    case "hq":
+      return assertHeadquartersContext(
+        client,
+        { ...input, role: "hq" },
+        wallTime,
+      );
+  }
+}
+
+function demoStoryEvidence(
+  kind: DemoStoryEvidenceKind,
+  occurredAt: Date,
+  summary: string,
+): DatabaseDemoStoryEvidence {
+  return { kind, occurredAt, summary };
+}
+
+/**
+ * The public story deliberately keys every fact to the protected customer and
+ * the intended flagship objects. Seeded background history can enrich reports,
+ * but it must never advance a visitor's own demonstration.
+ */
+async function readDemoStoryWithClient(
+  client: PoolClient,
+  input: ReadDemoStoryInput,
+  wallTime: Date,
+): Promise<DatabaseDemoStory> {
+  await assertDemoStoryContext(client, input, wallTime);
+
+  const reset = await client.query<{ reset_at: Date }>(
+    `select business_occurred_at as reset_at
+       from audit_events
+      where sandbox_id = $1 and action = 'sandbox.reset.source'
+        and object_type = 'sandbox' and result = 'allowed'
+      order by business_occurred_at desc, recorded_at desc, id desc
+      limit 1`,
+    [input.sandboxId],
+  );
+  const resetAt = reset.rows[0]?.reset_at ?? null;
+
+  const personas = await client.query<{
+    customer_id: string | null;
+    manager_id: string | null;
+  }>(
+    `select
+       (select id from demo_personas
+         where sandbox_id = $1 and role = 'customer' and protected = true)
+         as customer_id,
+       (select id from demo_personas
+         where sandbox_id = $1 and role = 'manager' and protected = true)
+         as manager_id`,
+    [input.sandboxId],
+  );
+  const customerId = personas.rows[0]?.customer_id;
+  const managerId = personas.rows[0]?.manager_id;
+  if (!customerId || !managerId) throw new RoleContextUnavailableError();
+
+  const reservation = await client.query<{
+    arrived_business_at: Date | null;
+    arrived_event_at: Date | null;
+    confirmed_business_at: Date | null;
+    created_business_at: Date;
+    created_event_at: Date | null;
+    reservation_id: string;
+    payment_event_at: Date | null;
+    started_business_at: Date | null;
+    started_event_at: Date | null;
+  }>(
+    `select reservation.id as reservation_id,
+            reservation.created_business_at,
+            reservation.confirmed_business_at,
+            reservation.arrived_business_at,
+            reservation.started_business_at,
+            max(event.business_occurred_at) filter (
+              where event.event_type = 'reservation.pending-created'
+            ) as created_event_at,
+            max(event.business_occurred_at) filter (
+              where event.event_type = 'reservation.simulated-payment-succeeded'
+            ) as payment_event_at,
+            max(event.business_occurred_at) filter (
+              where event.event_type = 'reservation.arrived'
+            ) as arrived_event_at,
+            max(event.business_occurred_at) filter (
+              where event.event_type = 'reservation.started'
+            ) as started_event_at
+       from reservations reservation
+       join stores store on store.id = reservation.store_id
+       join seats seat on seat.id = reservation.seat_id
+       join machine_profiles machine on machine.id = seat.machine_profile_id
+       left join reservation_business_events event
+         on event.reservation_id = reservation.id
+        and event.sandbox_id = reservation.sandbox_id
+      where reservation.sandbox_id = $1
+        and reservation.customer_persona_id = $2
+        and store.code = 'prism-flagship'
+        and machine.code = 'competitive'
+        and reservation.coupon_id is not null
+        and reservation.ends_at - reservation.starts_at = interval '2 hours'
+        and reservation.starts_at > reservation.created_business_at - interval '30 minutes'
+        and exists (
+          select 1
+            from reservation_business_events created_event
+           where created_event.sandbox_id = reservation.sandbox_id
+             and created_event.reservation_id = reservation.id
+             and created_event.event_type = 'reservation.pending-created'
+             and (
+               created_event.event_data->>'mode' = 'immediate'
+               or (
+                 not (created_event.event_data ? 'mode')
+                 and reservation.starts_at <= reservation.created_business_at
+               )
+             )
+        )
+      group by reservation.id
+      order by reservation.created_business_at, reservation.id
+      limit 1`,
+    [input.sandboxId, customerId],
+  );
+  const reservationRow = reservation.rows[0] ?? null;
+
+  const order = reservationRow
+    ? await client.query<{
+        fulfilled_event_at: Date | null;
+        order_id: string;
+        paid_business_at: Date | null;
+        payment_event_at: Date | null;
+      }>(
+        `select customer_order.id as order_id,
+                customer_order.paid_business_at,
+                max(event.business_occurred_at) filter (
+                  where event.event_type = 'order.simulated-payment-succeeded'
+                ) as payment_event_at,
+                max(event.business_occurred_at) filter (
+                  where event.event_type in (
+                    'order.preparing', 'order.ready-for-pickup', 'order.completed'
+                  )
+                ) as fulfilled_event_at
+           from customer_orders customer_order
+           join experience_coupons coupon
+             on coupon.id = customer_order.coupon_id
+            and coupon.sandbox_id = customer_order.sandbox_id
+            and coupon.business_kind = 'order'
+           left join order_business_events event
+             on event.order_id = customer_order.id
+            and event.sandbox_id = customer_order.sandbox_id
+          where customer_order.sandbox_id = $1
+            and customer_order.reservation_id = $2
+            and customer_order.customer_persona_id = $3
+          group by customer_order.id
+          order by customer_order.created_business_at, customer_order.id
+          limit 1`,
+        [input.sandboxId, reservationRow.reservation_id, customerId],
+      )
+    : null;
+  const orderRow = order?.rows[0] ?? null;
+
+  const timeAdvance =
+    reservationRow && orderRow?.fulfilled_event_at
+      ? await client.query<{ advanced_at: Date }>(
+          `select business_occurred_at as advanced_at
+       from audit_events
+      where sandbox_id = $1 and action = 'demo_time.advance'
+        and result = 'allowed' and after_data->>'mode' = 'half-hour'
+        and business_occurred_at > $2
+      order by business_occurred_at, recorded_at, id
+      limit 1`,
+          [input.sandboxId, orderRow.fulfilled_event_at],
+        )
+      : null;
+  const advancedAt = timeAdvance?.rows[0]?.advanced_at ?? null;
+
+  const repair =
+    reservationRow && advancedAt
+      ? await client.query<{
+          assigned_business_at: Date | null;
+          assigned_event_at: Date | null;
+          closed_business_at: Date | null;
+          closed_event_at: Date | null;
+          created_business_at: Date;
+          has_maintenance_refund: boolean;
+          has_one_replacement: boolean;
+          processing_business_at: Date | null;
+          processing_event_at: Date | null;
+          repair_id: string;
+          resolution_business_at: Date | null;
+          resolution_event_at: Date | null;
+          seat_operational_status: "maintenance" | "normal";
+          verification_business_at: Date | null;
+          verification_event_at: Date | null;
+          verified_by_persona_id: string | null;
+        }>(
+          `select repair.id as repair_id,
+                  repair.created_business_at,
+                  repair.assigned_business_at,
+                  repair.processing_business_at,
+                  repair.resolution_business_at,
+                  repair.verification_business_at,
+                  repair.closed_business_at,
+                  repair.verified_by_persona_id,
+                  seat.operational_status as seat_operational_status,
+                  max(event.business_occurred_at) filter (
+                    where event.event_type = 'repair.assigned'
+                  ) as assigned_event_at,
+                  max(event.business_occurred_at) filter (
+                    where event.event_type = 'repair.processing-started'
+                  ) as processing_event_at,
+                  max(event.business_occurred_at) filter (
+                    where event.event_type = 'repair.resolution-submitted'
+                  ) as resolution_event_at,
+                  max(event.business_occurred_at) filter (
+                    where event.event_type = 'repair.closed'
+                  ) as closed_event_at,
+                  max(event.business_occurred_at) filter (
+                    where event.event_type = 'repair.closed'
+                  ) as verification_event_at,
+                  exists(
+                    select 1
+                      from reservation_business_events maintenance_event
+                      join reservation_simulated_refunds refund
+                        on refund.sandbox_id = maintenance_event.sandbox_id
+                       and refund.reservation_id = maintenance_event.reservation_id
+                     where maintenance_event.sandbox_id = repair.sandbox_id
+                       and maintenance_event.reservation_id = repair.reservation_id
+                       and maintenance_event.event_type =
+                         'reservation.completed-for-maintenance'
+                       and maintenance_event.event_data->>'repairId' = repair.id::text
+                       and refund.amount_cents > 0
+                  ) as has_maintenance_refund,
+                  exists(
+                    select 1
+                      from repair_spare_usages usage
+                      join inventory_items item
+                        on item.id = usage.inventory_item_id
+                      join inventory_movements movement
+                        on movement.id = usage.inventory_movement_id
+                     where usage.sandbox_id = repair.sandbox_id
+                       and usage.repair_id = repair.id
+                       and usage.quantity - usage.returned_quantity = 1
+                       and item.code = 'spare-headset'
+                       and movement.movement_kind = 'spare-usage'
+                  ) as has_one_replacement
+             from repairs repair
+             join seats seat on seat.id = repair.seat_id
+             left join repair_business_events event
+               on event.sandbox_id = repair.sandbox_id
+              and event.repair_id = repair.id
+            where repair.sandbox_id = $1
+              and repair.reservation_id = $2
+              and repair.customer_persona_id = $3
+              and repair.source = 'customer'
+              and repair.description = '耳机右声道无声'
+              and repair.created_business_at >= $4
+            group by repair.id, seat.operational_status
+            order by repair.created_business_at, repair.id
+            limit 1`,
+          [
+            input.sandboxId,
+            reservationRow.reservation_id,
+            customerId,
+            advancedAt,
+          ],
+        )
+      : null;
+  const repairRow = repair?.rows[0] ?? null;
+
+  const exportEvidence = repairRow?.closed_business_at
+    ? await client.query<{ exported_at: Date }>(
+        `select min(audit.business_occurred_at) as exported_at
+           from audit_events audit
+          where audit.sandbox_id = $1 and audit.role = 'hq'
+            and audit.action = 'export.csv' and audit.result = 'allowed'
+            and audit.business_occurred_at >= $2
+          group by audit.request_id
+          having count(*) = 3 and count(distinct audit.store_id) = 3
+          order by min(audit.business_occurred_at), audit.request_id
+          limit 1`,
+        [input.sandboxId, repairRow.closed_business_at],
+      )
+    : null;
+  const exportedAt = exportEvidence?.rows[0]?.exported_at ?? null;
+
+  const raw = new Map<
+    DemoStoryStepId,
+    {
+      readonly evidence: ReadonlyArray<DatabaseDemoStoryEvidence>;
+      readonly satisfied: boolean;
+    }
+  >([
+    [
+      "reservation-created",
+      {
+        evidence: reservationRow?.created_event_at
+          ? [
+              demoStoryEvidence(
+                "business-event",
+                reservationRow.created_event_at,
+                "棱镜旗舰店竞技型即时两小时预约及体验券已记录",
+              ),
+            ]
+          : [],
+        satisfied: Boolean(reservationRow?.created_event_at),
+      },
+    ],
+    [
+      "reservation-paid",
+      {
+        evidence: reservationRow?.payment_event_at
+          ? [
+              demoStoryEvidence(
+                "business-event",
+                reservationRow.payment_event_at,
+                "预约模拟支付成功事件已记录",
+              ),
+            ]
+          : [],
+        satisfied: Boolean(
+          reservationRow?.confirmed_business_at &&
+          reservationRow.payment_event_at,
+        ),
+      },
+    ],
+    [
+      "reservation-arrived",
+      {
+        evidence: reservationRow?.arrived_event_at
+          ? [
+              demoStoryEvidence(
+                "business-event",
+                reservationRow.arrived_event_at,
+                "店员办理到店事件已记录",
+              ),
+            ]
+          : [],
+        satisfied: Boolean(
+          reservationRow?.arrived_business_at &&
+          reservationRow.arrived_event_at,
+        ),
+      },
+    ],
+    [
+      "reservation-in-use",
+      {
+        evidence: reservationRow?.started_event_at
+          ? [
+              demoStoryEvidence(
+                "business-event",
+                reservationRow.started_event_at,
+                "店员开始使用事件已记录",
+              ),
+            ]
+          : [],
+        satisfied: Boolean(
+          reservationRow?.started_business_at &&
+          reservationRow.started_event_at,
+        ),
+      },
+    ],
+    [
+      "order-paid",
+      {
+        evidence: orderRow?.payment_event_at
+          ? [
+              demoStoryEvidence(
+                "business-event",
+                orderRow.payment_event_at,
+                "顾客商品订单模拟支付成功事件已记录",
+              ),
+            ]
+          : [],
+        satisfied: Boolean(
+          orderRow?.paid_business_at && orderRow.payment_event_at,
+        ),
+      },
+    ],
+    [
+      "order-fulfilled",
+      {
+        evidence: orderRow?.fulfilled_event_at
+          ? [
+              demoStoryEvidence(
+                "business-event",
+                orderRow.fulfilled_event_at,
+                "店员订单履约事件已记录",
+              ),
+            ]
+          : [],
+        satisfied: Boolean(orderRow?.fulfilled_event_at),
+      },
+    ],
+    [
+      "business-time-advanced",
+      {
+        evidence: advancedAt
+          ? [
+              demoStoryEvidence(
+                "audit-event",
+                advancedAt,
+                "共享业务时间已向前推进 30 分钟",
+              ),
+            ]
+          : [],
+        satisfied: Boolean(advancedAt),
+      },
+    ],
+    [
+      "repair-created",
+      {
+        evidence: repairRow
+          ? [
+              demoStoryEvidence(
+                "business-event",
+                repairRow.created_business_at,
+                "顾客“耳机右声道无声”报修已提交",
+              ),
+            ]
+          : [],
+        satisfied: Boolean(repairRow),
+      },
+    ],
+    [
+      "repair-resolved",
+      {
+        evidence: repairRow
+          ? [
+              ...(repairRow.processing_event_at
+                ? [
+                    demoStoryEvidence(
+                      "business-event",
+                      repairRow.processing_event_at,
+                      "维修已开始，座位维护与价格分段模拟退款已记录",
+                    ),
+                  ]
+                : []),
+              ...(repairRow.resolution_event_at
+                ? [
+                    demoStoryEvidence(
+                      "business-event",
+                      repairRow.resolution_event_at,
+                      "维修结论已提交",
+                    ),
+                  ]
+                : []),
+            ]
+          : [],
+        satisfied: Boolean(
+          repairRow?.assigned_business_at &&
+          repairRow.assigned_event_at &&
+          repairRow.processing_business_at &&
+          repairRow.processing_event_at &&
+          repairRow.resolution_business_at &&
+          repairRow.resolution_event_at &&
+          repairRow.has_maintenance_refund &&
+          repairRow.has_one_replacement,
+        ),
+      },
+    ],
+    [
+      "repair-verified",
+      {
+        evidence: repairRow?.verification_event_at
+          ? [
+              demoStoryEvidence(
+                "business-event",
+                repairRow.verification_event_at,
+                "店长独立复核通过，座位已恢复可用且审计记录可查",
+              ),
+            ]
+          : [],
+        satisfied: Boolean(
+          repairRow?.verification_business_at &&
+          repairRow.closed_business_at &&
+          repairRow.closed_event_at &&
+          repairRow.verified_by_persona_id === managerId &&
+          repairRow.seat_operational_status === "normal",
+        ),
+      },
+    ],
+    [
+      "headquarters-exported",
+      {
+        evidence: exportedAt
+          ? [
+              demoStoryEvidence(
+                "audit-event",
+                exportedAt,
+                "总部固定三店比较导出已按同一请求写入三条审计记录",
+              ),
+            ]
+          : [],
+        satisfied: Boolean(exportedAt),
+      },
+    ],
+    ["sandbox-reset", { evidence: [], satisfied: false }],
+  ]);
+
+  let previousSatisfied = true;
+  const steps = DEMO_STORY_STEP_IDS.map((id) => {
+    const step = raw.get(id)!;
+    const satisfied = previousSatisfied && step.satisfied;
+    previousSatisfied = satisfied;
+    return { ...step, id, satisfied };
+  });
+
+  return { resetAt, steps };
 }
 
 async function assertStoreConfigurationContext(
@@ -9825,6 +10378,25 @@ export function createPublicSandboxDatabase(
 
   return {
     ...demoToolMethods,
+    async readDemoStory(input) {
+      const client = await pool.connect();
+      const wallTime = wallClock.now();
+      try {
+        await client.query("begin");
+        await client.query("set local role jingshu_runtime");
+        await client.query("select set_config('app.sandbox_id', $1, true)", [
+          input.sandboxId,
+        ]);
+        const story = await readDemoStoryWithClient(client, input, wallTime);
+        await client.query("commit");
+        return story;
+      } catch (error) {
+        await client.query("rollback").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
     async enqueueRepairImageCleanup(input) {
       const client = await pool.connect();
       try {
@@ -20474,6 +21046,10 @@ export function createPublicSandboxDatabase(
             opensAt: selectedHours.opens_at.slice(0, 5),
           },
           durationHours: input.durationHours,
+          immediateReservationWindowStrategy:
+            customerImmediateReservationWindowStrategyForSeedVersion(
+              sandbox.seed_version,
+            ),
           mode: input.mode,
           now,
           ...(input.requestedStartsAt
@@ -20678,7 +21254,10 @@ export function createPublicSandboxDatabase(
             randomUUID(),
             input.sandboxId,
             reservationId,
-            JSON.stringify({ holdExpiresAt: holdExpiresAt.toISOString() }),
+            JSON.stringify({
+              holdExpiresAt: holdExpiresAt.toISOString(),
+              mode: input.mode,
+            }),
             now,
           ],
         );
@@ -22437,6 +23016,10 @@ export function createPublicSandboxDatabase(
         const result: DatabaseCustomerStoreCatalog = {
           city,
           currentTime,
+          immediateReservationWindowStrategy:
+            customerImmediateReservationWindowStrategyForSeedVersion(
+              sandbox.seed_version,
+            ),
           stores: catalogStores,
         };
         await client.query("commit");
@@ -22504,6 +23087,10 @@ export function createPublicSandboxDatabase(
             opensAt: selectedHours.opens_at.slice(0, 5),
           },
           durationHours: input.durationHours,
+          immediateReservationWindowStrategy:
+            customerImmediateReservationWindowStrategyForSeedVersion(
+              sandbox.seed_version,
+            ),
           mode: input.mode,
           now,
           ...(input.requestedStartsAt

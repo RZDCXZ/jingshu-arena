@@ -7,6 +7,7 @@ import { registerRoleAccessRoutes } from "./role-access-routes.js";
 import { registerRoleContextRoutes } from "./role-context-routes.js";
 import type { AppEnvironment, AppServices } from "./route-support.js";
 import { registerDemoToolsRoutes } from "./demo-tools-routes.js";
+import { registerDemoStoryRoutes } from "./demo-story-routes.js";
 import { registerCustomerSeatBrowseRoutes } from "./customer-seat-browse-routes.js";
 import { registerCustomerMembershipRoutes } from "./customer-membership-routes.js";
 import { registerCustomerOrderRoutes } from "./customer-order-routes.js";
@@ -92,6 +93,7 @@ export function createApp(options: AppOptions = {}) {
   registerRoleContextRoutes(app, services);
   registerRoleAccessRoutes(app, services);
   registerDemoToolsRoutes(app, services);
+  registerDemoStoryRoutes(app, services);
   registerCustomerSeatBrowseRoutes(app, services);
   registerCustomerMembershipRoutes(app, services);
   registerCustomerOrderRoutes(app, services);

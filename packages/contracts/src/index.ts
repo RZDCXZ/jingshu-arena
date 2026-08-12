@@ -71,7 +71,7 @@ export interface CustomerStoreCatalogResponse {
     readonly durationHours: { readonly maximum: 8; readonly minimum: 1 };
     readonly futureDays: 7;
     readonly halfHourAligned: true;
-    readonly immediateUsesCurrentSegment: true;
+    readonly immediateSelectsNearestArrivalEligibleSegment: boolean;
   };
   readonly stores: ReadonlyArray<{
     readonly areas: ReadonlyArray<{
@@ -1681,6 +1681,51 @@ export interface SandboxBusinessClockResponse {
 export interface DemoTimeImpactResponse {
   readonly count: number;
   readonly kind: DemoTimeDueHandlerKind;
+}
+
+/** The fixed, evidence-derived journey shown in the Web demo drawer. */
+export const DEMO_STORY_STEP_IDS = [
+  "reservation-created",
+  "reservation-paid",
+  "reservation-arrived",
+  "reservation-in-use",
+  "order-paid",
+  "order-fulfilled",
+  "business-time-advanced",
+  "repair-created",
+  "repair-resolved",
+  "repair-verified",
+  "headquarters-exported",
+  "sandbox-reset",
+] as const;
+
+export type DemoStoryStepId = (typeof DEMO_STORY_STEP_IDS)[number];
+export type DemoStoryStepState = "blocked" | "completed" | "current";
+export type DemoStoryEvidenceKind =
+  | "audit-event"
+  | "business-event"
+  | "inventory-movement"
+  | "object-state"
+  | "sandbox-reset";
+
+export interface DemoStoryEvidence {
+  readonly kind: DemoStoryEvidenceKind;
+  readonly occurredAt: string;
+  /** A deliberately privacy-safe description of the persisted evidence. */
+  readonly summary: string;
+}
+
+export interface DemoStoryResponse {
+  readonly status: "ready";
+  /** Number of contiguous completed steps; it can never be manually advanced. */
+  readonly completedCount: number;
+  /** Present only in the replacement sandbox created by the story reset. */
+  readonly resetAt: string | null;
+  readonly steps: ReadonlyArray<{
+    readonly id: DemoStoryStepId;
+    readonly state: DemoStoryStepState;
+    readonly evidence: ReadonlyArray<DemoStoryEvidence>;
+  }>;
 }
 
 export const ROLE_CAPABILITIES = [

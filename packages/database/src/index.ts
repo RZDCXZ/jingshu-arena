@@ -133,6 +133,9 @@ export {
   type DatabaseStoreInventory,
   type DatabaseStoreInventoryItem,
   type DatabaseInventoryMovement,
+  type DatabaseDemoStory,
+  type DatabaseDemoStoryEvidence,
+  type DatabaseDemoStoryStep,
   type DatabaseRoleContext,
   type PublicSandboxDatabase,
   type PublicSandboxDatabaseOptions,
@@ -182,6 +185,7 @@ export {
   type SimulateCustomerOrderPaymentInput,
   type RecordRoleContextDenialInput,
   type ReadCurrentRoleContextInput,
+  type ReadDemoStoryInput,
   type ReadRoleContextInput,
   type SwitchRoleContextInput,
 } from "./public-sandbox.js";
